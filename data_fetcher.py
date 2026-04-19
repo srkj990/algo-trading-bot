@@ -1,0 +1,251 @@
+from datetime import datetime, timedelta
+from urllib.parse import quote
+
+import pandas as pd
+import requests
+import yfinance as yf
+from kiteconnect import KiteConnect
+
+from config import (
+    get_access_token,
+    get_api_key,
+    get_default_data_provider,
+    get_upstox_access_token,
+)
+from logger import get_logger
+
+
+logger = get_logger()
+DATA_PROVIDER = get_default_data_provider()
+_kite_client = None
+_kite_instruments_cache = {}
+_upstox_symbol_cache = {}
+
+
+def set_data_provider(provider):
+    global DATA_PROVIDER
+    DATA_PROVIDER = (provider or "YFINANCE").upper()
+
+
+def get_data_provider():
+    return DATA_PROVIDER
+
+
+def get_data(symbol, period="1d", interval="1m", provider=None):
+    active_provider = (provider or DATA_PROVIDER or "YFINANCE").upper()
+    logger.info(
+        "[DATA] Provider=%s | Symbol=%s | period=%s | interval=%s",
+        active_provider,
+        symbol,
+        period,
+        interval,
+    )
+    print(
+        f"\n[DATA] Provider={active_provider} | Fetching {symbol} "
+        f"(period={period}, interval={interval})..."
+    )
+
+    if active_provider == "YFINANCE":
+        data = _get_data_yfinance(symbol, period, interval)
+    elif active_provider == "KITE":
+        data = _get_data_kite(symbol, period, interval)
+    elif active_provider == "UPSTOX":
+        data = _get_data_upstox(symbol, period, interval)
+    else:
+        raise ValueError(f"Unsupported data provider: {active_provider}")
+
+    print(f"[DATA] {symbol} rows fetched: {len(data)}")
+    logger.info(f"[DATA] {symbol} rows fetched: {len(data)}")
+
+    if not data.empty:
+        print(f"[DATA] {symbol} last candle:")
+        print(data.tail(1))
+        logger.info(f"[DATA] {symbol} last candle:\n{data.tail(1)}")
+
+    return data
+
+
+def _get_data_yfinance(symbol, period, interval):
+    data = yf.download(
+        symbol,
+        period=period,
+        interval=interval,
+        progress=False,
+        auto_adjust=False,
+    )
+
+    if hasattr(data.columns, "levels"):
+        data.columns = [col[0] for col in data.columns]
+
+    return data
+
+
+def _get_kite_client():
+    global _kite_client
+    if _kite_client is None:
+        _kite_client = KiteConnect(api_key=get_api_key())
+        _kite_client.set_access_token(get_access_token())
+    return _kite_client
+
+
+def _get_kite_instrument_token(symbol):
+    tradingsymbol = symbol.replace(".NS", "")
+    cache_key = f"NSE:{tradingsymbol}"
+    if cache_key not in _kite_instruments_cache:
+        kite = _get_kite_client()
+        instruments = kite.instruments("NSE")
+        for item in instruments:
+            key = f"{item['exchange']}:{item['tradingsymbol']}"
+            _kite_instruments_cache[key] = item["instrument_token"]
+
+    token = _kite_instruments_cache.get(cache_key)
+    if token is None:
+        raise RuntimeError(f"Kite instrument token not found for {symbol}")
+    return token
+
+
+def _get_data_kite(symbol, period, interval):
+    kite = _get_kite_client()
+    instrument_token = _get_kite_instrument_token(symbol)
+    from_date, to_date = _resolve_date_window(period)
+    candles = kite.historical_data(
+        instrument_token,
+        from_date,
+        to_date,
+        _map_kite_interval(interval),
+    )
+    if not candles:
+        return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+
+    data = pd.DataFrame(candles)
+    data["date"] = pd.to_datetime(data["date"])
+    data = data.rename(
+        columns={
+            "date": "Date",
+            "open": "Open",
+            "high": "High",
+            "low": "Low",
+            "close": "Close",
+            "volume": "Volume",
+        }
+    )
+    data = data.set_index("Date")
+    return data[["Open", "High", "Low", "Close", "Volume"]]
+
+
+def _get_upstox_headers():
+    return {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": f"Bearer {get_upstox_access_token()}",
+    }
+
+
+def _resolve_upstox_instrument_key(symbol):
+    tradingsymbol = symbol.replace(".NS", "")
+    if tradingsymbol in _upstox_symbol_cache:
+        return _upstox_symbol_cache[tradingsymbol]
+
+    response = requests.get(
+        "https://api.upstox.com/v2/instruments/search",
+        headers=_get_upstox_headers(),
+        params={
+            "query": tradingsymbol,
+            "exchanges": "NSE",
+            "segments": "EQ",
+            "page_number": 1,
+            "records": 10,
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    for item in payload.get("data", []):
+        if item.get("exchange") == "NSE" and item.get("trading_symbol") == tradingsymbol:
+            _upstox_symbol_cache[tradingsymbol] = item["instrument_key"]
+            return item["instrument_key"]
+
+    raise RuntimeError(f"Upstox instrument key not found for {symbol}")
+
+
+def _get_data_upstox(symbol, period, interval):
+    instrument_key = _resolve_upstox_instrument_key(symbol)
+    from_date, to_date = _resolve_date_window(period)
+    interval_key = _map_upstox_interval(interval)
+    encoded_key = quote(instrument_key, safe="")
+    url = (
+        f"https://api.upstox.com/v2/historical-candle/"
+        f"{encoded_key}/{interval_key}/{to_date.strftime('%Y-%m-%d')}/"
+        f"{from_date.strftime('%Y-%m-%d')}"
+    )
+    response = requests.get(
+        url,
+        headers=_get_upstox_headers(),
+        timeout=30,
+    )
+    response.raise_for_status()
+    candles = response.json().get("data", {}).get("candles", [])
+    if not candles:
+        return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+
+    data = pd.DataFrame(
+        candles,
+        columns=[
+            "Date",
+            "Open",
+            "High",
+            "Low",
+            "Close",
+            "Volume",
+            "OpenInterest",
+        ],
+    )
+    data["Date"] = pd.to_datetime(data["Date"])
+    data = data.set_index("Date").sort_index()
+    return data[["Open", "High", "Low", "Close", "Volume"]]
+
+
+def _resolve_date_window(period):
+    now = datetime.now()
+    period_key = (period or "1d").lower()
+    if period_key.endswith("d"):
+        delta = timedelta(days=int(period_key[:-1]))
+    elif period_key.endswith("mo"):
+        delta = timedelta(days=int(period_key[:-2]) * 30)
+    elif period_key.endswith("y"):
+        delta = timedelta(days=int(period_key[:-1]) * 365)
+    else:
+        delta = timedelta(days=5)
+    return now - delta, now
+
+
+def _map_kite_interval(interval):
+    mapping = {
+        "1m": "minute",
+        "3m": "3minute",
+        "5m": "5minute",
+        "10m": "10minute",
+        "15m": "15minute",
+        "30m": "30minute",
+        "60m": "60minute",
+        "1d": "day",
+    }
+    return mapping.get(interval, interval)
+
+
+def _map_upstox_interval(interval):
+    mapping = {
+        "1m": "1minute",
+        "3m": "3minute",
+        "5m": "5minute",
+        "10m": "10minute",
+        "15m": "15minute",
+        "30m": "30minute",
+        "1d": "day",
+        "1w": "week",
+        "1mo": "month",
+    }
+    mapped = mapping.get(interval)
+    if mapped is None:
+        raise ValueError(f"Unsupported Upstox interval: {interval}")
+    return mapped

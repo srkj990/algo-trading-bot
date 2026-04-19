@@ -1,0 +1,248 @@
+coGood—before adding more complexity, you should clearly understand what each strategy is *actually doing* and when it works or fails. That’s how you avoid blindly trusting signals.
+
+---
+
+# 🧠 1. Moving Average (MA) Strategy
+
+### 📌 Logic
+
+* Calculate:
+
+  * MA20 → short-term trend
+  * MA50 → longer-term trend
+
+* Decision:
+
+  * MA20 > MA50 → **BUY**
+  * MA20 < MA50 → **SELL**
+
+---
+
+### 🎯 What It Captures
+
+👉 Trend direction
+
+* Short MA crossing above long MA = bullish momentum
+* Opposite = bearish momentum
+
+---
+
+### ✅ Works Best In
+
+* Trending markets (strong up/down move)
+
+---
+
+### ❌ Fails In
+
+* Sideways market (frequent false signals)
+
+---
+
+### 🧠 Intuition
+
+> “Follow the trend, don’t predict it”
+
+---
+
+# 🟢 2. RSI (Relative Strength Index)
+
+### 📌 Logic
+
+* RSI range: 0–100
+* Decision:
+
+  * RSI < 30 → **BUY (oversold)**
+  * RSI > 70 → **SELL (overbought)**
+
+---
+
+### 🎯 What It Captures
+
+👉 Momentum exhaustion
+
+* Price fell too much → likely bounce
+* Price rose too much → likely fall
+
+---
+
+### ✅ Works Best In
+
+* Sideways / range-bound markets
+
+---
+
+### ❌ Fails In
+
+* Strong trends (RSI stays high/low for long time)
+
+---
+
+### 🧠 Intuition
+
+> “Too much of anything reverses”
+
+---
+
+# 🟡 3. Breakout Strategy
+
+### 📌 Logic
+
+* Look at last 20 candles:
+
+  * Highest high
+  * Lowest low
+
+* Decision:
+
+  * Price breaks above high → **BUY**
+  * Price breaks below low → **SELL**
+
+---
+
+### 🎯 What It Captures
+
+👉 New momentum / volatility expansion
+
+---
+
+### ✅ Works Best In
+
+* When market starts moving after consolidation
+
+---
+
+### ❌ Fails In
+
+* Fake breakouts (price breaks and reverses)
+
+---
+
+### 🧠 Intuition
+
+> “Big moves start after quiet periods”
+
+---
+
+# 🟣 4. VWAP Strategy
+
+### 📌 Logic
+
+* VWAP = average price weighted by volume
+
+* Decision:
+
+  * Price > VWAP → **BUY**
+  * Price < VWAP → **SELL**
+
+---
+
+### 🎯 What It Captures
+
+👉 Institutional bias
+
+* Above VWAP → buyers in control
+* Below VWAP → sellers in control
+
+---
+
+### ✅ Works Best In
+
+* Intraday trading
+
+---
+
+### ❌ Fails In
+
+* Choppy markets near VWAP
+
+---
+
+### 🧠 Intuition
+
+> “Smart money trades around VWAP”
+
+---
+
+# 🟠 5. ORB (Opening Range Breakout)
+
+### 📌 Logic
+
+* Take first 15-minute range:
+
+  * High
+  * Low
+
+* Decision:
+
+  * Break above → **BUY**
+  * Break below → **SELL**
+
+---
+
+### 🎯 What It Captures
+
+👉 Early market direction
+
+---
+
+### ✅ Works Best In
+
+* Strong opening trends
+
+---
+
+### ❌ Fails In
+
+* Flat openings / fake moves
+
+---
+
+### 🧠 Intuition
+
+> “First move of the day often defines direction”
+
+---
+
+# ⚠️ VERY IMPORTANT TRUTH
+
+No strategy is “best”.
+
+| Market Type | Best Strategy |
+| ----------- | ------------- |
+| Trending    | MA, Breakout  |
+| Sideways    | RSI           |
+| Intraday    | VWAP, ORB     |
+
+---
+
+# 🧠 What Your System Currently Lacks
+
+Right now all strategies:
+
+❌ Fire instantly
+❌ No confirmation
+❌ No position awareness
+
+👉 That means:
+
+* Overtrading
+* Fake signals
+* Losses
+
+---
+
+# 🚀 Real Trader Thinking
+
+Instead of using one strategy:
+
+👉 Combine them
+
+Examples:
+
+* MA + RSI → trend + confirmation
+* Breakout + Volume → strong moves only
+* VWAP + ORB → intraday strength
+
+---
+

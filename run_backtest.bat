@@ -1,0 +1,1 @@
+python backtesting.py --capital 1000 --period 1y --top-n 1 --max-positions 1 --strategies MA,RSI,BREAKOUT

@@ -1,0 +1,14 @@
+Add false signal filter (must-have) 🔥
+Add stop-loss & trailing SL
+Add multi-stock support\
+
+
+
+Trade Management Engine
+
+Stop-loss
+Trailing SL
+Exit conditions
+
+
+add trade management
