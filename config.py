@@ -257,8 +257,19 @@ MANUAL_SYMBOL_TABLE = {
 # Single-symbol table for quick focused runs.
 # Keep this table small so single-mode selection stays fast.
 SINGLE_SYMBOL_TABLE = {
-    "1": "SIEMENS.NS",
-    "2": "RELIANCE.NS",
+    "1": "HPCL.NS",
+    "2": "IOC.NS",
+    "3": "SAIL.NS",
+    "4": "JINDALSTEL.NS",
+    "5": "AARTI.NS",
+    "6": "CUMMINSIND.NS",
+    "7": "WABCOINDIA.NS",
+    "8": "PNBHOUSING.NS",
+    "9": "IDFCBANK.NS",
+    "10": "MOIL.NS",
+    "11": "RPOWER.NS",
+    "12": "JPPOWER.NS",
+    "13": "IRB.NS",
 }
 
 # Logging config

@@ -157,6 +157,11 @@ def normalize_symbol(raw_symbol):
 
 
 def prompt_symbol_selection():
+    log_event("[SETUP] Symbol selection - which stocks to scan for signals")
+    log_event("[SETUP]   SINGLE: Scan only 1 stock (good for testing specific stocks)")
+    log_event("[SETUP]   MANUAL MULTI: Choose multiple stocks from a table")
+    log_event("[SETUP]   NIFTY50 UNIVERSE: Scan all 50 NIFTY stocks (comprehensive)")
+
     symbol_mode = prompt_choice(
         "Symbol mode: SINGLE(1), MANUAL MULTI(2), NIFTY50 UNIVERSE(3)? [default 3]: ",
         [
@@ -488,6 +493,10 @@ session_log_path = None
 
 try:
     log_event("Starting Algo Bot...\n")
+    log_event("[SETUP] Choose your data provider - this determines where market data comes from")
+    log_event("[SETUP]   YFINANCE: Free, no authentication needed, good for testing")
+    log_event("[SETUP]   KITE: Live data from Zerodha, requires API credentials")
+    log_event("[SETUP]   UPSTOX: Live data from Upstox, requires API credentials")
 
     data_provider = prompt_choice(
         "Data provider: YFINANCE(1), KITE(2), UPSTOX(3)? [default 1]: ",
@@ -501,16 +510,24 @@ try:
     set_data_provider(data_provider)
     log_event(f"[MAIN] Data provider selected: {data_provider}")
 
+    log_event("[SETUP] Choose execution mode - CRITICAL SAFETY SETTING")
+    log_event("[SETUP]   PAPER: Simulates trading, NO real orders placed")
+    log_event("[SETUP]   LIVE: Places REAL orders with your broker - USE WITH CAUTION")
+
     execution_mode = prompt_choice(
-        "Execution mode: PAPER(1) or LIVE(9)? [default 1]: ",
+        "Execution mode: PAPER(1) or LIVE(9)? [default 9]: ",
         [
             {"label": "PAPER", "key": 1, "value": "PAPER"},
             {"label": "LIVE", "key": 9, "value": "LIVE"},
         ],
-        default=1,
+        default=9,
     )
     set_execution_mode(execution_mode)
     log_event(f"[MAIN] Execution mode selected: {execution_mode}")
+
+    log_event("[SETUP] Choose your broker for order execution")
+    log_event("[SETUP]   KITE: Zerodha's trading platform")
+    log_event("[SETUP]   UPSTOX: Upstox trading platform")
 
     execution_provider = prompt_choice(
         "Execution provider: KITE(1) or UPSTOX(2)? [default 1]: ",
@@ -523,6 +540,10 @@ try:
     set_execution_provider(execution_provider)
     log_event(f"[MAIN] Execution provider selected: {execution_provider}")
 
+    log_event("[SETUP] Choose trading engine - determines trading style and timeframe")
+    log_event("[SETUP]   INTRADAY EQUITY: 1-minute data, MIS product, 9:15-15:30, auto square-off")
+    log_event("[SETUP]   DELIVERY EQUITY: Daily data, CNC product, long-term holding")
+
     engine_choice = prompt_choice(
         "Engine: INTRADAY EQUITY(1) or DELIVERY EQUITY(2)? [default 1]: ",
         [
@@ -532,8 +553,17 @@ try:
         default=1,
     )
 
+    log_event("[SETUP] Enter your trading capital - this is the maximum amount the bot can risk")
+    log_event("[SETUP]   For PAPER mode: Use any amount for simulation")
+    log_event("[SETUP]   For LIVE mode: Use amount you're comfortable losing")
+
     capital = prompt_float("Enter capital for strategy: ", minimum=1)
     selected_symbols, symbol_mode = prompt_symbol_selection()
+
+    log_event("[SETUP] Choose risk style - affects stop-loss distance and position sizing")
+    log_event("[SETUP]   CONSERVATIVE: 1.5x ATR stops, 0.5% risk per trade, safer but fewer trades")
+    log_event("[SETUP]   BALANCED: 2.0x ATR stops, 1.0% risk per trade, good balance")
+    log_event("[SETUP]   AGGRESSIVE: 2.5x ATR stops, 1.5% risk per trade, higher risk/reward")
 
     risk_style_key = prompt_choice(
         (
@@ -562,6 +592,10 @@ try:
         trailing_percent=trailing_percent,
     )
     if engine.name == "delivery_equity":
+        log_event("[SETUP] Delivery equity settings - for long-term CNC positions")
+        log_event("[SETUP]   Max portfolio allocation per symbol: Maximum % of capital per stock")
+        log_event("[SETUP]   Example: 25% means no single stock can exceed 25% of your capital")
+
         max_symbol_allocation = prompt_float(
             "Max portfolio allocation per delivery symbol % [default 25]: ",
             default=25,
@@ -586,11 +620,20 @@ try:
         )
     )
 
+    log_event("[SETUP] Position limits - control how many concurrent trades")
+    log_event("[SETUP]   Max open positions: How many stocks can be traded simultaneously")
+    log_event("[SETUP]   Higher = more diversification, but more capital needed")
+
     max_open_positions = prompt_int(
         "Max open positions [default 1]: ",
         default=1,
         minimum=1,
     )
+
+    log_event("[SETUP] Capital limits per trade - controls individual position size")
+    log_event("[SETUP]   Max capital per trade: Maximum amount to risk on any single stock")
+    log_event("[SETUP]   Lower = more conservative, higher = larger positions")
+
     default_max_capital_per_trade = capital / max_open_positions
     max_capital_per_trade = prompt_float(
         (
@@ -601,12 +644,22 @@ try:
         minimum=1,
         maximum=capital,
     )
+
+    log_event("[SETUP] Total capital deployment - overall portfolio exposure")
+    log_event("[SETUP]   Max capital deployed: Total amount that can be invested across all positions")
+    log_event("[SETUP]   Usually set to your total capital amount")
+
     max_capital_deployed = prompt_float(
         f"Max capital deployed [default {capital:.2f}]: ",
         default=capital,
         minimum=1,
         maximum=capital,
     )
+
+    log_event("[SETUP] Trading frequency - controls how often to trade each stock")
+    log_event("[SETUP]   One trade per symbol per day: YES = only 1 trade per stock daily")
+    log_event("[SETUP]   One trade per symbol per day: NO = can trade same stock multiple times")
+
     one_trade_per_symbol_per_day = prompt_choice(
         "One trade per symbol per day? YES(1) or NO(2) [default 1]: ",
         [
@@ -615,29 +668,52 @@ try:
         ],
         default=1,
     ) == "YES"
-    entry_selection_mode = prompt_choice(
-        "Entry selection: TOP 1(1) or TOP N(2)? [default 2]: ",
-        [
-            {"label": "TOP 1", "key": 1, "value": "TOP1"},
-            {"label": "TOP N", "key": 2, "value": "TOPN"},
-        ],
-        default=2,
-    )
-    top_n_count = 1
-    if entry_selection_mode == "TOPN":
-        default_top_n = min(5, max_open_positions)
-        top_n_count = prompt_int(
-            f"Enter N for TOP N entries [default {default_top_n}]: ",
-            default=default_top_n,
-            minimum=1,
-            maximum=max_open_positions,
+    
+    # Auto-select TOP1 for SINGLE mode (only 1 symbol, so TOP N is irrelevant)
+    if symbol_mode == "SINGLE":
+        entry_selection_mode = "TOP1"
+        top_n_count = 1
+        log_event("[MAIN] Single mode detected - entry selection auto-set to TOP 1")
+    else:
+        log_event("[SETUP] Entry selection - how many top-ranked candidates to trade")
+        log_event("[SETUP]   TOP 1: Only enter the highest-ranked signal")
+        log_event("[SETUP]   TOP N: Enter the top N highest-ranked signals")
+
+        entry_selection_mode = prompt_choice(
+            "Entry selection: TOP 1(1) or TOP N(2)? [default 2]: ",
+            [
+                {"label": "TOP 1", "key": 1, "value": "TOP1"},
+                {"label": "TOP N", "key": 2, "value": "TOPN"},
+            ],
+            default=2,
         )
+        top_n_count = 1
+        if entry_selection_mode == "TOPN":
+            default_top_n = min(5, max_open_positions)
+            top_n_count = prompt_int(
+                f"Enter N for TOP N entries [default {default_top_n}]: ",
+                default=default_top_n,
+                minimum=1,
+                maximum=max_open_positions,
+            )
+
+    log_event("[SETUP] Strategy mode - how the bot generates trading signals")
+    log_event("[SETUP]   Single: Use one specific strategy (MA, RSI, BREAKOUT, VWAP, ORB)")
+    log_event("[SETUP]   Multi: Use multiple strategies with agreement confirmation")
+    log_event("[SETUP]   Auto Adaptive: Automatically choose strategy based on market conditions")
 
     if engine.name == "intraday_equity":
-        mode_prompt = "Select Mode: 1 (Single) / 2 (Multi) / 3 (Auto Adaptive): "
+        mode_prompt = "Select Mode: 1 (Single) / 2 (Multi) / 3 (Auto Adaptive) [default 3]: "
+        default_mode = "3"
     else:
-        mode_prompt = "Select Mode: 1 (Single) / 2 (Multi): "
+        mode_prompt = "Select Mode: 1 (Single) / 2 (Multi) [default 1]: "
+        default_mode = "1"
     mode = input(mode_prompt).strip()
+    
+    if not mode:
+        mode = default_mode
+        if engine.name == "intraday_equity" and default_mode == "3":
+            log_event("[MAIN] Using Auto Adaptive strategy as default for intraday_equity")
 
     if mode == "1":
         choices = [
@@ -672,6 +748,10 @@ try:
         strategies = None
         min_confirmations = None
         log_event("[MAIN] Strategy mode selected: AUTO ADAPTIVE")
+        log_event("[MAIN] Auto Adaptive mode will dynamically select strategies based on market conditions")
+        log_event("[MAIN]   - Gap Up: Uses ORB strategy")
+        log_event("[MAIN]   - Gap Down: Uses RSI/BREAKOUT strategy")
+        log_event("[MAIN]   - Normal: Uses MA strategy with VWAP bias")
 
     else:
         log_event("Invalid mode. Exiting.", "error")
