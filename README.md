@@ -155,6 +155,7 @@ Both engines manage positions with:
 - **Target Exit**: Closes position at calculated profit target (when enabled)
 - **Reversal Exit**: Closes existing position and enters opposite direction on new signal
 - **Deployment Caps**: Control maximum open positions and capital allocation
+- **End-of-session stats**: At shutdown the bot logs capital deployed, reserve capital, open position values, and unrealized P/L for analysis
 
 ## Running the Bot
 

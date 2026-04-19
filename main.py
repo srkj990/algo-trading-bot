@@ -385,6 +385,62 @@ def log_ranked_candidates(candidates):
         )
 
 
+def summarize_execution_stats(engine, capital, positions):
+    deployed_capital = get_deployed_capital(positions)
+    open_count = len(positions)
+
+    log_event("[STATS] Execution summary:")
+    log_event(f"[STATS] Starting capital: {capital:.2f}")
+    log_event(f"[STATS] Open positions: {open_count}")
+    log_event(f"[STATS] Deployed capital (entry exposure): {deployed_capital:.2f}")
+    log_event(f"[STATS] Capital reserve estimate: {max(0.0, capital - deployed_capital):.2f}")
+
+    if open_count == 0:
+        log_event("[STATS] No open positions to evaluate for unrealized P/L")
+        return
+
+    total_market_value = 0.0
+    total_unrealized = 0.0
+    for symbol, position in positions.items():
+        try:
+            data = get_data(
+                symbol,
+                period=engine.data_period,
+                interval=engine.data_interval,
+            )
+        except Exception as exc:
+            log_event(
+                f"[STATS] Could not fetch latest data for {symbol}: {exc}",
+                "warning",
+            )
+            continue
+
+        if data.empty:
+            log_event(f"[STATS] No latest data for {symbol}, skipping P/L calculation", "warning")
+            continue
+
+        latest_close = float(data.iloc[-1]["Close"])
+        market_value = latest_close * position["quantity"]
+        total_market_value += market_value
+
+        if position["side"] == "BUY":
+            pnl = (latest_close - position["entry_price"]) * position["quantity"]
+        else:
+            pnl = (position["entry_price"] - latest_close) * position["quantity"]
+
+        total_unrealized += pnl
+        log_event(
+            (
+                f"[STATS] {symbol} {position['side']} qty={position['quantity']} "
+                f"entry={position['entry_price']:.2f} last={latest_close:.2f} "
+                f"market_value={market_value:.2f} pnl={pnl:.2f}"
+            )
+        )
+
+    log_event(f"[STATS] Total market value of open positions: {total_market_value:.2f}")
+    log_event(f"[STATS] Total unrealized P/L: {total_unrealized:.2f}")
+
+
 def force_square_off_positions(engine, positions):
     if not positions:
         return False
@@ -1170,6 +1226,12 @@ except Exception as exc:
     logger.exception("[MAIN] Unhandled exception")
     raise
 finally:
+    if "positions" in locals() and "engine" in locals() and "capital" in locals():
+        try:
+            summarize_execution_stats(engine, capital, positions)
+        except Exception as exc:
+            log_event(f"[STATS] Failed to generate summary: {exc}", "warning")
+
     session_log_path = finalize_session_logger()
     if session_log_path:
         print(f"[LOG] Session log saved to {session_log_path}")
