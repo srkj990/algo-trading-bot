@@ -39,12 +39,23 @@ def _get_kite_client():
     return _kite_client
 
 
+def _parse_symbol_exchange(symbol):
+    if not symbol:
+        raise ValueError("Symbol is required")
+
+    if ":" in symbol:
+        exchange, tradingsymbol = symbol.split(":", 1)
+        return exchange.upper(), tradingsymbol.replace(".NS", "")
+
+    return "NSE", symbol.replace(".NS", "")
+
+
 def _get_kite_instrument(symbol):
-    tradingsymbol = symbol.replace(".NS", "")
-    cache_key = f"NSE:{tradingsymbol}"
+    exchange, tradingsymbol = _parse_symbol_exchange(symbol)
+    cache_key = f"{exchange}:{tradingsymbol}"
     if cache_key not in _kite_instruments_cache:
         kite = _get_kite_client()
-        instruments = kite.instruments("NSE")
+        instruments = kite.instruments(exchange)
         for item in instruments:
             key = f"{item['exchange']}:{item['tradingsymbol']}"
             _kite_instruments_cache[key] = item
@@ -136,13 +147,22 @@ def place_order(signal, quantity, symbol, note=None, product="MIS"):
 
 def _place_order_kite(signal, quantity, symbol, product):
     kite = _get_kite_client()
-    tradingsymbol = symbol.replace(".NS", "")
+    exchange, tradingsymbol = _parse_symbol_exchange(symbol)
     transaction_type = (
         kite.TRANSACTION_TYPE_BUY if signal == "BUY" else kite.TRANSACTION_TYPE_SELL
     )
+    exchange_map = {
+        "NSE": kite.EXCHANGE_NSE,
+        "BSE": kite.EXCHANGE_BSE,
+        "NFO": kite.EXCHANGE_NFO,
+        "BFO": kite.EXCHANGE_BFO,
+    }
+    kite_exchange = exchange_map.get(exchange)
+    if kite_exchange is None:
+        raise ValueError(f"Unsupported Kite exchange for order placement: {exchange}")
     return kite.place_order(
         variety=kite.VARIETY_REGULAR,
-        exchange=kite.EXCHANGE_NSE,
+        exchange=kite_exchange,
         tradingsymbol=tradingsymbol,
         transaction_type=transaction_type,
         quantity=quantity,
@@ -189,6 +209,50 @@ def get_delivery_holdings():
     if EXECUTION_PROVIDER == "UPSTOX":
         return _get_delivery_holdings_upstox()
     raise ValueError(f"Unsupported execution provider: {EXECUTION_PROVIDER}")
+
+
+def get_nfo_positions():
+    if EXECUTION_PROVIDER == "KITE":
+        return _get_nfo_positions_kite()
+    if EXECUTION_PROVIDER == "UPSTOX":
+        return _get_nfo_positions_upstox()
+    raise ValueError(f"Unsupported execution provider: {EXECUTION_PROVIDER}")
+
+
+def _get_nfo_positions_kite():
+    kite = _get_kite_client()
+    response = kite.positions()
+    positions = []
+    for item in response.get("net", []):
+        tradingsymbol = item.get("tradingsymbol")
+        if not tradingsymbol:
+            continue
+        exchange = (item.get("exchange") or "").upper()
+        if exchange != "NFO" and not tradingsymbol.upper().endswith(("FUT", "CE", "PE")):
+            continue
+
+        quantity = int(item.get("quantity") or item.get("net_quantity") or 0)
+        if quantity == 0:
+            continue
+
+        positions.append(
+            {
+                "exchange": exchange,
+                "tradingsymbol": tradingsymbol,
+                "quantity": quantity,
+                "average_price": float(
+                    item.get("average_price") or item.get("buy_price") or 0
+                ),
+                "product": item.get("product"),
+            }
+        )
+    return positions
+
+
+def _get_nfo_positions_upstox():
+    raise NotImplementedError(
+        "Upstox NFO position retrieval is not implemented."
+    )
 
 
 def _get_intraday_positions_kite():

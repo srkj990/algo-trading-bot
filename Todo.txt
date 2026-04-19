@@ -12,3 +12,131 @@ Exit conditions
 
 
 add trade management
+
+
+
+## ✅ Best Strategy to Add F&O Support
+
+To extend this repo for F&O, build the new capability in layers:
+
+### 1. Add F&O Data & Market Context
+- Support option chain and futures price data
+- Add contract metadata:
+  - lot size
+  - expiry date
+  - strike price
+  - option type (CE/PE)
+  - underlying symbol
+- Add Greeks and volatility:
+  - delta, gamma, theta, vega, rho
+  - implied volatility
+- Add time/expiry filters:
+  - nearest monthly/weekly expiry
+  - weekly contract handling
+
+### 2. Extend Symbol Definitions
+- Add new symbol tables for F&O eligible underlyings
+- Map underlying → available futures/options contracts
+- Keep separate `FNO_UNIVERSE` or `FNO_SYMBOL_TABLE`
+- Support both `SINGLE`, `MANUAL_MULTI`, `UNIVERSE` for F&O
+
+### 3. Add F&O-Specific Risk Management
+- Track notional exposure, margin, and leverage
+- Use lot-based sizing, not share count
+- Compute position risk using:
+  - Greeks
+  - premium paid/received
+  - maximum loss scenarios
+- Add product rules:
+  - MIS/Future intraday
+  - NRML/CNC for futures/options
+- Enforce max exposure / max margin per symbol
+
+### 4. Update Execution Layer
+- Extend executor.py for F&O order types:
+  - FUT, CE, PE products
+  - MIS vs NRML contracts
+  - bracket orders / SL orders for options
+- Add contract lookup and token mapping for broker API
+- Handle order quantity as `lots × lot_size`
+
+### 5. Build F&O Strategy Modules
+- Start with simple strategies:
+  - Futures trend following
+  - Option premium selling / credit spreads
+  - Straddle/strangle around volatility events
+  - Delta-neutral hedges
+- Add F&O-specific signals:
+  - open interest momentum
+  - IV rank / IV percentile
+  - roll yield
+  - put-call ratio
+  - gamma scalping
+- Reuse existing signal framework where possible, but extend to contract-level logic.
+
+### 6. Add Backtesting for F&O
+- Extend backtesting.py to support futures/options contract pricing
+- Simulate:
+  - expiry rollover
+  - premium decay
+  - margin and funding cost
+  - lot-based P/L
+- Add contract-level history and synthetic underlying mapping
+
+### 7. Add F&O-Specific Analysis Data
+- Historical IV surface
+- Option chain analytics per expiry
+- Open interest and volume by strike
+- Greeks and expected move
+- Volatility surface shift analysis
+
+### 8. Improve State / Logging
+- Track contract expiry and roll dates
+- Persist F&O positions with:
+  - contract symbol
+  - lot size
+  - expiry
+  - greeks at entry
+- Log F&O-specific exits and margin events
+
+### 9. Keep Safety & Isolation
+- Add a separate `fno` engine module:
+  - `engines/futures_equity.py`
+  - `engines/options_equity.py`
+- Keep F&O logic isolated from existing equity engines
+- Add `FNO` as a new execution mode or separate workflow
+
+### 10. Roadmap Recommendation
+1. Create F&O data fetcher and contract model
+2. Add F&O symbol tables and lot-size config
+3. Add F&O risk sizing and margin-aware sizing
+4. Add an F&O executor wrapper for broker contract orders
+5. Add a simple futures strategy first
+6. Then add options strategies once data + execution are stable
+7. Add backtesting support for futures/options last
+
+---
+
+## 🔧 Minimum Required Additions
+
+- `fno_data_fetcher.py`
+- `fno_symbol_tables` in config.py
+- `fno` engine(s) in engines
+- executor.py contract order support
+- `risk_manager` extension for lot-based sizing
+- backtesting.py support for futures/options
+- README.md F&O docs and limitations
+
+---
+
+## 💡 Practical First Target
+
+Start with:
+- **Nifty futures**
+- **BankNifty futures**
+- A single options strategy like:
+  - ATM short strangle
+  - Iron condor
+  - Futures breakout
+
+This gives you a clean expansion path without rewriting core equity logic first.

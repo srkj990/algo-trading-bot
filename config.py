@@ -239,6 +239,21 @@ NIFTY50_SYMBOLS = [
     "WIPRO.NS",
 ]
 
+# F&O underlyings. The broker tradingsymbol may differ from the display name.
+FNO_UNDERLYING_DETAILS = {
+    "NIFTY": {
+        "display_name": "NIFTY 50",
+        "derivatives_exchange": "NFO",
+        "spot_quote_symbol": "NSE:NIFTY 50",
+    },
+    "SENSEX": {
+        "display_name": "SENSEX",
+        "derivatives_exchange": "BFO",
+        "spot_quote_symbol": "BSE:SENSEX",
+    },
+}
+FNO_INDEX_SYMBOLS = list(FNO_UNDERLYING_DETAILS)
+
 # Manual symbol table for quick daily selection.
 # Update this table whenever you want your own watchlist shortcuts.
 MANUAL_SYMBOL_TABLE = {

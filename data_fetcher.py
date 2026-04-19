@@ -46,10 +46,18 @@ def get_data(symbol, period="1d", interval="1m", provider=None):
     )
 
     if active_provider == "YFINANCE":
+        if symbol.upper().startswith("NFO:"):
+            raise ValueError(
+                "YFINANCE does not support F&O symbols. Use KITE data provider for F&O."
+            )
         data = _get_data_yfinance(symbol, period, interval)
     elif active_provider == "KITE":
         data = _get_data_kite(symbol, period, interval)
     elif active_provider == "UPSTOX":
+        if symbol.upper().startswith("NFO:"):
+            raise ValueError(
+                "Upstox F&O data is not supported yet. Use KITE for F&O."
+            )
         data = _get_data_upstox(symbol, period, interval)
     else:
         raise ValueError(f"Unsupported data provider: {active_provider}")
@@ -88,12 +96,23 @@ def _get_kite_client():
     return _kite_client
 
 
+def _parse_symbol_exchange(symbol):
+    if not symbol:
+        raise ValueError("Symbol is required")
+
+    if ":" in symbol:
+        exchange, tradingsymbol = symbol.split(":", 1)
+        return exchange.upper(), tradingsymbol.replace(".NS", "")
+
+    return "NSE", symbol.replace(".NS", "")
+
+
 def _get_kite_instrument_token(symbol):
-    tradingsymbol = symbol.replace(".NS", "")
-    cache_key = f"NSE:{tradingsymbol}"
+    exchange, tradingsymbol = _parse_symbol_exchange(symbol)
+    cache_key = f"{exchange}:{tradingsymbol}"
     if cache_key not in _kite_instruments_cache:
         kite = _get_kite_client()
-        instruments = kite.instruments("NSE")
+        instruments = kite.instruments(exchange)
         for item in instruments:
             key = f"{item['exchange']}:{item['tradingsymbol']}"
             _kite_instruments_cache[key] = item["instrument_token"]

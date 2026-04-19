@@ -309,7 +309,16 @@ ONLY_MANAGE_CONFIGURED_SYMBOLS = True  # Default: True (safe)
 ### Trading Engines
 - [engines/intraday_equity.py](engines/intraday_equity.py) - Intraday trading engine (1-minute, MIS product, 9:15-15:30)
 - [engines/delivery_equity.py](engines/delivery_equity.py) - Delivery trading engine (daily candles, CNC product, long-only)
+- [engines/futures_equity.py](engines/futures_equity.py) - Futures engine for intraday F&O contracts on NIFTY 50 and SENSEX
+- [engines/options_equity.py](engines/options_equity.py) - Options engine for NIFTY 50 and SENSEX contracts with shared strategy flow
 - [engines/common.py](engines/common.py) - Shared utilities for position management and exit evaluation
+
+### F&O Support
+- `fno_data_fetcher.py` - Kite-based F&O contract resolution using instrument metadata, expiry picker, ATM strike helper, and exchange-aware lookup for NIFTY 50 and SENSEX
+- `executor_fno.py` - F&O execution helper using Kite derivatives orders and broker position retrieval
+- `main.py` supports dedicated expiry selection for NIFTY 50 and SENSEX futures/options
+- SENSEX derivatives are routed through the BFO exchange and NIFTY 50 derivatives through NFO
+- F&O options selection includes nearest expiry default and ATM-like strike suggestion from live spot quotes
 
 ### State & Configuration
 - [config.py](config.py) - Broker configuration, symbol lists, environment loading

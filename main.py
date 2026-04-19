@@ -8,7 +8,21 @@ from config import (
     SINGLE_SYMBOL_TABLE,
 )
 from data_fetcher import get_data, set_data_provider
-from engines import DeliveryEquityEngine, IntradayEquityEngine
+from engines import (
+    DeliveryEquityEngine,
+    FuturesEquityEngine,
+    IntradayEquityEngine,
+    OptionsEquityEngine,
+)
+from fno_data_fetcher import (
+    FNO_INDEX_SYMBOLS,
+    get_atm_option_strike,
+    get_available_expiries,
+    get_available_option_strikes,
+    get_fno_display_name,
+    resolve_futures_contract,
+    resolve_option_contract,
+)
 from engines.common import (
     apply_capital_limits_to_quantity,
     build_position,
@@ -75,6 +89,8 @@ DEFAULT_CONFIRMATIONS = {
 ENGINE_OPTIONS = {
     "1": IntradayEquityEngine,
     "2": DeliveryEquityEngine,
+    "3": FuturesEquityEngine,
+    "4": OptionsEquityEngine,
 }
 
 
@@ -282,6 +298,126 @@ def prompt_symbol_selection():
         f"[MAIN] Using NIFTY50 universe with {len(NIFTY50_SYMBOLS)} symbols"
     )
     return list(NIFTY50_SYMBOLS), symbol_mode
+
+
+def prompt_fno_base_symbols(engine_name):
+    log_event("[SETUP] F&O underlying selection - choose your derivatives universe")
+    for index, symbol in enumerate(FNO_INDEX_SYMBOLS, start=1):
+        log_event(f"[SETUP]   {get_fno_display_name(symbol)} ({index})")
+
+    if engine_name == "futures_equity":
+        return prompt_choice(
+            "F&O futures universe: NIFTY 50(1), SENSEX(2), BOTH(3) [default 3]: ",
+            [
+                {"label": get_fno_display_name(FNO_INDEX_SYMBOLS[0]), "key": 1, "value": FNO_INDEX_SYMBOLS[0]},
+                {"label": get_fno_display_name(FNO_INDEX_SYMBOLS[1]), "key": 2, "value": FNO_INDEX_SYMBOLS[1]},
+                {"label": "BOTH", "key": 3, "value": "BOTH"},
+            ],
+            default=3,
+        )
+
+    return prompt_choice(
+        "F&O options underlying: " + ", ".join(
+            f"{get_fno_display_name(symbol)}({i})"
+            for i, symbol in enumerate(FNO_INDEX_SYMBOLS, start=1)
+        ) + " [default 1]: ",
+        [
+            {"label": get_fno_display_name(symbol), "key": i, "value": symbol}
+            for i, symbol in enumerate(FNO_INDEX_SYMBOLS, start=1)
+        ],
+        default=1,
+    )
+
+
+def prompt_fno_expiry_selection(base_symbol, instrument_type):
+    expiries = get_available_expiries(base_symbol, instrument_type=instrument_type)
+    if not expiries:
+        raise RuntimeError(
+            f"No active {instrument_type} expiries found for {get_fno_display_name(base_symbol)}."
+        )
+
+    log_event(f"[SETUP] Available expiries for {get_fno_display_name(base_symbol)}:")
+    for idx, expiry in enumerate(expiries, start=1):
+        log_event(f"[SETUP]   {idx}. {expiry}")
+
+    log_event("[SETUP] Choose expiry or press Enter to use the nearest available expiry")
+    expiry_choice = prompt_int(
+        f"Choose expiry [default 1]: ",
+        default=1,
+        minimum=1,
+        maximum=len(expiries),
+    )
+    return expiries[expiry_choice - 1]
+
+
+def prompt_fno_option_contract_selection(base_symbol):
+    expiry = prompt_fno_expiry_selection(base_symbol, instrument_type="OPT")
+    option_type = prompt_choice(
+        "Option type: CE(1) or PE(2)? [default 1]: ",
+        [
+            {"label": "CE", "key": 1, "value": "CE"},
+            {"label": "PE", "key": 2, "value": "PE"},
+        ],
+        default=1,
+    )
+    strikes = get_available_option_strikes(base_symbol, expiry, option_type)
+    if not strikes:
+        raise RuntimeError(
+            f"No {option_type} strikes found for {get_fno_display_name(base_symbol)} {expiry}."
+        )
+
+    log_event(f"[SETUP] Available strikes for {get_fno_display_name(base_symbol)}:")
+    strikes_to_show = strikes[:8] if len(strikes) <= 8 else strikes[:5] + ["..."] + strikes[-3:]
+    log_event(f"[SETUP]   {strikes_to_show}")
+    log_event("[SETUP] Press Enter to use the ATM-like default strike")
+
+    default_strike = get_atm_option_strike(base_symbol, expiry, option_type)
+    while True:
+        raw = input(f"Enter strike price [default {default_strike}]: ").strip()
+        if not raw:
+            strike = default_strike
+        else:
+            try:
+                strike = int(raw)
+            except ValueError:
+                log_event("[INPUT] Enter a valid strike price.", "warning")
+                continue
+
+        if strike in strikes:
+            break
+
+        log_event(
+            (
+                f"[INPUT] Strike {strike} is not available for "
+                f"{get_fno_display_name(base_symbol)} {expiry} {option_type}."
+            ),
+            "warning",
+        )
+
+    contract = resolve_option_contract(base_symbol, expiry, strike, option_type)
+    log_event(
+        f"[MAIN] Resolved F&O option contract for "
+        f"{get_fno_display_name(base_symbol)}: {contract}"
+    )
+    return [contract], "FNO"
+
+
+def prompt_fno_contract_selection(engine_name):
+    selection = prompt_fno_base_symbols(engine_name)
+    if engine_name == "futures_equity":
+        base_symbols = list(FNO_INDEX_SYMBOLS) if selection == "BOTH" else [selection]
+        contracts = []
+        for base_symbol in base_symbols:
+            expiry = prompt_fno_expiry_selection(base_symbol, instrument_type="FUT")
+            contract = resolve_futures_contract(base_symbol, expiry)
+            contracts.append(contract)
+            log_event(
+                f"[MAIN] Resolved F&O futures contract for "
+                f"{get_fno_display_name(base_symbol)}: {contract}"
+            )
+        return contracts, "FNO"
+
+    return prompt_fno_option_contract_selection(selection)
 
 
 def prompt_multi_strategy_selection(strategy_options):
@@ -599,12 +735,16 @@ try:
     log_event("[SETUP] Choose trading engine - determines trading style and timeframe")
     log_event("[SETUP]   INTRADAY EQUITY: 1-minute data, MIS product, 9:15-15:30, auto square-off")
     log_event("[SETUP]   DELIVERY EQUITY: Daily data, CNC product, long-term holding")
+    log_event("[SETUP]   FUTURES EQUITY: Index futures on NIFTY 50 and SENSEX via Kite derivatives")
+    log_event("[SETUP]   OPTIONS EQUITY: Index options on NIFTY 50 and SENSEX with ATM strike assist")
 
     engine_choice = prompt_choice(
-        "Engine: INTRADAY EQUITY(1) or DELIVERY EQUITY(2)? [default 1]: ",
+        "Engine: INTRADAY EQUITY(1), DELIVERY EQUITY(2), FUTURES EQUITY(3), OPTIONS EQUITY(4)? [default 1]: ",
         [
             {"label": "INTRADAY EQUITY", "key": 1, "value": "1"},
             {"label": "DELIVERY EQUITY", "key": 2, "value": "2"},
+            {"label": "FUTURES EQUITY", "key": 3, "value": "3"},
+            {"label": "OPTIONS EQUITY", "key": 4, "value": "4"},
         ],
         default=1,
     )
@@ -614,7 +754,13 @@ try:
     log_event("[SETUP]   For LIVE mode: Use amount you're comfortable losing")
 
     capital = prompt_float("Enter capital for strategy: ", minimum=1)
-    selected_symbols, symbol_mode = prompt_symbol_selection()
+
+    if engine_choice in {"3", "4"}:
+        selected_symbols, symbol_mode = prompt_fno_contract_selection(
+            ENGINE_OPTIONS[engine_choice].name
+        )
+    else:
+        selected_symbols, symbol_mode = prompt_symbol_selection()
 
     log_event("[SETUP] Choose risk style - affects stop-loss distance and position sizing")
     log_event("[SETUP]   CONSERVATIVE: 1.5x ATR stops, 0.5% risk per trade, safer but fewer trades")
@@ -647,6 +793,7 @@ try:
         target_percent=target_percent,
         trailing_percent=trailing_percent,
     )
+
     if engine.name == "delivery_equity":
         log_event("[SETUP] Delivery equity settings - for long-term CNC positions")
         log_event("[SETUP]   Max portfolio allocation per symbol: Maximum % of capital per stock")
@@ -665,6 +812,27 @@ try:
                 f"Max symbol allocation={max_symbol_allocation:.2f}%"
             )
         )
+
+    if engine.name in {"futures_equity", "options_equity"}:
+        if data_provider != "KITE":
+            log_event(
+                "[MAIN] F&O support currently requires KITE data provider. Switching to KITE.",
+                "warning",
+            )
+            set_data_provider("KITE")
+            data_provider = "KITE"
+        if execution_provider != "KITE":
+            log_event(
+                "[MAIN] F&O support currently requires KITE execution provider. Switching to KITE.",
+                "warning",
+            )
+            set_execution_provider("KITE")
+            execution_provider = "KITE"
+        log_event("[SETUP] F&O engines use Kite derivatives contracts and live broker position sync.")
+        log_event(
+            "[SETUP] Supported F&O underlyings in this build: NIFTY 50 and SENSEX."
+        )
+
     log_event(f"[MAIN] Engine selected: {engine.name}")
     log_event(
         (
