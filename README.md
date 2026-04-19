@@ -262,18 +262,35 @@ Tradable symbol lists defined in [config.py](config.py):
 2. Get API key, API secret, and set redirect URI to `http://127.0.0.1:8001` (or your port)
 3. Run `python auto_auth.py` to get and store access token
 
-## Dependencies
+## Safety Features
 
-- `pandas` - Data manipulation and analysis
-- `yfinance` - Yahoo Finance data (when using YFINANCE provider)
-- `requests` - HTTP client for API calls
-- `kiteconnect` - Zerodha Kite Connect API client
-- `python-dotenv` - Environment variable management
+### Position Filtering (Critical Safety Feature)
 
-Install with:
-```powershell
-pip install pandas yfinance requests kiteconnect python-dotenv
+**By default, the bot ONLY manages positions that are in your configured symbol tables.**
+
+When running in LIVE mode, the bot will:
+- ✅ **Load and manage** positions that exist in `NIFTY50_SYMBOLS`, `MANUAL_SYMBOL_TABLE`, or `SINGLE_SYMBOL_TABLE`
+- ❌ **Skip and ignore** positions like `GOLDIETF.NS`, `ERNIN.NS`, or any other stocks not in your configured universe
+
+**Configuration:**
+```python
+# In config.py
+ONLY_MANAGE_CONFIGURED_SYMBOLS = True  # Default: True (safe)
 ```
+
+**Set to `False` ONLY if you want the bot to manage ALL positions in your broker account.**
+
+### Execution Mode Safety
+
+- **PAPER Mode**: Simulates trading without touching real positions
+- **LIVE Mode**: Only affects positions in configured symbol tables (when filtering is enabled)
+- **Default to PAPER**: Bot starts in PAPER mode by default
+
+### Broker Integration Safety
+
+- **Position Sync**: Only loads positions from configured symbols
+- **Order Placement**: Only places orders for symbols in your universe
+- **State Persistence**: Saves position state locally for recovery
 
 ## File Structure
 
@@ -304,6 +321,7 @@ pip install pandas yfinance requests kiteconnect python-dotenv
 
 
 
+- **Safety First**: By default, the bot only manages positions in your configured symbol tables (`NIFTY50_SYMBOLS`, `MANUAL_SYMBOL_TABLE`, `SINGLE_SYMBOL_TABLE`). Stocks like `GOLDIETF`, `ERNIN`, etc. are automatically ignored unless you set `ONLY_MANAGE_CONFIGURED_SYMBOLS = False` in `config.py`.
 - YFinance provider does not require broker authentication but needs internet access
 - State files are JSON format and can be manually edited if needed
 - Existing positions without ATR fields will work but new ATR-specific trailing logic only applies to new positions

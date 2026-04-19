@@ -264,3 +264,6 @@ SINGLE_SYMBOL_TABLE = {
 # Logging config
 LOG_FILE = "algo.log"
 LOG_LEVEL = "INFO"
+
+# Safety config
+ONLY_MANAGE_CONFIGURED_SYMBOLS = True  # Set to False to manage ALL broker positions

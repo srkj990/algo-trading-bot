@@ -364,6 +364,9 @@ class IntradayEquityEngine:
             )
             return persisted_positions
 
+        # Import symbol tables and safety config
+        from config import NIFTY50_SYMBOLS, MANUAL_SYMBOL_TABLE, SINGLE_SYMBOL_TABLE, ONLY_MANAGE_CONFIGURED_SYMBOLS
+
         broker_positions = {}
         for item in get_intraday_positions():
             quantity = int(item.get("quantity", 0))
@@ -371,6 +374,23 @@ class IntradayEquityEngine:
                 continue
 
             symbol = f"{item['tradingsymbol']}.NS"
+
+            # SAFETY FILTER: Only manage positions in configured symbol tables (if enabled)
+            if ONLY_MANAGE_CONFIGURED_SYMBOLS:
+                allowed_symbols = set()
+                for table in [NIFTY50_SYMBOLS, MANUAL_SYMBOL_TABLE.values(), SINGLE_SYMBOL_TABLE.values()]:
+                    if isinstance(table, dict):
+                        allowed_symbols.update(table.values())
+                    else:
+                        allowed_symbols.update(table)
+
+                if symbol not in allowed_symbols:
+                    log_event(
+                        f"[RECON] Skipping {symbol} - not in configured symbol tables "
+                        f"(set ONLY_MANAGE_CONFIGURED_SYMBOLS=False in config.py to manage all positions)"
+                    )
+                    continue
+
             side = "BUY" if quantity > 0 else "SELL"
             broker_positions[symbol] = build_position(
                 symbol=symbol,
@@ -383,8 +403,10 @@ class IntradayEquityEngine:
             )
 
         if broker_positions:
+            filter_status = "filtered to configured symbols only" if ONLY_MANAGE_CONFIGURED_SYMBOLS else "all positions"
             log_event(
-                f"[RECON] Loaded {len(broker_positions)} live intraday positions from broker"
+                f"[RECON] Loaded {len(broker_positions)} live intraday positions from broker "
+                f"({filter_status})"
             )
             return broker_positions
 
