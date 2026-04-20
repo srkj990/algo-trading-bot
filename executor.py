@@ -121,7 +121,7 @@ def _upstox_product_constant(product):
     return mapping.get(normalized, "I")
 
 
-def place_order(signal, quantity, symbol, note=None, product="MIS"):
+def place_order(signal, quantity, symbol, note=None, product="MIS", entry_price=None):
     log_event("\n[EXECUTION] Preparing order...")
     log_event(f"[EXECUTION] Provider: {EXECUTION_PROVIDER}")
     log_event(f"[EXECUTION] Symbol: {symbol.replace('.NS', '')}")
@@ -129,6 +129,10 @@ def place_order(signal, quantity, symbol, note=None, product="MIS"):
     log_event(f"[EXECUTION] Quantity: {quantity}")
     log_event(f"[EXECUTION] Mode: {EXECUTION_MODE}")
     log_event(f"[EXECUTION] Product: {(product or 'MIS').upper()}")
+    
+    if entry_price:
+        log_event(f"[EXECUTION] Entry Price: {entry_price:.2f}")
+        log_event(f"[EXECUTION] Entry Value: {entry_price * quantity:.2f}")
 
     if note:
         log_event(f"[EXECUTION] Note: {note}")

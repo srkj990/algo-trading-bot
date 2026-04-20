@@ -14,18 +14,20 @@ def place_fno_order(signal, quantity, symbol, product="NRML", note=None):
     )
 
 
-def get_futures_positions():
+def get_futures_positions(product=None):
     positions = executor.get_nfo_positions()
     futures = []
     for item in positions:
         tradingsymbol = item.get("tradingsymbol")
         if not tradingsymbol or not tradingsymbol.upper().endswith("FUT"):
             continue
+        if product and (item.get("product") or "").upper() != product.upper():
+            continue
         futures.append(item)
     return futures
 
 
-def get_options_positions():
+def get_options_positions(product=None):
     positions = executor.get_nfo_positions()
     options = []
     for item in positions:
@@ -34,5 +36,7 @@ def get_options_positions():
             continue
         upper_symbol = tradingsymbol.upper()
         if upper_symbol.endswith("CE") or upper_symbol.endswith("PE"):
+            if product and (item.get("product") or "").upper() != product.upper():
+                continue
             options.append(item)
     return options

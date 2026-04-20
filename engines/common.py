@@ -12,6 +12,7 @@ def build_position(
     trailing_distance=None,
     atr=None,
     stop_distance=None,
+    **extra_fields,
 ):
     if stop_loss is None or target is None or trailing_stop is None:
         if side == "BUY":
@@ -23,7 +24,7 @@ def build_position(
             target = entry_price * (1 - target_pct / 100)
             trailing_stop = entry_price * (1 + trailing_pct / 100)
 
-    return {
+    position = {
         "symbol": symbol,
         "side": side,
         "quantity": quantity,
@@ -36,6 +37,20 @@ def build_position(
         "stop_distance": stop_distance,
         "trailing_distance": trailing_distance,
     }
+    position.update(extra_fields)
+    return position
+
+
+def merge_persisted_position_state(position, persisted_position):
+    if not persisted_position:
+        return position
+
+    merged = dict(position)
+    for key, value in persisted_position.items():
+        if key in {"symbol", "side", "quantity", "entry_price"}:
+            continue
+        merged[key] = value
+    return merged
 
 
 def update_trailing_stop(position, latest_close, trailing_pct):
@@ -84,21 +99,35 @@ def evaluate_exit(position, latest_candle, include_target=True):
     return None
 
 
-def log_positions(positions, log_event):
+def log_positions(positions, log_event, current_prices=None):
     if not positions:
         log_event("[POSITION] Flat")
         return
 
-    for position in positions.values():
+    for symbol, position in positions.items():
+        current_price = current_prices.get(symbol) if current_prices else position['best_price']
+        
+        # Calculate P&L
+        if position['side'] == 'BUY':
+            pnl_abs = (current_price - position['entry_price']) * position['quantity']
+        else:  # SELL
+            pnl_abs = (position['entry_price'] - current_price) * position['quantity']
+        
+        pnl_pct = (pnl_abs / (position['entry_price'] * position['quantity'])) * 100 if position['entry_price'] > 0 else 0
+        
+        pnl_str = f"P&L={pnl_abs:+.2f} ({pnl_pct:+.2f}%)"
+        
         log_event(
             (
                 f"[POSITION] {position['symbol']} {position['side']} "
                 f"Qty={position['quantity']} "
                 f"Entry={position['entry_price']:.2f} "
+                f"Current={current_price:.2f} "
                 f"SL={position['stop_loss']:.2f} "
                 f"Target={position['target']:.2f} "
                 f"Trail={position['trailing_stop']:.2f} "
-                f"Best={position['best_price']:.2f}"
+                f"Best={position['best_price']:.2f} "
+                f"{pnl_str}"
             )
         )
 
@@ -116,6 +145,14 @@ def get_symbol_deployed_capital(positions, symbol):
         return 0.0
 
     return position["entry_price"] * position["quantity"]
+
+
+def count_open_structures(positions):
+    structure_keys = set()
+    for symbol, position in positions.items():
+        pair_id = position.get("pair_id")
+        structure_keys.add(pair_id or symbol)
+    return len(structure_keys)
 
 
 def apply_capital_limits_to_quantity(

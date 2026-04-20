@@ -177,7 +177,9 @@ class IntradayEquityEngine:
         intraday_df,
         intraday_history_df=None,
         min_confirmations=1,
+        analytics=None,
     ):
+        del analytics
         details = {
             name: {
                 "signal": item["signal"],

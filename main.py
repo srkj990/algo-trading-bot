@@ -11,7 +11,9 @@ from data_fetcher import get_data, set_data_provider
 from engines import (
     DeliveryEquityEngine,
     FuturesEquityEngine,
+    IntradayFuturesEngine,
     IntradayEquityEngine,
+    IntradayOptionsEngine,
     OptionsEquityEngine,
 )
 from fno_data_fetcher import (
@@ -19,13 +21,16 @@ from fno_data_fetcher import (
     get_atm_option_strike,
     get_available_expiries,
     get_available_option_strikes,
+    get_contract_lot_size,
     get_fno_display_name,
+    get_option_greeks_snapshot,
     resolve_futures_contract,
     resolve_option_contract,
 )
 from engines.common import (
     apply_capital_limits_to_quantity,
     build_position,
+    count_open_structures,
     get_deployed_capital,
     log_positions,
     update_trailing_stop,
@@ -91,6 +96,8 @@ ENGINE_OPTIONS = {
     "2": DeliveryEquityEngine,
     "3": FuturesEquityEngine,
     "4": OptionsEquityEngine,
+    "5": IntradayFuturesEngine,
+    "6": IntradayOptionsEngine,
 }
 
 
@@ -305,7 +312,7 @@ def prompt_fno_base_symbols(engine_name):
     for index, symbol in enumerate(FNO_INDEX_SYMBOLS, start=1):
         log_event(f"[SETUP]   {get_fno_display_name(symbol)} ({index})")
 
-    if engine_name == "futures_equity":
+    if "futures" in engine_name:
         return prompt_choice(
             "F&O futures universe: NIFTY 50(1), SENSEX(2), BOTH(3) [default 3]: ",
             [
@@ -350,6 +357,44 @@ def prompt_fno_expiry_selection(base_symbol, instrument_type):
     return expiries[expiry_choice - 1]
 
 
+def prompt_option_strike_value(base_symbol, expiry, option_type, label):
+    strikes = get_available_option_strikes(base_symbol, expiry, option_type)
+    if not strikes:
+        raise RuntimeError(
+            f"No {option_type} strikes found for {get_fno_display_name(base_symbol)} {expiry}."
+        )
+
+    default_strike = get_atm_option_strike(base_symbol, expiry, option_type)
+    log_event(
+        f"[SETUP] {label} strikes for {get_fno_display_name(base_symbol)} {option_type}:"
+    )
+    strikes_to_show = strikes[:8] if len(strikes) <= 8 else strikes[:5] + ["..."] + strikes[-3:]
+    log_event(f"[SETUP]   {strikes_to_show}")
+    log_event(f"[SETUP] ATM reference strike: {default_strike}")
+
+    while True:
+        raw = input(f"Enter {label} strike [default {default_strike}]: ").strip()
+        if not raw:
+            strike = default_strike
+        else:
+            try:
+                strike = int(raw)
+            except ValueError:
+                log_event("[INPUT] Enter a valid strike price.", "warning")
+                continue
+
+        if strike in strikes:
+            return strike
+
+        log_event(
+            (
+                f"[INPUT] Strike {strike} is not available for "
+                f"{get_fno_display_name(base_symbol)} {expiry} {option_type}."
+            ),
+            "warning",
+        )
+
+
 def prompt_fno_option_contract_selection(base_symbol):
     expiry = prompt_fno_expiry_selection(base_symbol, instrument_type="OPT")
     option_type = prompt_choice(
@@ -366,58 +411,200 @@ def prompt_fno_option_contract_selection(base_symbol):
             f"No {option_type} strikes found for {get_fno_display_name(base_symbol)} {expiry}."
         )
 
+    default_strike = get_atm_option_strike(base_symbol, expiry, option_type)
     log_event(f"[SETUP] Available strikes for {get_fno_display_name(base_symbol)}:")
     strikes_to_show = strikes[:8] if len(strikes) <= 8 else strikes[:5] + ["..."] + strikes[-3:]
     log_event(f"[SETUP]   {strikes_to_show}")
-    log_event("[SETUP] Press Enter to use the ATM-like default strike")
+    log_event(f"[SETUP] ATM reference strike: {default_strike}")
 
-    default_strike = get_atm_option_strike(base_symbol, expiry, option_type)
-    while True:
-        raw = input(f"Enter strike price [default {default_strike}]: ").strip()
-        if not raw:
-            strike = default_strike
-        else:
-            try:
-                strike = int(raw)
-            except ValueError:
-                log_event("[INPUT] Enter a valid strike price.", "warning")
-                continue
+    strike_mode = prompt_choice(
+        "Strike selection: ATM(1), OTM offset(2), ITM offset(3), MANUAL(4)? [default 1]: ",
+        [
+            {"label": "ATM", "key": 1, "value": "ATM"},
+            {"label": "OTM OFFSET", "key": 2, "value": "OTM"},
+            {"label": "ITM OFFSET", "key": 3, "value": "ITM"},
+            {"label": "MANUAL", "key": 4, "value": "MANUAL"},
+        ],
+        default=1,
+    )
 
-        if strike in strikes:
-            break
-
-        log_event(
-            (
-                f"[INPUT] Strike {strike} is not available for "
-                f"{get_fno_display_name(base_symbol)} {expiry} {option_type}."
-            ),
-            "warning",
+    if strike_mode in {"OTM", "ITM"}:
+        atm_index = strikes.index(default_strike)
+        step_count = prompt_int(
+            "Number of strike steps from ATM [default 1]: ",
+            default=1,
+            minimum=1,
         )
+        direction = 1 if strike_mode == "OTM" else -1
+        if option_type == "PE":
+            direction *= -1
+        selected_index = max(0, min(len(strikes) - 1, atm_index + (direction * step_count)))
+        strike = strikes[selected_index]
+        log_event(
+            f"[MAIN] Selected {strike_mode} strike {strike} from ATM {default_strike}"
+        )
+    elif strike_mode == "ATM":
+        strike = default_strike
+        log_event(f"[MAIN] Selected ATM strike {strike}")
+    else:
+        log_event("[SETUP] Press Enter to use the ATM-like default strike")
+        strike = default_strike
+        while True:
+            raw = input(f"Enter strike price [default {default_strike}]: ").strip()
+            if not raw:
+                strike = default_strike
+            else:
+                try:
+                    strike = int(raw)
+                except ValueError:
+                    log_event("[INPUT] Enter a valid strike price.", "warning")
+                    continue
+
+            if strike in strikes:
+                break
+
+            log_event(
+                (
+                    f"[INPUT] Strike {strike} is not available for "
+                    f"{get_fno_display_name(base_symbol)} {expiry} {option_type}."
+                ),
+                "warning",
+            )
 
     contract = resolve_option_contract(base_symbol, expiry, strike, option_type)
+    lot_size = get_contract_lot_size(contract)
     log_event(
         f"[MAIN] Resolved F&O option contract for "
-        f"{get_fno_display_name(base_symbol)}: {contract}"
+        f"{get_fno_display_name(base_symbol)}: {contract} | Lot size={lot_size}"
     )
     return [contract], "FNO"
 
 
+def prompt_fno_option_pair_selection(base_symbol):
+    expiry = prompt_fno_expiry_selection(base_symbol, instrument_type="OPT")
+    lower_pe_strike = prompt_option_strike_value(
+        base_symbol,
+        expiry,
+        "PE",
+        label="Lower PE",
+    )
+    upper_ce_strike = prompt_option_strike_value(
+        base_symbol,
+        expiry,
+        "CE",
+        label="Upper CE",
+    )
+    if lower_pe_strike >= upper_ce_strike:
+        raise RuntimeError(
+            "For a bounded-range pair, the PE strike must be below the CE strike."
+        )
+
+    pe_contract = resolve_option_contract(base_symbol, expiry, lower_pe_strike, "PE")
+    ce_contract = resolve_option_contract(base_symbol, expiry, upper_ce_strike, "CE")
+    pe_lot_size = get_contract_lot_size(pe_contract)
+    ce_lot_size = get_contract_lot_size(ce_contract)
+    if pe_lot_size != ce_lot_size:
+        raise RuntimeError(
+            f"Mismatched lot sizes for pair contracts: {pe_lot_size} vs {ce_lot_size}"
+        )
+
+    pair_id = f"PAIR:{base_symbol}:{expiry}:{lower_pe_strike}:{upper_ce_strike}"
+    log_event(
+        f"[MAIN] Resolved two-leg range pair: {pe_contract} + {ce_contract} | Lot size={pe_lot_size}"
+    )
+    pair_config = {
+        "mode": "TWO_LEG_RANGE",
+        "pair_id": pair_id,
+        "underlying": base_symbol,
+        "expiry": expiry,
+        "lower_strike": lower_pe_strike,
+        "upper_strike": upper_ce_strike,
+        "pe_symbol": pe_contract,
+        "ce_symbol": ce_contract,
+        "symbols": [pe_contract, ce_contract],
+        "entry_side": "SELL",
+    }
+    return [pe_contract, ce_contract], "FNO_PAIR", pair_config
+
+
 def prompt_fno_contract_selection(engine_name):
     selection = prompt_fno_base_symbols(engine_name)
-    if engine_name == "futures_equity":
+    if "futures" in engine_name:
         base_symbols = list(FNO_INDEX_SYMBOLS) if selection == "BOTH" else [selection]
         contracts = []
         for base_symbol in base_symbols:
             expiry = prompt_fno_expiry_selection(base_symbol, instrument_type="FUT")
             contract = resolve_futures_contract(base_symbol, expiry)
+            lot_size = get_contract_lot_size(contract)
             contracts.append(contract)
             log_event(
                 f"[MAIN] Resolved F&O futures contract for "
-                f"{get_fno_display_name(base_symbol)}: {contract}"
+                f"{get_fno_display_name(base_symbol)}: {contract} | Lot size={lot_size}"
             )
-        return contracts, "FNO"
+        return contracts, "FNO", None
 
-    return prompt_fno_option_contract_selection(selection)
+    if engine_name == "intraday_options":
+        structure_mode = prompt_choice(
+            "Options structure: SINGLE OPTION(1) or TWO-LEG RANGE PAIR(2)? [default 1]: ",
+            [
+                {"label": "SINGLE OPTION", "key": 1, "value": "SINGLE"},
+                {"label": "TWO-LEG RANGE PAIR", "key": 2, "value": "PAIR"},
+            ],
+            default=1,
+        )
+        if structure_mode == "PAIR":
+            return prompt_fno_option_pair_selection(selection)
+
+    symbols, symbol_mode = prompt_fno_option_contract_selection(selection)
+    return symbols, symbol_mode, None
+
+
+def log_selected_fno_contract_summary(engine_name, selected_symbols, option_pair_config=None):
+    if not selected_symbols:
+        return
+
+    log_event("[SETUP] Selected F&O contract summary:")
+    for symbol in selected_symbols:
+        lot_size = get_contract_lot_size(symbol)
+        line = f"[SETUP]   {symbol} | Lot size={lot_size}"
+        if "options" in engine_name:
+            try:
+                analytics = get_option_greeks_snapshot(symbol)
+                line += (
+                    f" | Premium={analytics['option_price']:.2f}"
+                    f" | Underlying={analytics['underlying_price']:.2f}"
+                    f" | Delta={analytics['delta']:.3f}"
+                    f" | IV={analytics['iv']:.4f}"
+                    f" | DTE={analytics.get('days_to_expiry', 'N/A')}"
+                )
+            except Exception as exc:
+                line += f" | Greeks unavailable ({exc})"
+        log_event(line)
+
+    if option_pair_config:
+        width = option_pair_config["upper_strike"] - option_pair_config["lower_strike"]
+        log_event(
+            (
+                f"[SETUP]   Structure=TWO_LEG_RANGE | Underlying={option_pair_config['underlying']} "
+                f"| Expiry={option_pair_config['expiry']} | Range="
+                f"{option_pair_config['lower_strike']}-{option_pair_config['upper_strike']} "
+                f"| Width={width}"
+            )
+        )
+
+
+def confirm_selected_fno_contracts(engine_name, selected_symbols, option_pair_config=None):
+    log_selected_fno_contract_summary(engine_name, selected_symbols, option_pair_config)
+    confirmation = prompt_choice(
+        "Continue with these F&O contracts? YES(1) or NO(2) [default 1]: ",
+        [
+            {"label": "YES", "key": 1, "value": "YES"},
+            {"label": "NO", "key": 2, "value": "NO"},
+        ],
+        default=1,
+    )
+    if confirmation != "YES":
+        raise SystemExit("[MAIN] F&O contract selection cancelled by user.")
 
 
 def prompt_multi_strategy_selection(strategy_options):
@@ -477,6 +664,122 @@ def get_cached_regime_context(regime_cache, symbol, trade_day):
     return cached.get("context")
 
 
+def get_pair_symbols(positions, pair_id):
+    return [
+        symbol
+        for symbol, position in positions.items()
+        if position.get("pair_id") == pair_id
+    ]
+
+
+def get_pair_position_metrics(positions, pair_symbols, symbol_snapshots):
+    entry_total = 0.0
+    current_total = 0.0
+    total_pnl = 0.0
+
+    for pair_symbol in pair_symbols:
+        position = positions.get(pair_symbol)
+        snapshot = symbol_snapshots.get(pair_symbol)
+        if not position or not snapshot:
+            return None
+        entry_total += position["entry_price"]
+        current_total += snapshot["latest_close"]
+        quantity = position["quantity"]
+        if position["side"] == "BUY":
+            total_pnl += (snapshot["latest_close"] - position["entry_price"]) * quantity
+        else:
+            total_pnl += (position["entry_price"] - snapshot["latest_close"]) * quantity
+
+    return {
+        "entry_total_premium": entry_total,
+        "current_total_premium": current_total,
+        "total_pnl": total_pnl,
+    }
+
+
+def close_position_symbols(engine, positions, symbols, reason):
+    changed = False
+    for symbol in list(symbols):
+        position = positions.get(symbol)
+        if not position:
+            continue
+        exit_side = "SELL" if position["side"] == "BUY" else "BUY"
+        place_order(
+            exit_side,
+            position["quantity"],
+            symbol,
+            note=reason,
+            product=engine.order_product,
+        )
+        del positions[symbol]
+        changed = True
+    return changed
+
+
+def build_option_pair_candidate(engine, pair_config, symbol_snapshots, positions):
+    del engine
+    if not pair_config or pair_config.get("mode") != "TWO_LEG_RANGE":
+        return None
+
+    pair_id = pair_config["pair_id"]
+    if any(position.get("pair_id") == pair_id for position in positions.values()):
+        return None
+
+    leg_snapshots = []
+    for symbol in pair_config["symbols"]:
+        snapshot = symbol_snapshots.get(symbol)
+        if not snapshot:
+            return None
+        leg_snapshots.append(snapshot)
+
+    if any(snapshot["signal"] != "SELL" for snapshot in leg_snapshots):
+        return None
+
+    analytics = leg_snapshots[0].get("analytics") or {}
+    underlying_price = analytics.get("underlying_price")
+    if underlying_price is None:
+        return None
+
+    if not (
+        pair_config["lower_strike"] <= underlying_price <= pair_config["upper_strike"]
+    ):
+        log_event(
+            (
+                f"[PAIR] Underlying {underlying_price:.2f} is outside configured range "
+                f"{pair_config['lower_strike']}-{pair_config['upper_strike']}, skipping pair entry"
+            )
+        )
+        return None
+
+    total_premium = sum(snapshot["latest_close"] for snapshot in leg_snapshots)
+    average_atr = sum(snapshot["atr"] for snapshot in leg_snapshots) / len(leg_snapshots)
+    total_score = sum(snapshot["score"] for snapshot in leg_snapshots)
+    return {
+        "symbol": pair_id,
+        "signal": pair_config.get("entry_side", "SELL"),
+        "agreement_count": len(leg_snapshots),
+        "score": total_score,
+        "latest_close": total_premium,
+        "atr": average_atr,
+        "analytics": {
+            "underlying": analytics.get("underlying"),
+            "underlying_price": underlying_price,
+        },
+        "is_pair": True,
+        "pair_config": pair_config,
+        "legs": [
+            {
+                "symbol": symbol,
+                "latest_close": symbol_snapshots[symbol]["latest_close"],
+                "atr": symbol_snapshots[symbol]["atr"],
+                "analytics": symbol_snapshots[symbol].get("analytics"),
+                "score": symbol_snapshots[symbol]["score"],
+            }
+            for symbol in pair_config["symbols"]
+        ],
+    }
+
+
 def parse_trade_day(raw_value):
     try:
         return date.fromisoformat(raw_value)
@@ -488,6 +791,7 @@ def save_runtime_state(
     engine_name,
     positions,
     traded_symbols_today,
+    trade_counts_today,
     active_trade_day,
     last_entry_time,
     regime_cache,
@@ -496,6 +800,7 @@ def save_runtime_state(
         engine_name=engine_name,
         positions=positions,
         traded_symbols_today=traded_symbols_today,
+        trade_counts_today=trade_counts_today,
         active_trade_day=active_trade_day,
         last_entry_time=last_entry_time,
         regime_cache=regime_cache,
@@ -509,6 +814,19 @@ def log_ranked_candidates(candidates):
 
     log_event("[SCAN] Ranked candidates:")
     for index, candidate in enumerate(candidates, start=1):
+        analytics = candidate.get("analytics") or {}
+        greeks_text = ""
+        if candidate.get("is_pair"):
+            pair_data = candidate.get("pair_config") or {}
+            greeks_text = (
+                f" | Pair={pair_data.get('lower_strike')}-{pair_data.get('upper_strike')}"
+                f" | Underlying={analytics.get('underlying_price', 0.0):.2f}"
+            )
+        elif analytics:
+            greeks_text = (
+                f" | Delta={analytics.get('delta', 0.0):.3f}"
+                f" | IV={analytics.get('iv', 0.0):.3f}"
+            )
         log_event(
             (
                 f"[SCAN] Rank {index} | {candidate['symbol']} | "
@@ -517,6 +835,7 @@ def log_ranked_candidates(candidates):
                 f"Score={candidate['score']:.4f} | "
                 f"ATR={candidate['atr']:.2f} | "
                 f"Last close={candidate['latest_close']:.2f}"
+                f"{greeks_text}"
             )
         )
 
@@ -524,19 +843,31 @@ def log_ranked_candidates(candidates):
 def summarize_execution_stats(engine, capital, positions):
     deployed_capital = get_deployed_capital(positions)
     open_count = len(positions)
+    open_structure_count = count_open_structures(positions)
 
+    log_event("\n" + "="*50)
     log_event("[STATS] Execution summary:")
+    log_event("="*50)
     log_event(f"[STATS] Starting capital: {capital:.2f}")
     log_event(f"[STATS] Open positions: {open_count}")
+    log_event(f"[STATS] Open structures: {open_structure_count}")
     log_event(f"[STATS] Deployed capital (entry exposure): {deployed_capital:.2f}")
     log_event(f"[STATS] Capital reserve estimate: {max(0.0, capital - deployed_capital):.2f}")
 
     if open_count == 0:
         log_event("[STATS] No open positions to evaluate for unrealized P/L")
+        log_event("="*50)
         return
 
     total_market_value = 0.0
     total_unrealized = 0.0
+    long_pnl = 0.0
+    short_pnl = 0.0
+    long_count = 0
+    short_count = 0
+    long_positions = []
+    short_positions = []
+    
     for symbol, position in positions.items():
         try:
             data = get_data(
@@ -561,20 +892,66 @@ def summarize_execution_stats(engine, capital, positions):
 
         if position["side"] == "BUY":
             pnl = (latest_close - position["entry_price"]) * position["quantity"]
+            pnl_pct = ((latest_close - position["entry_price"]) / position["entry_price"]) * 100
+            long_pnl += pnl
+            long_count += 1
+            long_positions.append({
+                'symbol': symbol,
+                'pnl': pnl,
+                'pnl_pct': pnl_pct,
+                'quantity': position["quantity"],
+                'entry_price': position["entry_price"],
+                'current_price': latest_close
+            })
         else:
             pnl = (position["entry_price"] - latest_close) * position["quantity"]
+            pnl_pct = ((position["entry_price"] - latest_close) / position["entry_price"]) * 100
+            short_pnl += pnl
+            short_count += 1
+            short_positions.append({
+                'symbol': symbol,
+                'pnl': pnl,
+                'pnl_pct': pnl_pct,
+                'quantity': position["quantity"],
+                'entry_price': position["entry_price"],
+                'current_price': latest_close
+            })
 
         total_unrealized += pnl
         log_event(
             (
                 f"[STATS] {symbol} {position['side']} qty={position['quantity']} "
-                f"entry={position['entry_price']:.2f} last={latest_close:.2f} "
-                f"market_value={market_value:.2f} pnl={pnl:.2f}"
+                f"entry={position['entry_price']:.2f} current={latest_close:.2f} "
+                f"market_value={market_value:.2f} pnl={pnl:+.2f} ({pnl_pct:+.2f}%)"
             )
         )
 
-    log_event(f"[STATS] Total market value of open positions: {total_market_value:.2f}")
-    log_event(f"[STATS] Total unrealized P/L: {total_unrealized:.2f}")
+    log_event("\n" + "-"*50)
+    log_event("[STATS] LONG POSITIONS SUMMARY:")
+    log_event(f"[STATS]   Count: {long_count}")
+    log_event("[STATS]   Stocks:")
+    if long_positions:
+        for pos in sorted(long_positions, key=lambda x: x['pnl'], reverse=True):
+            log_event(f"[STATS]     {pos['symbol']}: {pos['pnl']:+.2f} ({pos['pnl_pct']:+.2f}%)")
+    else:
+        log_event("[STATS]     None")
+    log_event(f"[STATS]   Total P&L: {long_pnl:+.2f}")
+    
+    log_event("\n[STATS] SHORT POSITIONS SUMMARY:")
+    log_event(f"[STATS]   Count: {short_count}")
+    log_event("[STATS]   Stocks:")
+    if short_positions:
+        for pos in sorted(short_positions, key=lambda x: x['pnl'], reverse=True):
+            log_event(f"[STATS]     {pos['symbol']}: {pos['pnl']:+.2f} ({pos['pnl_pct']:+.2f}%)")
+    else:
+        log_event("[STATS]     None")
+    log_event(f"[STATS]   Total P&L: {short_pnl:+.2f}")
+    
+    log_event("\n[STATS] OVERALL RESULTS:")
+    log_event(f"[STATS]   Total market value of open positions: {total_market_value:.2f}")
+    log_event(f"[STATS]   Total unrealized P&L: {total_unrealized:+.2f}")
+    log_event(f"[STATS]   Return %: {(total_unrealized/deployed_capital)*100:+.2f}%" if deployed_capital > 0 else "")
+    log_event("="*50)
 
 
 def force_square_off_positions(engine, positions):
@@ -602,9 +979,138 @@ def manage_open_positions(
     engine,
     positions,
     symbol_snapshots,
+    now,
 ):
     state_changed = False
+    processed_pair_ids = set()
     for symbol, position in list(positions.items()):
+        pair_id = position.get("pair_id")
+        if pair_id and pair_id in processed_pair_ids:
+            continue
+
+        if pair_id:
+            pair_symbols = get_pair_symbols(positions, pair_id)
+            expected_pair_symbols = position.get("pair_symbols") or []
+            if expected_pair_symbols and len(pair_symbols) < len(expected_pair_symbols):
+                log_event(
+                    f"[PAIR EXIT] {pair_id} leg synchronization guard triggered"
+                )
+                if close_position_symbols(
+                    engine,
+                    positions,
+                    pair_symbols,
+                    reason=f"Pair sync guard for {pair_id}",
+                ):
+                    state_changed = True
+                processed_pair_ids.add(pair_id)
+                continue
+
+            pair_snapshots = [
+                symbol_snapshots.get(pair_symbol)
+                for pair_symbol in pair_symbols
+            ]
+            if any(snapshot is None for snapshot in pair_snapshots):
+                log_event(
+                    f"[ERROR] Missing latest data for option pair {pair_id}",
+                    "error",
+                )
+                continue
+
+            underlying_price = None
+            for snapshot in pair_snapshots:
+                analytics = snapshot.get("analytics") or {}
+                if analytics.get("underlying_price") is not None:
+                    underlying_price = analytics["underlying_price"]
+                    break
+
+            lower_strike = position.get("pair_lower_strike")
+            upper_strike = position.get("pair_upper_strike")
+            if (
+                underlying_price is not None
+                and lower_strike is not None
+                and upper_strike is not None
+                and not (lower_strike <= underlying_price <= upper_strike)
+            ):
+                log_event(
+                    (
+                        f"[PAIR EXIT] {pair_id} underlying {underlying_price:.2f} "
+                        f"breached range {lower_strike}-{upper_strike}"
+                    )
+                )
+                if close_position_symbols(
+                    engine,
+                    positions,
+                    pair_symbols,
+                    reason=f"Pair range break {underlying_price:.2f}",
+                ):
+                    state_changed = True
+                processed_pair_ids.add(pair_id)
+                continue
+
+            if hasattr(engine, "get_time_exit_reason"):
+                time_exit_reason = engine.get_time_exit_reason(position, now)
+                if time_exit_reason:
+                    log_event(f"[PAIR EXIT] {pair_id} {time_exit_reason}")
+                    if close_position_symbols(
+                        engine,
+                        positions,
+                        pair_symbols,
+                        reason=f"Pair {time_exit_reason}",
+                    ):
+                        state_changed = True
+                    processed_pair_ids.add(pair_id)
+                    continue
+
+            pair_metrics = get_pair_position_metrics(
+                positions,
+                pair_symbols,
+                symbol_snapshots,
+            )
+            if pair_metrics:
+                log_event(
+                    (
+                        f"[PAIR] {pair_id} premium {pair_metrics['entry_total_premium']:.2f}"
+                        f" -> {pair_metrics['current_total_premium']:.2f}"
+                        f" | PnL={pair_metrics['total_pnl']:+.2f}"
+                    )
+                )
+                pair_stop_loss_price = position.get("pair_stop_loss_price")
+                pair_target_price = position.get("pair_target_price")
+                if (
+                    pair_stop_loss_price is not None
+                    and pair_metrics["current_total_premium"] >= pair_stop_loss_price
+                ):
+                    log_event(
+                        f"[PAIR EXIT] {pair_id} combined stop hit at "
+                        f"{pair_metrics['current_total_premium']:.2f}"
+                    )
+                    if close_position_symbols(
+                        engine,
+                        positions,
+                        pair_symbols,
+                        reason=f"Pair combined stop {pair_metrics['current_total_premium']:.2f}",
+                    ):
+                        state_changed = True
+                    processed_pair_ids.add(pair_id)
+                    continue
+                if (
+                    pair_target_price is not None
+                    and pair_metrics["current_total_premium"] <= pair_target_price
+                ):
+                    log_event(
+                        f"[PAIR EXIT] {pair_id} combined target hit at "
+                        f"{pair_metrics['current_total_premium']:.2f}"
+                    )
+                    if close_position_symbols(
+                        engine,
+                        positions,
+                        pair_symbols,
+                        reason=f"Pair combined target {pair_metrics['current_total_premium']:.2f}",
+                    ):
+                        state_changed = True
+                    processed_pair_ids.add(pair_id)
+                    continue
+
         snapshot = symbol_snapshots.get(symbol)
 
         if not snapshot:
@@ -631,7 +1137,25 @@ def manage_open_positions(
             position,
             snapshot["latest_candle"],
         )
+        if not exit_reason and hasattr(engine, "get_time_exit_reason"):
+            exit_reason = engine.get_time_exit_reason(position, now)
         if exit_reason:
+            if pair_id:
+                pair_symbols = get_pair_symbols(positions, pair_id)
+                log_event(
+                    f"[PAIR EXIT] {pair_id} {exit_reason} triggered by {symbol} at "
+                    f"{snapshot['latest_close']:.2f}"
+                )
+                if close_position_symbols(
+                    engine,
+                    positions,
+                    pair_symbols,
+                    reason=f"Pair exit via {symbol} {exit_reason}",
+                ):
+                    state_changed = True
+                processed_pair_ids.add(pair_id)
+                continue
+
             exit_side = "SELL" if position["side"] == "BUY" else "BUY"
             log_event(
                 f"[EXIT] {symbol} {exit_reason} triggered at "
@@ -662,6 +1186,22 @@ def manage_open_positions(
             snapshot["signal"],
         )
         if signal_exit_reason:
+            if pair_id:
+                pair_symbols = get_pair_symbols(positions, pair_id)
+                log_event(
+                    f"[PAIR EXIT] Signal-based exit for {pair_id}: "
+                    f"{snapshot['signal']} ({signal_exit_reason})"
+                )
+                if close_position_symbols(
+                    engine,
+                    positions,
+                    pair_symbols,
+                    reason=f"Pair close via {signal_exit_reason}",
+                ):
+                    state_changed = True
+                processed_pair_ids.add(pair_id)
+                continue
+
             exit_side = "SELL" if position["side"] == "BUY" else "BUY"
             log_event(
                 f"[EXIT] Signal-based exit for {symbol}: "
@@ -735,16 +1275,20 @@ try:
     log_event("[SETUP] Choose trading engine - determines trading style and timeframe")
     log_event("[SETUP]   INTRADAY EQUITY: 1-minute data, MIS product, 9:15-15:30, auto square-off")
     log_event("[SETUP]   DELIVERY EQUITY: Daily data, CNC product, long-term holding")
-    log_event("[SETUP]   FUTURES EQUITY: Index futures on NIFTY 50 and SENSEX via Kite derivatives")
-    log_event("[SETUP]   OPTIONS EQUITY: Index options on NIFTY 50 and SENSEX with ATM strike assist")
+    log_event("[SETUP]   FUTURES EQUITY: Positional index futures on NIFTY 50 and SENSEX via Kite derivatives")
+    log_event("[SETUP]   OPTIONS EQUITY: Positional index options on NIFTY 50 and SENSEX with ATM strike assist")
+    log_event("[SETUP]   INTRADAY FUTURES: MIS index futures with auto square-off and lot-aware sizing")
+    log_event("[SETUP]   INTRADAY OPTIONS: MIS index options with Greeks/IV filters and auto square-off")
 
     engine_choice = prompt_choice(
-        "Engine: INTRADAY EQUITY(1), DELIVERY EQUITY(2), FUTURES EQUITY(3), OPTIONS EQUITY(4)? [default 1]: ",
+        "Engine: INTRADAY EQUITY(1), DELIVERY EQUITY(2), FUTURES EQUITY(3), OPTIONS EQUITY(4), INTRADAY FUTURES(5), INTRADAY OPTIONS(6)? [default 1]: ",
         [
             {"label": "INTRADAY EQUITY", "key": 1, "value": "1"},
             {"label": "DELIVERY EQUITY", "key": 2, "value": "2"},
             {"label": "FUTURES EQUITY", "key": 3, "value": "3"},
             {"label": "OPTIONS EQUITY", "key": 4, "value": "4"},
+            {"label": "INTRADAY FUTURES", "key": 5, "value": "5"},
+            {"label": "INTRADAY OPTIONS", "key": 6, "value": "6"},
         ],
         default=1,
     )
@@ -755,9 +1299,15 @@ try:
 
     capital = prompt_float("Enter capital for strategy: ", minimum=1)
 
-    if engine_choice in {"3", "4"}:
-        selected_symbols, symbol_mode = prompt_fno_contract_selection(
+    option_pair_config = None
+    if engine_choice in {"3", "4", "5", "6"}:
+        selected_symbols, symbol_mode, option_pair_config = prompt_fno_contract_selection(
             ENGINE_OPTIONS[engine_choice].name
+        )
+        confirm_selected_fno_contracts(
+            ENGINE_OPTIONS[engine_choice].name,
+            selected_symbols,
+            option_pair_config=option_pair_config,
         )
     else:
         selected_symbols, symbol_mode = prompt_symbol_selection()
@@ -813,7 +1363,7 @@ try:
             )
         )
 
-    if engine.name in {"futures_equity", "options_equity"}:
+    if "futures" in engine.name or "options" in engine.name:
         if data_provider != "KITE":
             log_event(
                 "[MAIN] F&O support currently requires KITE data provider. Switching to KITE.",
@@ -832,6 +1382,11 @@ try:
         log_event(
             "[SETUP] Supported F&O underlyings in this build: NIFTY 50 and SENSEX."
         )
+        if "intraday" in engine.name:
+            log_event(
+                "[SETUP] Intraday F&O will use MIS product, lot-based quantity rounding, "
+                "and auto square-off near market close."
+            )
 
     log_event(f"[MAIN] Engine selected: {engine.name}")
     log_event(
@@ -1004,6 +1559,10 @@ try:
         persisted_positions=saved_state["positions"],
     )
     traded_symbols_today = set(saved_state["traded_symbols_today"])
+    trade_counts_today = {
+        str(key): int(value)
+        for key, value in saved_state.get("trade_counts_today", {}).items()
+    }
     active_trade_day = parse_trade_day(saved_state["active_trade_day"])
     last_entry_time = float(saved_state["last_entry_time"])
     regime_cache = saved_state["regime_cache"]
@@ -1011,6 +1570,7 @@ try:
         engine.name,
         positions,
         traded_symbols_today,
+        trade_counts_today,
         active_trade_day,
         last_entry_time,
         regime_cache,
@@ -1022,8 +1582,9 @@ try:
         if current_trade_day != active_trade_day:
             active_trade_day = current_trade_day
             traded_symbols_today.clear()
+            trade_counts_today.clear()
             log_event("[MAIN] New day detected, reset traded symbol tracker")
-            if engine.name == "intraday_equity" and positions:
+            if engine.order_product == "MIS" and positions:
                 log_event(
                     "[MAIN] Clearing stale intraday positions for new day",
                     "warning",
@@ -1034,6 +1595,7 @@ try:
                 engine.name,
                 positions,
                 traded_symbols_today,
+                trade_counts_today,
                 active_trade_day,
                 last_entry_time,
                 regime_cache,
@@ -1051,6 +1613,7 @@ try:
                     engine.name,
                     positions,
                     traded_symbols_today,
+                    trade_counts_today,
                     active_trade_day,
                     last_entry_time,
                     regime_cache,
@@ -1092,6 +1655,7 @@ try:
             active_min_confirmations = min_confirmations
             market_context = None
             intraday_history = None
+            option_analytics = None
 
             if (
                 engine.name == "intraday_equity"
@@ -1133,6 +1697,7 @@ try:
                             engine.name,
                             positions,
                             traded_symbols_today,
+                            trade_counts_today,
                             active_trade_day,
                             last_entry_time,
                             regime_cache,
@@ -1150,12 +1715,27 @@ try:
                 strategies=active_strategies,
                 min_confirmations=active_min_confirmations,
             )
-            if engine.name == "intraday_equity":
+            if "options" in engine.name:
+                try:
+                    option_analytics = get_option_greeks_snapshot(symbol)
+                    if (
+                        engine.name == "intraday_options"
+                        and option_pair_config
+                        and symbol in option_pair_config.get("symbols", [])
+                    ):
+                        option_analytics["skip_underlying_bias"] = True
+                except Exception as exc:
+                    log_event(
+                        f"[GREEKS] Could not build options analytics for {symbol}: {exc}",
+                        "warning",
+                    )
+            if hasattr(engine, "apply_signal_filters"):
                 evaluation = engine.apply_signal_filters(
                     evaluation,
                     data,
                     intraday_history_df=intraday_history,
                     min_confirmations=active_min_confirmations or 1,
+                    analytics=option_analytics,
                 )
 
             symbol_snapshots[symbol] = {
@@ -1169,6 +1749,8 @@ try:
                 "market_context": market_context,
                 "vwap_bias": evaluation.get("vwap_bias"),
                 "breakout_volume_note": evaluation.get("breakout_volume_note"),
+                "options_filter_note": evaluation.get("options_filter_note"),
+                "analytics": option_analytics,
                 "atr": get_atr_value(data),
             }
 
@@ -1177,15 +1759,37 @@ try:
                     f"[SCAN] {symbol} | Signal={evaluation['signal']} | "
                     f"Agree={evaluation['agreement_count']} | "
                     f"Score={evaluation['score']:.4f} | "
-                    f"ATR={symbol_snapshots[symbol]['atr']:.2f} | "
-                    f"Last close={latest_close:.2f} | "
-                    f"VWAP bias={evaluation.get('vwap_bias', 'N/A')}"
+                        f"ATR={symbol_snapshots[symbol]['atr']:.2f} | "
+                        f"Last close={latest_close:.2f} | "
+                        f"VWAP bias={evaluation.get('vwap_bias', 'N/A')} | "
+                        f"Range%={evaluation.get('range_pct', 0.0):.2f} | "
+                        f"Underlying bias={evaluation.get('underlying_bias', 'N/A')}"
+                    )
                 )
-            )
             if evaluation.get("breakout_volume_note"):
                 log_event(
                     f"[SCAN] {symbol} | Breakout volume filter: "
                     f"{evaluation['breakout_volume_note']}"
+                )
+            if option_analytics:
+                log_event(
+                    (
+                        f"[GREEKS] {symbol} | Underlying={option_analytics['underlying_price']:.2f} | "
+                        f"Premium={option_analytics['option_price']:.2f} | "
+                        f"IV={option_analytics['iv']:.4f} | "
+                        f"IV15m={option_analytics.get('iv_change_15m_pct', 'N/A')} | "
+                        f"Delta={option_analytics['delta']:.4f} | "
+                        f"Gamma={option_analytics['gamma']:.6f} | "
+                        f"Theta={option_analytics['theta']:.4f} | "
+                        f"Vega={option_analytics['vega']:.4f} | "
+                        f"DTE={option_analytics.get('days_to_expiry', 'N/A')} | "
+                        f"IVPct={option_analytics['iv_percentile'] if option_analytics['iv_percentile'] is not None else 'N/A'}"
+                    )
+                )
+            if evaluation.get("options_filter_note"):
+                log_event(
+                    f"[SCAN] {symbol} | Options filter: "
+                    f"{evaluation['options_filter_note']}"
                 )
 
             allow_symbol_entries = True
@@ -1198,6 +1802,13 @@ try:
                     f"[LIMIT] {symbol} adaptive mode not ready for entries yet"
                 )
                 normalized_signal = None
+            if (
+                normalized_signal
+                and engine.name == "intraday_options"
+                and option_pair_config
+                and symbol in option_pair_config.get("symbols", [])
+            ):
+                normalized_signal = None
             if normalized_signal:
                 candidates.append(
                     {
@@ -1207,6 +1818,7 @@ try:
                         "score": evaluation["score"],
                         "latest_close": latest_close,
                         "atr": symbol_snapshots[symbol]["atr"],
+                        "analytics": option_analytics,
                     }
                 )
 
@@ -1217,6 +1829,16 @@ try:
             time.sleep(engine.sleep_seconds)
             continue
 
+        if engine.name == "intraday_options" and option_pair_config:
+            pair_candidate = build_option_pair_candidate(
+                engine,
+                option_pair_config,
+                symbol_snapshots,
+                positions,
+            )
+            if pair_candidate:
+                candidates.append(pair_candidate)
+
         ranked_candidates = rank_candidates(candidates)
         log_ranked_candidates(ranked_candidates)
 
@@ -1226,12 +1848,14 @@ try:
                 engine,
                 positions,
                 symbol_snapshots,
+                now,
             )
             if state_changed:
                 save_runtime_state(
                     engine.name,
                     positions,
                     traded_symbols_today,
+                    trade_counts_today,
                     active_trade_day,
                     last_entry_time,
                     regime_cache,
@@ -1258,6 +1882,216 @@ try:
             for candidate in planned_entries:
                 symbol = candidate["symbol"]
 
+                if candidate.get("is_pair"):
+                    pair_config = candidate["pair_config"]
+                    pair_symbols = pair_config["symbols"]
+                    pair_id = pair_config["pair_id"]
+
+                    if any(pair_symbol in positions for pair_symbol in pair_symbols):
+                        log_event(f"[LIMIT] Pair {pair_id} already has an open leg")
+                        continue
+
+                    if one_trade_per_symbol_per_day and any(
+                        pair_symbol in traded_symbols_today
+                        for pair_symbol in pair_symbols
+                    ):
+                        log_event(
+                            f"[LIMIT] Pair {pair_id} already traded today on one of its legs"
+                        )
+                        continue
+
+                    if count_open_structures(positions) >= max_open_positions:
+                        log_event(
+                            f"[LIMIT] Max open position structures would be exceeded by pair {pair_id}"
+                        )
+                        continue
+
+                    trade_key = None
+                    max_trades_per_day = 0
+                    if hasattr(engine, "get_trade_frequency_key") and hasattr(engine, "get_max_trades_per_day"):
+                        trade_key = engine.get_trade_frequency_key(
+                            pair_id,
+                            candidate.get("analytics"),
+                        )
+                        max_trades_per_day = engine.get_max_trades_per_day()
+                        if trade_key and max_trades_per_day > 0:
+                            trade_count = int(trade_counts_today.get(trade_key, 0))
+                            if trade_count >= max_trades_per_day:
+                                log_event(
+                                    f"[LIMIT] {trade_key} reached max intraday option trades "
+                                    f"for the day ({trade_count}/{max_trades_per_day})"
+                                )
+                                continue
+
+                    leg_entries = []
+                    pair_premium = sum(leg["latest_close"] for leg in candidate["legs"])
+                    if pair_premium <= 0:
+                        log_event(f"[RISK] Invalid pair premium for {pair_id}", "warning")
+                        continue
+
+                    per_trade_cap_lots = int(max_capital_per_trade / pair_premium)
+                    remaining_deployable = max(0.0, max_capital_deployed - deployed_capital)
+                    deploy_cap_lots = int(remaining_deployable / pair_premium)
+                    max_pair_lots = min(per_trade_cap_lots, deploy_cap_lots)
+
+                    for leg in candidate["legs"]:
+                        leg_symbol = leg["symbol"]
+                        leg_entry_price = leg["latest_close"]
+                        leg_atr = leg.get("atr", 0.0)
+                        leg_stop_data = atr_stop_from_value(
+                            candidate["signal"],
+                            leg_entry_price,
+                            leg_atr,
+                            atr_stop_multiplier,
+                        )
+                        if leg_stop_data["stop_distance"] <= 0:
+                            max_pair_lots = 0
+                            break
+
+                        leg_lot_size = get_contract_lot_size(leg_symbol)
+                        leg_sizing = atr_position_size(
+                            capital=capital,
+                            entry_price=leg_entry_price,
+                            atr_value=leg_atr,
+                            atr_multiplier=atr_stop_multiplier,
+                            risk_percent=risk_percent,
+                        )
+                        risk_lots = leg_sizing["quantity"] // leg_lot_size
+                        leg_qty_cap = engine.apply_entry_allocation_limit(
+                            leg_symbol,
+                            max(leg_lot_size, max_pair_lots * leg_lot_size),
+                            leg_entry_price,
+                            positions,
+                            capital,
+                        )
+                        allocation_lots = leg_qty_cap // leg_lot_size
+                        max_pair_lots = min(max_pair_lots, risk_lots, allocation_lots)
+                        leg_entries.append(
+                            {
+                                "symbol": leg_symbol,
+                                "entry_price": leg_entry_price,
+                                "atr": leg_atr,
+                                "stop_data": leg_stop_data,
+                                "lot_size": leg_lot_size,
+                                "analytics": leg.get("analytics"),
+                            }
+                        )
+
+                    if max_pair_lots <= 0:
+                        log_event(
+                            f"[RISK] Pair quantity is 0 for {pair_id} after limits",
+                            "warning",
+                        )
+                        continue
+
+                    estimated_trade_capital = 0.0
+                    entered_pair_symbols = []
+                    pair_target_price = calculate_target_price(
+                        candidate["signal"],
+                        pair_premium,
+                        pair_premium * (target_percent / 100.0),
+                    )
+                    pair_stop_loss_price = (
+                        pair_premium * (1 - (sl_percent / 100.0))
+                        if candidate["signal"] == "BUY"
+                        else pair_premium * (1 + (sl_percent / 100.0))
+                    )
+                    log_event(
+                        (
+                            f"[PAIR ENTRY] Executing bounded range pair {pair_id} | "
+                            f"Underlying={candidate['analytics'].get('underlying_price', 0.0):.2f} | "
+                            f"Range={pair_config['lower_strike']}-{pair_config['upper_strike']} | "
+                            f"Lots={max_pair_lots} | Combined SL={pair_stop_loss_price:.2f} "
+                            f"| Combined Target={pair_target_price:.2f}"
+                        )
+                    )
+
+                    for leg_entry in leg_entries:
+                        leg_symbol = leg_entry["symbol"]
+                        qty = max_pair_lots * leg_entry["lot_size"]
+                        target_distance = leg_entry["stop_data"]["stop_distance"] * target_risk_reward
+                        trailing_distance = leg_entry["atr"] * trailing_atr_multiplier
+                        target_price = calculate_target_price(
+                            candidate["signal"],
+                            leg_entry["entry_price"],
+                            target_distance,
+                        )
+                        trailing_stop = (
+                            leg_entry["entry_price"] - trailing_distance
+                            if candidate["signal"] == "BUY"
+                            else leg_entry["entry_price"] + trailing_distance
+                        )
+                        try:
+                            place_order(
+                                candidate["signal"],
+                                qty,
+                                leg_symbol,
+                                note=f"Pair entry {pair_id}",
+                                product=engine.order_product,
+                            )
+                        except Exception:
+                            if entered_pair_symbols:
+                                log_event(
+                                    f"[PAIR EXIT] Pair entry failed on {leg_symbol}; "
+                                    "closing already-entered legs to avoid partial exposure",
+                                    "warning",
+                                )
+                                close_position_symbols(
+                                    engine,
+                                    positions,
+                                    entered_pair_symbols,
+                                    reason=f"Pair sync unwind {pair_id}",
+                                )
+                            raise
+                        positions[leg_symbol] = build_position(
+                            symbol=leg_symbol,
+                            side=candidate["signal"],
+                            quantity=qty,
+                            entry_price=leg_entry["entry_price"],
+                            stop_loss=leg_entry["stop_data"]["stop_loss_price"],
+                            target=target_price,
+                            trailing_stop=trailing_stop,
+                            trailing_distance=trailing_distance,
+                            atr=leg_entry["atr"],
+                            stop_distance=leg_entry["stop_data"]["stop_distance"],
+                            lot_size=leg_entry["lot_size"],
+                            entry_analytics=leg_entry["analytics"],
+                            pair_id=pair_id,
+                            pair_mode=pair_config["mode"],
+                            pair_underlying=pair_config["underlying"],
+                            pair_lower_strike=pair_config["lower_strike"],
+                            pair_upper_strike=pair_config["upper_strike"],
+                            pair_symbols=pair_symbols,
+                            pair_entry_total_premium=pair_premium,
+                            pair_stop_loss_price=pair_stop_loss_price,
+                            pair_target_price=pair_target_price,
+                            entry_time=now.isoformat(),
+                        )
+                        entered_pair_symbols.append(leg_symbol)
+                        traded_symbols_today.add(leg_symbol)
+                        estimated_trade_capital += leg_entry["entry_price"] * qty
+
+                    if trade_key:
+                        trade_counts_today[trade_key] = int(
+                            trade_counts_today.get(trade_key, 0)
+                        ) + 1
+                    deployed_capital += estimated_trade_capital
+                    last_entry_time = current_time
+                    log_event(f"[RISK] Updated deployed capital: {deployed_capital:.2f}")
+                    save_runtime_state(
+                        engine.name,
+                        positions,
+                        traded_symbols_today,
+                        trade_counts_today,
+                        active_trade_day,
+                        last_entry_time,
+                        regime_cache,
+                    )
+
+                    if entry_selection_mode == "TOP1":
+                        break
+                    continue
+
                 if symbol in positions:
                     log_event(f"[LIMIT] {symbol} already has an open position")
                     continue
@@ -1268,8 +2102,23 @@ try:
                     )
                     continue
 
-                if len(positions) >= max_open_positions:
-                    log_event("[LIMIT] Max open positions reached")
+                if hasattr(engine, "get_trade_frequency_key") and hasattr(engine, "get_max_trades_per_day"):
+                    trade_key = engine.get_trade_frequency_key(
+                        symbol,
+                        candidate.get("analytics"),
+                    )
+                    max_trades_per_day = engine.get_max_trades_per_day()
+                    if trade_key and max_trades_per_day > 0:
+                        trade_count = int(trade_counts_today.get(trade_key, 0))
+                        if trade_count >= max_trades_per_day:
+                            log_event(
+                                f"[LIMIT] {trade_key} reached max intraday option trades "
+                                f"for the day ({trade_count}/{max_trades_per_day})"
+                            )
+                            continue
+
+                if count_open_structures(positions) >= max_open_positions:
+                    log_event("[LIMIT] Max open position structures reached")
                     break
 
                 entry_price = candidate["latest_close"]
@@ -1364,8 +2213,20 @@ try:
                     trailing_distance=trailing_distance,
                     atr=atr_value,
                     stop_distance=stop_data["stop_distance"],
+                    lot_size=get_contract_lot_size(symbol) if ":" in symbol else 1,
+                    entry_analytics=candidate.get("analytics"),
+                    entry_time=now.isoformat(),
                 )
                 traded_symbols_today.add(symbol)
+                if hasattr(engine, "get_trade_frequency_key"):
+                    trade_key = engine.get_trade_frequency_key(
+                        symbol,
+                        candidate.get("analytics"),
+                    )
+                    if trade_key:
+                        trade_counts_today[trade_key] = int(
+                            trade_counts_today.get(trade_key, 0)
+                        ) + 1
                 deployed_capital += estimated_trade_capital
                 last_entry_time = current_time
                 log_event(f"[RISK] Updated deployed capital: {deployed_capital:.2f}")
@@ -1373,6 +2234,7 @@ try:
                     engine.name,
                     positions,
                     traded_symbols_today,
+                    trade_counts_today,
                     active_trade_day,
                     last_entry_time,
                     regime_cache,
@@ -1389,6 +2251,29 @@ try:
 
 except KeyboardInterrupt:
     log_event("\n[MAIN] Bot stopped by user.")
+    if "positions" in locals() and len(positions) > 0:
+        log_event(f"\n[MAIN] You have {len(positions)} open position(s).")
+        close_choice = input("\nClose all positions? (YES/NO) [default NO]: ").strip().upper()
+        if close_choice == "YES":
+            confirm = input("Are you sure? This will close ALL positions immediately. (YES/NO): ").strip().upper()
+            if confirm == "YES":
+                log_event("[MAIN] Closing all open positions...")
+                for symbol, position in list(positions.items()):
+                    exit_side = "SELL" if position["side"] == "BUY" else "BUY"
+                    log_event(f"[MAIN] Closing {symbol}: {position['side']} {position['quantity']} units at market")
+                    place_order(
+                        exit_side,
+                        position["quantity"],
+                        symbol,
+                        note="User-initiated emergency close-out",
+                        product=engine.order_product if "engine" in locals() else "MIS",
+                    )
+                    del positions[symbol]
+                log_event("[MAIN] All positions closed.")
+            else:
+                log_event("[MAIN] Close cancelled. Keeping positions open.")
+        else:
+            log_event("[MAIN] Positions remain open. Please manage them manually.")
 except Exception as exc:
     log_event(f"\n[ERROR] {exc}", "error")
     logger.exception("[MAIN] Unhandled exception")

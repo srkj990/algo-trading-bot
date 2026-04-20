@@ -16,6 +16,7 @@ def load_engine_state(engine_name):
         return {
             "positions": {},
             "traded_symbols_today": [],
+            "trade_counts_today": {},
             "active_trade_day": datetime.now().date().isoformat(),
             "last_entry_time": 0,
             "regime_cache": {},
@@ -26,6 +27,7 @@ def load_engine_state(engine_name):
 
     data.setdefault("positions", {})
     data.setdefault("traded_symbols_today", [])
+    data.setdefault("trade_counts_today", {})
     data.setdefault("active_trade_day", datetime.now().date().isoformat())
     data.setdefault("last_entry_time", 0)
     data.setdefault("regime_cache", {})
@@ -36,6 +38,7 @@ def save_engine_state(
     engine_name,
     positions,
     traded_symbols_today,
+    trade_counts_today,
     active_trade_day,
     last_entry_time,
     regime_cache,
@@ -45,6 +48,7 @@ def save_engine_state(
     payload = {
         "positions": positions,
         "traded_symbols_today": sorted(traded_symbols_today),
+        "trade_counts_today": trade_counts_today,
         "active_trade_day": active_trade_day.isoformat(),
         "last_entry_time": last_entry_time,
         "regime_cache": regime_cache,

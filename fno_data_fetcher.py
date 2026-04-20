@@ -4,12 +4,16 @@ from kiteconnect import KiteConnect
 
 from config import (
     FNO_INDEX_SYMBOLS,
+    FNO_GREEKS_HISTORY_PERIOD,
     FNO_UNDERLYING_DETAILS,
+    FNO_DEFAULT_RISK_FREE_RATE,
     get_access_token,
     get_api_key,
     get_default_data_provider,
 )
 from data_fetcher import get_data
+from indicators import compute_vwap
+from option_analytics import calculate_greeks, implied_volatility, years_to_expiry
 
 
 def _get_kite_client():
@@ -55,6 +59,56 @@ def _get_kite_instruments_for_base(base_symbol):
             continue
         filtered.append(item)
     return filtered
+
+
+def _parse_symbol_exchange(symbol):
+    if not symbol or ":" not in symbol:
+        raise ValueError(f"Expected exchange-prefixed symbol, got: {symbol}")
+    exchange, tradingsymbol = symbol.split(":", 1)
+    return exchange.upper(), tradingsymbol
+
+
+def get_contract_metadata(symbol):
+    exchange, tradingsymbol = _parse_symbol_exchange(symbol)
+    kite = _get_kite_client()
+    for item in kite.instruments(exchange):
+        if (item.get("tradingsymbol") or "").upper() != tradingsymbol.upper():
+            continue
+        return {
+            "exchange": exchange,
+            "tradingsymbol": item["tradingsymbol"],
+            "instrument_type": (item.get("instrument_type") or "").upper(),
+            "strike": float(item.get("strike") or 0.0),
+            "expiry": _format_expiry(item.get("expiry")) if item.get("expiry") else None,
+            "lot_size": int(item.get("lot_size") or 1),
+            "tick_size": float(item.get("tick_size") or 0.05),
+            "name": item.get("name"),
+            "segment": item.get("segment"),
+        }
+    raise RuntimeError(f"Contract metadata not found for {symbol}")
+
+
+def get_contract_underlying_base(symbol):
+    metadata = get_contract_metadata(symbol)
+    name = (metadata.get("name") or "").upper()
+    if name in FNO_UNDERLYING_DETAILS:
+        return name
+
+    tradingsymbol = (metadata.get("tradingsymbol") or "").upper()
+    for base_symbol in FNO_INDEX_SYMBOLS:
+        if tradingsymbol.startswith(base_symbol):
+            return base_symbol
+
+    raise RuntimeError(f"Could not infer underlying for {symbol}")
+
+
+def get_contract_lot_size(symbol):
+    return get_contract_metadata(symbol).get("lot_size", 1)
+
+
+def get_contract_last_price(symbol):
+    quote = _get_kite_client().ltp([symbol]).get(symbol, {})
+    return float(quote.get("last_price") or 0.0)
 
 
 def _normalize_expiry(expiry):
@@ -188,6 +242,132 @@ def resolve_option_contract(base_symbol, expiry, strike, option_type):
         f"Option contract not found for {get_fno_display_name(base_symbol)} "
         f"expiry {target_expiry}, strike {requested_strike}, type {requested_type}."
     )
+
+
+def get_option_greeks_snapshot(
+    symbol,
+    risk_free_rate=None,
+    iv_history_period=None,
+):
+    metadata = get_contract_metadata(symbol)
+    option_type = metadata["instrument_type"]
+    if option_type not in {"CE", "PE"}:
+        raise ValueError(f"Greeks are supported only for option contracts, got {symbol}")
+
+    underlying = get_contract_underlying_base(symbol)
+    option_price = get_contract_last_price(symbol)
+    underlying_price = get_underlying_spot_price(underlying)
+    time_to_expiry = years_to_expiry(metadata["expiry"])
+    active_risk_free_rate = (
+        float(risk_free_rate)
+        if risk_free_rate is not None
+        else float(FNO_DEFAULT_RISK_FREE_RATE)
+    )
+
+    implied_vol = implied_volatility(
+        option_price=option_price,
+        spot=underlying_price,
+        strike=metadata["strike"],
+        time_to_expiry=time_to_expiry,
+        risk_free_rate=active_risk_free_rate,
+        option_type=option_type,
+    )
+    greeks = calculate_greeks(
+        spot=underlying_price,
+        strike=metadata["strike"],
+        time_to_expiry=time_to_expiry,
+        risk_free_rate=active_risk_free_rate,
+        volatility=implied_vol,
+        option_type=option_type,
+    )
+
+    history_period = iv_history_period or FNO_GREEKS_HISTORY_PERIOD
+    iv_rank = None
+    iv_percentile = None
+    try:
+        history = get_options_data(
+            symbol,
+            period=history_period,
+            interval="1d",
+            provider="KITE",
+        )
+        iv_history = []
+        for _, row in history.tail(60).iterrows():
+            close_price = float(row["Close"] or 0.0)
+            iv_value = implied_volatility(
+                option_price=close_price,
+                spot=underlying_price,
+                strike=metadata["strike"],
+                time_to_expiry=time_to_expiry,
+                risk_free_rate=active_risk_free_rate,
+                option_type=option_type,
+            )
+            if iv_value > 0:
+                iv_history.append(iv_value)
+        if iv_history:
+            iv_low = min(iv_history)
+            iv_high = max(iv_history)
+            if iv_high > iv_low:
+                iv_rank = ((implied_vol - iv_low) / (iv_high - iv_low)) * 100.0
+            percentile_hits = sum(1 for item in iv_history if item <= implied_vol)
+            iv_percentile = (percentile_hits / len(iv_history)) * 100.0
+    except Exception:
+        iv_rank = None
+        iv_percentile = None
+
+    snapshot = {
+        "symbol": symbol,
+        "underlying": underlying,
+        "underlying_price": underlying_price,
+        "option_price": option_price,
+        "strike": metadata["strike"],
+        "option_type": option_type,
+        "expiry": metadata["expiry"],
+        "days_to_expiry": max(int(round(time_to_expiry * 365)), 0),
+        "time_to_expiry_years": time_to_expiry,
+        "lot_size": metadata["lot_size"],
+        "iv": implied_vol,
+        "iv_rank": iv_rank,
+        "iv_percentile": iv_percentile,
+        "risk_free_rate": active_risk_free_rate,
+    }
+
+    try:
+        option_intraday = get_options_data(
+            symbol,
+            period="2d",
+            interval="1m",
+            provider="KITE",
+        )
+        underlying_intraday = get_data(
+            get_fno_spot_quote_symbol(underlying),
+            period="2d",
+            interval="1m",
+            provider="KITE",
+        )
+        if len(option_intraday) >= 16 and len(underlying_intraday) >= 16:
+            option_prev_close = float(option_intraday["Close"].iloc[-16])
+            underlying_prev_close = float(underlying_intraday["Close"].iloc[-16])
+            previous_iv = implied_volatility(
+                option_price=option_prev_close,
+                spot=underlying_prev_close,
+                strike=metadata["strike"],
+                time_to_expiry=time_to_expiry,
+                risk_free_rate=active_risk_free_rate,
+                option_type=option_type,
+            )
+            if previous_iv > 0:
+                snapshot["iv_15m_ago"] = previous_iv
+                snapshot["iv_change_15m_pct"] = (
+                    (implied_vol - previous_iv) / previous_iv
+                ) * 100.0
+        if not option_intraday.empty:
+            snapshot["option_vwap"] = float(compute_vwap(option_intraday).iloc[-1])
+    except Exception:
+        pass
+
+    snapshot.update(greeks)
+    return snapshot
 
 
 def get_futures_data(base_symbol, period="3mo", interval="5m", provider=None):

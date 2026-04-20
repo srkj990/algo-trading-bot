@@ -2,6 +2,7 @@ from datetime import time
 
 from engines.common import build_position, evaluate_exit, get_symbol_deployed_capital
 from executor_fno import get_futures_positions
+from fno_data_fetcher import get_contract_lot_size
 from logger import log_event
 
 
@@ -79,7 +80,9 @@ class FuturesEquityEngine:
         current_symbol_capital = get_symbol_deployed_capital(positions, symbol)
         remaining_symbol_capital = max(0.0, max_symbol_capital - current_symbol_capital)
         symbol_cap_qty = int(remaining_symbol_capital / entry_price) if entry_price > 0 else 0
-        return min(quantity, symbol_cap_qty)
+        lot_size = get_contract_lot_size(symbol)
+        capped_quantity = min(quantity, symbol_cap_qty)
+        return (capped_quantity // lot_size) * lot_size
 
     def reconcile_startup(self, execution_mode, persisted_positions):
         if execution_mode != "LIVE":
@@ -112,6 +115,7 @@ class FuturesEquityEngine:
                     sl_pct=self.sl_percent,
                     target_pct=self.target_percent,
                     trailing_pct=self.trailing_percent,
+                    lot_size=get_contract_lot_size(symbol),
                 )
 
             log_event(
