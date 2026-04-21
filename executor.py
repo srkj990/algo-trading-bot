@@ -15,6 +15,7 @@ EXECUTION_PROVIDER = get_default_execution_provider()
 _kite_client = None
 _kite_instruments_cache = {}
 _upstox_symbol_cache = {}
+UPSTOX_ORDER_URL = "https://api-hft.upstox.com/v3/order/place"
 
 
 def set_execution_mode(mode):
@@ -69,7 +70,7 @@ def _upstox_headers():
     return {
         "Content-Type": "application/json",
         "Accept": "application/json",
-        "Authorization": f"Bearer {get_upstox_access_token()}",
+        "Authorization": f"Bearer {get_upstox_access_token().strip()}",
     }
 
 
@@ -188,15 +189,46 @@ def _place_order_upstox(signal, quantity, symbol, product, note):
         "disclosed_quantity": 0,
         "trigger_price": 0,
         "is_amo": False,
+        "market_protection": 0,
+        "slice": False,
     }
     response = requests.post(
-        "https://api-hft.upstox.com/v2/order/place",
+        UPSTOX_ORDER_URL,
         headers=_upstox_headers(),
         json=payload,
         timeout=30,
     )
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        detail = _extract_upstox_error_detail(response)
+        raise RuntimeError(
+            f"Upstox order failed ({response.status_code}) at {UPSTOX_ORDER_URL}: {detail}"
+        ) from exc
     return response.json().get("data", {}).get("order_id")
+
+
+def _extract_upstox_error_detail(response):
+    try:
+        payload = response.json()
+    except ValueError:
+        return response.text.strip() or "Unknown Upstox error"
+
+    errors = payload.get("errors") or []
+    if errors:
+        formatted = []
+        for item in errors:
+            code = item.get("errorCode") or item.get("error_code") or "UNKNOWN"
+            message = item.get("message") or "Unknown error"
+            formatted.append(f"{code}: {message}")
+        return " | ".join(formatted)
+
+    return payload.get("message") or response.text.strip() or "Unknown Upstox error"
+
+
+def is_upstox_static_ip_blocked(error):
+    message = str(error or "")
+    return "UDAPI1154" in message and "static IP" in message
 
 
 def get_intraday_positions():

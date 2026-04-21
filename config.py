@@ -295,6 +295,9 @@ MANUAL_SYMBOL_TABLE = {
     "8": "ITC.NS",
     "9": "BHARTIARTL.NS",
     "10": "LT.NS",
+    "11": "IRB.NS",
+    "12": "JPPOWER.NS",
+    "13": "RPOWER.NS",
 }
 
 # Single-symbol table for quick focused runs.

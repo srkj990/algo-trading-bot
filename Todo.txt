@@ -140,3 +140,40 @@ Start with:
   - Futures breakout
 
 This gives you a clean expansion path without rewriting core equity logic first.
+
+
+
+Feasibility call:
+
+VWAP Band Filter: best to add now. Done.
+Max Options/Day: best to add now. Done as per-underlying cap, default 4.
+Expiry Warning: best to add now. Done as alert, not hard block.
+Vega Crush Alert: good to add now. Done as a block if IV falls more than 20% in 15 minutes.
+OI/PCR Filter: not best yet. We don’t have a proper option-chain/OI pipeline, so adding it now would be unreliable.
+Dynamic ATM Roll: not best yet. Current runtime scans fixed contracts; rolling needs underlying-driven contract regeneration plus migration of open-position state.
+CE+PE Pairs: not best yet. This needs basket order entry/exit, pair-level risk, and grouped position tracking.
+Multi-Strike: not best yet for the same reason as pairs; the current engine is symbol-keyed, not portfolio-leg keyed.
+
+
+
+Best next step if you want the remaining ideas is a basket-aware options engine:
+
+grouped legs per strategy
+pair/multi-strike entry and exit orchestration
+basket P&L and risk limits
+option-chain/OI snapshot layer for PCR/OI filters
+
+
+Two-Leg Strategy for bounded market between two options : one pe vs one ce? if the market is going to fluctuates between 24500 and 24300 scenario, i think this will be helpful. if yes, continue implementing this and add user action to select single option or twoo options.
+Status update:
+- Single option vs two-leg range pair selection is available in the intraday options setup flow.
+- F&O contract summary confirmation is available before the run starts.
+- Pair state now survives live restart/reconciliation so linked exits still work after reconnect.
+- Max open positions now treats one bounded pair as one strategy structure.
+- Added underlying bias filter for single-leg options using underlying VWAP + EMA.
+- Added simple volatility proxy filter using intraday range percentage.
+- Added minimum signal-score gating for intraday options entries.
+- Added time-based exit support for intraday options positions.
+- Added combined stop/target and combined P&L tracking for bounded two-leg pairs.
+- Added synchronization guard to unwind remaining pair exposure on partial pair failures.
+- OI/PCR, dynamic ATM roll, and general multi-strike basket logic are still pending because they need an option-chain and broader basket engine.

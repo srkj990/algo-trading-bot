@@ -23,6 +23,7 @@ from fno_data_fetcher import (
     get_available_option_strikes,
     get_contract_lot_size,
     get_fno_display_name,
+    get_fno_spot_quote_symbol,
     get_option_greeks_snapshot,
     resolve_futures_contract,
     resolve_option_contract,
@@ -40,7 +41,9 @@ from logger import finalize_session_logger, log_event, setup_session_logger
 from risk_manager import (
     atr_position_size,
     atr_stop_from_value,
+    calculate_stop_loss_price,
     calculate_target_price,
+    position_size,
 )
 from signal_scoring import (
     evaluate_symbol_signal,
@@ -480,6 +483,41 @@ def prompt_fno_option_contract_selection(base_symbol):
     return [contract], "FNO"
 
 
+def prompt_intraday_atm_option_selection(base_symbol):
+    expiry = prompt_fno_expiry_selection(base_symbol, instrument_type="OPT")
+    strike_offset_mode = prompt_choice(
+        "ATM strike mode: ATM(1), ATM + 1 STRIKE(2), ATM - 1 STRIKE(3) [default 1]: ",
+        [
+            {"label": "ATM", "key": 1, "value": "ATM"},
+            {"label": "ATM + 1", "key": 2, "value": "ATM_PLUS_1"},
+            {"label": "ATM - 1", "key": 3, "value": "ATM_MINUS_1"},
+        ],
+        default=1,
+    )
+    strike_offset = {
+        "ATM": 0,
+        "ATM_PLUS_1": 1,
+        "ATM_MINUS_1": -1,
+    }[strike_offset_mode]
+    scan_symbol = get_fno_spot_quote_symbol(base_symbol)
+    log_event(
+        (
+            f"[MAIN] Intraday ATM options mode selected for {get_fno_display_name(base_symbol)} "
+            f"| Expiry={expiry} | Underlying scan symbol={scan_symbol} | "
+            f"Strike mode={strike_offset_mode.replace('_', ' ')}"
+        )
+    )
+    atm_option_config = {
+        "mode": "ATM_DYNAMIC",
+        "underlying": base_symbol,
+        "expiry": expiry,
+        "scan_symbol": scan_symbol,
+        "strike_offset_mode": strike_offset_mode,
+        "strike_offset": strike_offset,
+    }
+    return [scan_symbol], "FNO_ATM", atm_option_config
+
+
 def prompt_fno_option_pair_selection(base_symbol):
     expiry = prompt_fno_expiry_selection(base_symbol, instrument_type="OPT")
     lower_pe_strike = prompt_option_strike_value(
@@ -541,42 +579,57 @@ def prompt_fno_contract_selection(engine_name):
                 f"[MAIN] Resolved F&O futures contract for "
                 f"{get_fno_display_name(base_symbol)}: {contract} | Lot size={lot_size}"
             )
-        return contracts, "FNO", None
+        return contracts, "FNO", None, None
 
     if engine_name == "intraday_options":
         structure_mode = prompt_choice(
-            "Options structure: SINGLE OPTION(1) or TWO-LEG RANGE PAIR(2)? [default 1]: ",
+            "Options structure: ATM SINGLE OPTION(1) or TWO-LEG RANGE PAIR(2)? [default 1]: ",
             [
-                {"label": "SINGLE OPTION", "key": 1, "value": "SINGLE"},
+                {"label": "ATM SINGLE OPTION", "key": 1, "value": "SINGLE"},
                 {"label": "TWO-LEG RANGE PAIR", "key": 2, "value": "PAIR"},
             ],
             default=1,
         )
         if structure_mode == "PAIR":
-            return prompt_fno_option_pair_selection(selection)
+            symbols, symbol_mode, pair_config = prompt_fno_option_pair_selection(selection)
+            return symbols, symbol_mode, pair_config, None
+        symbols, symbol_mode, atm_option_config = prompt_intraday_atm_option_selection(selection)
+        return symbols, symbol_mode, None, atm_option_config
 
     symbols, symbol_mode = prompt_fno_option_contract_selection(selection)
-    return symbols, symbol_mode, None
+    return symbols, symbol_mode, None, None
 
 
-def log_selected_fno_contract_summary(engine_name, selected_symbols, option_pair_config=None):
+def log_selected_fno_contract_summary(
+    engine_name,
+    selected_symbols,
+    option_pair_config=None,
+    atm_option_config=None,
+):
     if not selected_symbols:
         return
 
     log_event("[SETUP] Selected F&O contract summary:")
     for symbol in selected_symbols:
-        lot_size = get_contract_lot_size(symbol)
-        line = f"[SETUP]   {symbol} | Lot size={lot_size}"
+        if atm_option_config and symbol == atm_option_config["scan_symbol"]:
+            line = (
+                f"[SETUP]   ATM SCALP | Underlying={atm_option_config['underlying']} "
+                f"| Expiry={atm_option_config['expiry']} | Scan={symbol}"
+            )
+        else:
+            lot_size = get_contract_lot_size(symbol)
+            line = f"[SETUP]   {symbol} | Lot size={lot_size}"
         if "options" in engine_name:
             try:
-                analytics = get_option_greeks_snapshot(symbol)
-                line += (
-                    f" | Premium={analytics['option_price']:.2f}"
-                    f" | Underlying={analytics['underlying_price']:.2f}"
-                    f" | Delta={analytics['delta']:.3f}"
-                    f" | IV={analytics['iv']:.4f}"
-                    f" | DTE={analytics.get('days_to_expiry', 'N/A')}"
-                )
+                if not (atm_option_config and symbol == atm_option_config["scan_symbol"]):
+                    analytics = get_option_greeks_snapshot(symbol)
+                    line += (
+                        f" | Premium={analytics['option_price']:.2f}"
+                        f" | Underlying={analytics['underlying_price']:.2f}"
+                        f" | Delta={analytics['delta']:.3f}"
+                        f" | IV={analytics['iv']:.4f}"
+                        f" | DTE={analytics.get('days_to_expiry', 'N/A')}"
+                    )
             except Exception as exc:
                 line += f" | Greeks unavailable ({exc})"
         log_event(line)
@@ -592,9 +645,29 @@ def log_selected_fno_contract_summary(engine_name, selected_symbols, option_pair
             )
         )
 
+    if atm_option_config:
+        log_event(
+            (
+                f"[SETUP]   Structure=ATM_DYNAMIC | Underlying={atm_option_config['underlying']} "
+                f"| Expiry={atm_option_config['expiry']} | "
+                f"Strike mode={atm_option_config['strike_offset_mode'].replace('_', ' ')} | "
+                "Contracts resolved live from underlying movement"
+            )
+        )
 
-def confirm_selected_fno_contracts(engine_name, selected_symbols, option_pair_config=None):
-    log_selected_fno_contract_summary(engine_name, selected_symbols, option_pair_config)
+
+def confirm_selected_fno_contracts(
+    engine_name,
+    selected_symbols,
+    option_pair_config=None,
+    atm_option_config=None,
+):
+    log_selected_fno_contract_summary(
+        engine_name,
+        selected_symbols,
+        option_pair_config,
+        atm_option_config,
+    )
     confirmation = prompt_choice(
         "Continue with these F&O contracts? YES(1) or NO(2) [default 1]: ",
         [
@@ -655,6 +728,68 @@ def log_market_context(symbol, context):
         log_event(f"[MARKET] {symbol} | {context['reason']}")
 
 
+def get_stable_signal_data(engine, data, now):
+    if data.empty or len(data) < 2:
+        return data
+
+    latest_ts = data.index[-1]
+    latest_naive = latest_ts.to_pydatetime().replace(tzinfo=None)
+    current_minute = now.replace(second=0, microsecond=0)
+    if latest_naive >= current_minute and getattr(engine, "require_closed_signal_candle", False):
+        return data.iloc[:-1]
+    return data
+
+
+def log_order_signal_banner(title, lines):
+    border = "=" * 72
+    log_event(border)
+    log_event(f"[ORDER] {title}")
+    for line in lines:
+        log_event(f"[ORDER] {line}")
+    log_event(border)
+
+
+def resolve_atm_option_contract_snapshot(engine, atm_option_config, evaluation, now):
+    option_type = evaluation.get("option_type")
+    if option_type not in {"CE", "PE"}:
+        return None
+
+    underlying = atm_option_config["underlying"]
+    expiry = atm_option_config["expiry"]
+    strike_offset = int(atm_option_config.get("strike_offset", 0))
+    strike = get_atm_option_strike(
+        underlying,
+        expiry,
+        option_type,
+        strike_offset=strike_offset,
+    )
+    contract_symbol = resolve_option_contract(underlying, expiry, strike, option_type)
+    option_data = get_data(
+        contract_symbol,
+        period=engine.data_period,
+        interval=engine.data_interval,
+    )
+    stable_option_data = get_stable_signal_data(engine, option_data, now)
+    if stable_option_data.empty:
+        raise RuntimeError(f"No option candles returned for {contract_symbol}")
+
+    latest_candle = stable_option_data.iloc[-1]
+    latest_close = float(latest_candle["Close"])
+    return {
+        "symbol": contract_symbol,
+        "strike": strike,
+        "option_type": option_type,
+        "data": stable_option_data,
+        "latest_candle": latest_candle,
+        "latest_close": latest_close,
+        "atr": get_atr_value(stable_option_data),
+        "analytics": get_option_greeks_snapshot(contract_symbol),
+        "trade_identity": underlying,
+        "strike_offset": strike_offset,
+        "strike_offset_mode": atm_option_config.get("strike_offset_mode", "ATM"),
+    }
+
+
 def get_cached_regime_context(regime_cache, symbol, trade_day):
     cached = regime_cache.get(symbol)
     if not cached:
@@ -704,6 +839,15 @@ def close_position_symbols(engine, positions, symbols, reason):
         if not position:
             continue
         exit_side = "SELL" if position["side"] == "BUY" else "BUY"
+        log_order_signal_banner(
+            "EXIT",
+            [
+                f"Symbol: {symbol}",
+                f"ExitSide: {exit_side}",
+                f"Qty: {position['quantity']}",
+                f"Reason: {reason}",
+            ],
+        )
         place_order(
             exit_side,
             position["quantity"],
@@ -962,6 +1106,15 @@ def force_square_off_positions(engine, positions):
     changed = False
     for symbol, position in list(positions.items()):
         exit_side = "SELL" if position["side"] == "BUY" else "BUY"
+        log_order_signal_banner(
+            "FORCE SQUARE OFF",
+            [
+                f"Symbol: {symbol}",
+                f"ExitSide: {exit_side}",
+                f"Qty: {position['quantity']}",
+                "Reason: Intraday square-off",
+            ],
+        )
         place_order(
             exit_side,
             position["quantity"],
@@ -1300,14 +1453,16 @@ try:
     capital = prompt_float("Enter capital for strategy: ", minimum=1)
 
     option_pair_config = None
+    atm_option_config = None
     if engine_choice in {"3", "4", "5", "6"}:
-        selected_symbols, symbol_mode, option_pair_config = prompt_fno_contract_selection(
+        selected_symbols, symbol_mode, option_pair_config, atm_option_config = prompt_fno_contract_selection(
             ENGINE_OPTIONS[engine_choice].name
         )
         confirm_selected_fno_contracts(
             ENGINE_OPTIONS[engine_choice].name,
             selected_symbols,
             option_pair_config=option_pair_config,
+            atm_option_config=atm_option_config,
         )
     else:
         selected_symbols, symbol_mode = prompt_symbol_selection()
@@ -1343,6 +1498,11 @@ try:
         target_percent=target_percent,
         trailing_percent=trailing_percent,
     )
+
+    if engine.name == "intraday_options":
+        engine.sl_percent = 10.0
+        engine.target_percent = 20.0
+        engine.trailing_percent = 7.5
 
     if engine.name == "delivery_equity":
         log_event("[SETUP] Delivery equity settings - for long-term CNC positions")
@@ -1386,6 +1546,11 @@ try:
             log_event(
                 "[SETUP] Intraday F&O will use MIS product, lot-based quantity rounding, "
                 "and auto square-off near market close."
+            )
+        if engine.name == "intraday_options":
+            log_event(
+                "[SETUP] Intraday ATM options scalping uses dynamic ATM contract selection, "
+                "10% stop-loss, 20% target, and cooldown-managed entries."
             )
 
     log_event(f"[MAIN] Engine selected: {engine.name}")
@@ -1481,60 +1646,79 @@ try:
     log_event("[SETUP]   Multi: Use multiple strategies with agreement confirmation")
     log_event("[SETUP]   Auto Adaptive: Automatically choose strategy based on market conditions")
 
-    if engine.name == "intraday_equity":
-        mode_prompt = "Select Mode: 1 (Single) / 2 (Multi) / 3 (Auto Adaptive) [default 3]: "
-        default_mode = "3"
-    else:
-        mode_prompt = "Select Mode: 1 (Single) / 2 (Multi) [default 1]: "
-        default_mode = "1"
-    mode = input(mode_prompt).strip()
-    
-    if not mode:
-        mode = default_mode
-        if engine.name == "intraday_equity" and default_mode == "3":
-            log_event("[MAIN] Using Auto Adaptive strategy as default for intraday_equity")
-
-    if mode == "1":
-        choices = [
-            {"label": value, "key": key, "value": value}
-            for key, value in engine.supported_strategies.items()
-        ]
+    if engine.name == "intraday_options":
+        mode = "1"
         strategy_name = prompt_choice(
-            "Choose strategy: ",
-            choices,
-        )
-        log_event(f"[MAIN] Strategy selected: {strategy_name}")
-        min_confirmations = None
-        strategies = None
-
-    elif mode == "2":
-        strategies = prompt_multi_strategy_selection(engine.supported_strategies)
-        strategy_count = len(strategies)
-        min_confirmations = DEFAULT_CONFIRMATIONS.get(
-            strategy_count,
-            strategy_count,
-        )
-        strategy_name = None
-        log_event(
             (
-                f"[MAIN] Minimum confirmations set to "
-                f"{min_confirmations} for {strategy_count} strategies"
-            )
+                "Intraday options strategy: Momentum(1), ORB(2), "
+                "VWAP Reversion(3), Multi-strategy(4) [default 1]: "
+            ),
+            [
+                {"label": "MOMENTUM", "key": 1, "value": "ATM_MOMENTUM"},
+                {"label": "ORB", "key": 2, "value": "ATM_ORB"},
+                {"label": "VWAP REVERSION", "key": 3, "value": "ATM_VWAP_REVERSION"},
+                {"label": "MULTI-STRATEGY", "key": 4, "value": "ATM_MULTI"},
+            ],
+            default=1,
         )
-
-    elif mode == "3" and engine.name == "intraday_equity":
-        strategy_name = None
         strategies = None
         min_confirmations = None
-        log_event("[MAIN] Strategy mode selected: AUTO ADAPTIVE")
-        log_event("[MAIN] Auto Adaptive mode will dynamically select strategies based on market conditions")
-        log_event("[MAIN]   - Gap Up: Uses ORB strategy")
-        log_event("[MAIN]   - Gap Down: Uses RSI/BREAKOUT strategy")
-        log_event("[MAIN]   - Normal: Uses MA strategy with VWAP bias")
-
+        log_event(f"[MAIN] Intraday options strategy selected: {strategy_name}")
     else:
-        log_event("Invalid mode. Exiting.", "error")
-        raise SystemExit
+        if engine.name == "intraday_equity":
+            mode_prompt = "Select Mode: 1 (Single) / 2 (Multi) / 3 (Auto Adaptive) [default 3]: "
+            default_mode = "3"
+        else:
+            mode_prompt = "Select Mode: 1 (Single) / 2 (Multi) [default 1]: "
+            default_mode = "1"
+        mode = input(mode_prompt).strip()
+
+        if not mode:
+            mode = default_mode
+            if engine.name == "intraday_equity" and default_mode == "3":
+                log_event("[MAIN] Using Auto Adaptive strategy as default for intraday_equity")
+
+        if mode == "1":
+            choices = [
+                {"label": value, "key": key, "value": value}
+                for key, value in engine.supported_strategies.items()
+            ]
+            strategy_name = prompt_choice(
+                "Choose strategy: ",
+                choices,
+            )
+            log_event(f"[MAIN] Strategy selected: {strategy_name}")
+            min_confirmations = None
+            strategies = None
+
+        elif mode == "2":
+            strategies = prompt_multi_strategy_selection(engine.supported_strategies)
+            strategy_count = len(strategies)
+            min_confirmations = DEFAULT_CONFIRMATIONS.get(
+                strategy_count,
+                strategy_count,
+            )
+            strategy_name = None
+            log_event(
+                (
+                    f"[MAIN] Minimum confirmations set to "
+                    f"{min_confirmations} for {strategy_count} strategies"
+                )
+            )
+
+        elif mode == "3" and engine.name == "intraday_equity":
+            strategy_name = None
+            strategies = None
+            min_confirmations = None
+            log_event("[MAIN] Strategy mode selected: AUTO ADAPTIVE")
+            log_event("[MAIN] Auto Adaptive mode will dynamically select strategies based on market conditions")
+            log_event("[MAIN]   - Gap Up: Uses ORB strategy")
+            log_event("[MAIN]   - Gap Down: Uses RSI/BREAKOUT strategy")
+            log_event("[MAIN]   - Normal: Uses MA strategy with VWAP bias")
+
+        else:
+            log_event("Invalid mode. Exiting.", "error")
+            raise SystemExit
 
     log_event(
         (
@@ -1649,6 +1833,13 @@ try:
 
             latest_candle = data.iloc[-1]
             latest_close = float(latest_candle["Close"])
+            signal_data = get_stable_signal_data(engine, data, now)
+            if signal_data.empty:
+                log_event(
+                    f"[SCAN] {symbol} has no fully closed candle available yet, skipping signal evaluation",
+                    "warning",
+                )
+                continue
             active_mode = mode
             active_strategy_name = strategy_name
             active_strategies = strategies
@@ -1656,6 +1847,17 @@ try:
             market_context = None
             intraday_history = None
             option_analytics = None
+            candidate_symbol = symbol
+            candidate_latest_close = latest_close
+            candidate_latest_candle = latest_candle
+            candidate_atr = get_atr_value(signal_data)
+            trade_identity = symbol
+            dynamic_atm_scan = (
+                engine.name == "intraday_options"
+                and atm_option_config is not None
+                and symbol == atm_option_config["scan_symbol"]
+            )
+            contract_data = signal_data
 
             if (
                 engine.name == "intraday_equity"
@@ -1708,14 +1910,58 @@ try:
                 active_strategies = market_context["strategies"]
                 active_min_confirmations = market_context["min_confirmations"]
 
-            evaluation = evaluate_symbol_signal(
-                data,
-                active_mode,
-                strategy_name=active_strategy_name,
-                strategies=active_strategies,
-                min_confirmations=active_min_confirmations,
-            )
-            if "options" in engine.name:
+            if engine.name == "intraday_options" and atm_option_config and not dynamic_atm_scan:
+                evaluation = {
+                    "signal": "HOLD",
+                    "agreement_count": 0,
+                    "score": 0.0,
+                    "details": {},
+                    "reason": "ATM option positions are managed by exits; new signals come from the underlying",
+                    "option_signal": None,
+                    "option_type": None,
+                    "strength": 0.0,
+                }
+            else:
+                evaluation = evaluate_symbol_signal(
+                    signal_data,
+                    active_mode,
+                    strategy_name=active_strategy_name,
+                    strategies=active_strategies,
+                    min_confirmations=active_min_confirmations,
+                )
+
+            if dynamic_atm_scan and evaluation.get("option_signal") in {"BUY_CE", "BUY_PE"}:
+                try:
+                    contract_snapshot = resolve_atm_option_contract_snapshot(
+                        engine,
+                        atm_option_config,
+                        evaluation,
+                        now,
+                    )
+                    candidate_symbol = contract_snapshot["symbol"]
+                    candidate_latest_close = contract_snapshot["latest_close"]
+                    candidate_latest_candle = contract_snapshot["latest_candle"]
+                    candidate_atr = contract_snapshot["atr"]
+                    trade_identity = contract_snapshot["trade_identity"]
+                    option_analytics = contract_snapshot["analytics"]
+                    contract_data = contract_snapshot["data"]
+                    log_event(
+                        (
+                            f"[ATM] {symbol} -> {evaluation['option_signal']} -> "
+                            f"{candidate_symbol} | Premium={candidate_latest_close:.2f}"
+                        )
+                    )
+                except Exception as exc:
+                    log_event(
+                        f"[ATM] Could not resolve ATM contract for {symbol}: {exc}",
+                        "warning",
+                    )
+                    evaluation["signal"] = "HOLD"
+                    evaluation["agreement_count"] = 0
+                    evaluation["score"] = 0.0
+                    evaluation["reason"] = str(exc)
+
+            elif "options" in engine.name:
                 try:
                     option_analytics = get_option_greeks_snapshot(symbol)
                     if (
@@ -1732,7 +1978,7 @@ try:
             if hasattr(engine, "apply_signal_filters"):
                 evaluation = engine.apply_signal_filters(
                     evaluation,
-                    data,
+                    contract_data,
                     intraday_history_df=intraday_history,
                     min_confirmations=active_min_confirmations or 1,
                     analytics=option_analytics,
@@ -1740,7 +1986,7 @@ try:
 
             symbol_snapshots[symbol] = {
                 "data": data,
-                "latest_candle": latest_candle,
+                "latest_candle": candidate_latest_candle,
                 "latest_close": latest_close,
                 "signal": evaluation["signal"],
                 "agreement_count": evaluation["agreement_count"],
@@ -1751,7 +1997,8 @@ try:
                 "breakout_volume_note": evaluation.get("breakout_volume_note"),
                 "options_filter_note": evaluation.get("options_filter_note"),
                 "analytics": option_analytics,
-                "atr": get_atr_value(data),
+                "atr": candidate_atr,
+                "reason": evaluation.get("reason"),
             }
 
             log_event(
@@ -1759,13 +2006,15 @@ try:
                     f"[SCAN] {symbol} | Signal={evaluation['signal']} | "
                     f"Agree={evaluation['agreement_count']} | "
                     f"Score={evaluation['score']:.4f} | "
-                        f"ATR={symbol_snapshots[symbol]['atr']:.2f} | "
-                        f"Last close={latest_close:.2f} | "
-                        f"VWAP bias={evaluation.get('vwap_bias', 'N/A')} | "
-                        f"Range%={evaluation.get('range_pct', 0.0):.2f} | "
-                        f"Underlying bias={evaluation.get('underlying_bias', 'N/A')}"
-                    )
+                    f"ATR={symbol_snapshots[symbol]['atr']:.2f} | "
+                    f"Last close={candidate_latest_close:.2f} | "
+                    f"VWAP bias={evaluation.get('vwap_bias', 'N/A')} | "
+                    f"Range%={evaluation.get('range_pct', 0.0):.2f} | "
+                    f"Underlying bias={evaluation.get('underlying_bias', 'N/A')}"
                 )
+            )
+            if evaluation.get("reason"):
+                log_event(f"[SCAN] {symbol} | Reason: {evaluation['reason']}")
             if evaluation.get("breakout_volume_note"):
                 log_event(
                     f"[SCAN] {symbol} | Breakout volume filter: "
@@ -1812,13 +2061,15 @@ try:
             if normalized_signal:
                 candidates.append(
                     {
-                        "symbol": symbol,
+                        "symbol": candidate_symbol,
                         "signal": normalized_signal,
                         "agreement_count": evaluation["agreement_count"],
                         "score": evaluation["score"],
-                        "latest_close": latest_close,
+                        "latest_close": candidate_latest_close,
                         "atr": symbol_snapshots[symbol]["atr"],
                         "analytics": option_analytics,
+                        "trade_identity": trade_identity,
+                        "underlying_signal": evaluation.get("option_signal"),
                     }
                 )
 
@@ -2022,12 +2273,28 @@ try:
                             else leg_entry["entry_price"] + trailing_distance
                         )
                         try:
-                            place_order(
+                            log_order_signal_banner(
+                                "PAIR LEG ENTRY",
+                                [
+                                    f"Structure: {pair_id}",
+                                    f"Leg: {leg_symbol}",
+                                    f"Side: {candidate['signal']}",
+                                    f"Qty: {qty}",
+                                    f"Entry: {leg_entry['entry_price']:.2f}",
+                                    f"Stop: {leg_entry['stop_data']['stop_loss_price']:.2f}",
+                                    f"Target: {target_price:.2f}",
+                                    f"Trail: {trailing_stop:.2f}",
+                                ],
+                            )
+                            order_id = place_order(
                                 candidate["signal"],
                                 qty,
                                 leg_symbol,
                                 note=f"Pair entry {pair_id}",
                                 product=engine.order_product,
+                            )
+                            log_event(
+                                f"[ORDER] Pair leg accepted | Symbol={leg_symbol} | OrderId={order_id}"
                             )
                         except Exception:
                             if entered_pair_symbols:
@@ -2096,11 +2363,26 @@ try:
                     log_event(f"[LIMIT] {symbol} already has an open position")
                     continue
 
-                if one_trade_per_symbol_per_day and symbol in traded_symbols_today:
+                trade_identity = candidate.get("trade_identity", symbol)
+                if one_trade_per_symbol_per_day and trade_identity in traded_symbols_today:
                     log_event(
-                        f"[LIMIT] {symbol} already traded today, skipping"
+                        f"[LIMIT] {trade_identity} already traded today, skipping"
                     )
                     continue
+
+                if engine.name == "intraday_options" and atm_option_config:
+                    same_underlying_open = any(
+                        (
+                            (position.get("entry_analytics") or {}).get("underlying")
+                            == trade_identity
+                        )
+                        for position in positions.values()
+                    )
+                    if same_underlying_open:
+                        log_event(
+                            f"[LIMIT] {trade_identity} already has an open ATM options position"
+                        )
+                        continue
 
                 if hasattr(engine, "get_trade_frequency_key") and hasattr(engine, "get_max_trades_per_day"):
                     trade_key = engine.get_trade_frequency_key(
@@ -2123,27 +2405,46 @@ try:
 
                 entry_price = candidate["latest_close"]
                 atr_value = candidate.get("atr", 0.0)
-                stop_data = atr_stop_from_value(
-                    candidate["signal"],
-                    entry_price,
-                    atr_value,
-                    atr_stop_multiplier,
-                )
-                if stop_data["stop_distance"] <= 0:
-                    log_event(
-                        f"[RISK] ATR unavailable for {symbol}, skipping entry",
-                        "warning",
+                if engine.name == "intraday_options" and atm_option_config:
+                    stop_distance = entry_price * 0.10
+                    stop_loss_price = calculate_stop_loss_price(
+                        candidate["signal"],
+                        entry_price,
+                        stop_distance,
                     )
-                    continue
+                    stop_data = {
+                        "atr": atr_value,
+                        "stop_distance": stop_distance,
+                        "stop_loss_price": stop_loss_price,
+                    }
+                    qty = position_size(
+                        capital=capital,
+                        entry_price=entry_price,
+                        stop_loss_price=stop_loss_price,
+                        risk_percent=risk_percent,
+                    )
+                else:
+                    stop_data = atr_stop_from_value(
+                        candidate["signal"],
+                        entry_price,
+                        atr_value,
+                        atr_stop_multiplier,
+                    )
+                    if stop_data["stop_distance"] <= 0:
+                        log_event(
+                            f"[RISK] ATR unavailable for {symbol}, skipping entry",
+                            "warning",
+                        )
+                        continue
 
-                sizing = atr_position_size(
-                    capital=capital,
-                    entry_price=entry_price,
-                    atr_value=atr_value,
-                    atr_multiplier=atr_stop_multiplier,
-                    risk_percent=risk_percent,
-                )
-                qty = sizing["quantity"]
+                    sizing = atr_position_size(
+                        capital=capital,
+                        entry_price=entry_price,
+                        atr_value=atr_value,
+                        atr_multiplier=atr_stop_multiplier,
+                        risk_percent=risk_percent,
+                    )
+                    qty = sizing["quantity"]
                 qty = apply_capital_limits_to_quantity(
                     qty,
                     entry_price,
@@ -2171,8 +2472,12 @@ try:
                     continue
 
                 estimated_trade_capital = entry_price * qty
-                target_distance = stop_data["stop_distance"] * target_risk_reward
-                trailing_distance = atr_value * trailing_atr_multiplier
+                if engine.name == "intraday_options" and atm_option_config:
+                    target_distance = entry_price * 0.20
+                    trailing_distance = entry_price * 0.075
+                else:
+                    target_distance = stop_data["stop_distance"] * target_risk_reward
+                    trailing_distance = atr_value * trailing_atr_multiplier
                 target_price = calculate_target_price(
                     candidate["signal"],
                     entry_price,
@@ -2195,13 +2500,33 @@ try:
                         f"Qty={qty}"
                     )
                 )
-                place_order(
+                entry_lines = [
+                    f"Symbol: {symbol}",
+                    f"Side: {candidate['signal']}",
+                    f"Qty: {qty}",
+                    f"Entry: {entry_price:.2f}",
+                    f"Stop: {stop_data['stop_loss_price']:.2f}",
+                    f"Target: {target_price:.2f}",
+                    f"Trail: {trailing_stop:.2f}",
+                    f"Score: {candidate['score']:.4f}",
+                ]
+                if candidate.get("analytics"):
+                    analytics = candidate["analytics"]
+                    entry_lines.append(
+                        f"Underlying: {analytics.get('underlying', 'N/A')} @ {analytics.get('underlying_price', 0.0):.2f}"
+                    )
+                    entry_lines.append(
+                        f"OptionType: {(analytics.get('option_type') or 'N/A').upper()} | StrikeMode: {atm_option_config.get('strike_offset_mode', 'N/A') if atm_option_config else 'N/A'}"
+                    )
+                log_order_signal_banner("SINGLE ENTRY", entry_lines)
+                order_id = place_order(
                     candidate["signal"],
                     qty,
                     symbol,
                     note="Entry",
                     product=engine.order_product,
                 )
+                log_event(f"[ORDER] Entry accepted | Symbol={symbol} | OrderId={order_id}")
                 positions[symbol] = build_position(
                     symbol=symbol,
                     side=candidate["signal"],
@@ -2217,7 +2542,7 @@ try:
                     entry_analytics=candidate.get("analytics"),
                     entry_time=now.isoformat(),
                 )
-                traded_symbols_today.add(symbol)
+                traded_symbols_today.add(trade_identity)
                 if hasattr(engine, "get_trade_frequency_key"):
                     trade_key = engine.get_trade_frequency_key(
                         symbol,

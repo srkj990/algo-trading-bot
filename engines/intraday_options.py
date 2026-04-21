@@ -24,12 +24,19 @@ class IntradayOptionsEngine(OptionsEquityEngine):
     data_period = "10d"
     data_interval = "1m"
     order_product = "MIS"
-    market_open = time(9, 15)
-    entry_cutoff = time(15, 5)
+    supported_strategies = {
+        "1": "ATM_MOMENTUM",
+        "2": "ATM_ORB",
+        "3": "ATM_VWAP_REVERSION",
+        "4": "ATM_MULTI",
+    }
+    market_open = time(9, 20)
+    entry_cutoff = time(15, 10)
     square_off_time = time(15, 15)
     market_close = time(15, 30)
-    sleep_seconds = 60
+    sleep_seconds = 15
     cooldown_seconds = 180
+    require_closed_signal_candle = True
     max_symbol_allocation = 0.2
     min_contract_price = 8.0
     min_abs_delta = 0.2

@@ -185,7 +185,7 @@ def get_underlying_spot_price(base_symbol):
     return last_price
 
 
-def get_atm_option_strike(base_symbol, expiry, option_type=None):
+def get_atm_option_strike(base_symbol, expiry, option_type=None, strike_offset=0):
     del option_type
     strikes = get_available_option_strikes(base_symbol, expiry)
     if not strikes:
@@ -194,7 +194,10 @@ def get_atm_option_strike(base_symbol, expiry, option_type=None):
         )
 
     spot_price = get_underlying_spot_price(base_symbol)
-    return min(strikes, key=lambda strike: abs(strike - spot_price))
+    atm_strike = min(strikes, key=lambda strike: abs(strike - spot_price))
+    atm_index = strikes.index(atm_strike)
+    target_index = max(0, min(len(strikes) - 1, atm_index + int(strike_offset)))
+    return strikes[target_index]
 
 
 def resolve_futures_contract(base_symbol, expiry):

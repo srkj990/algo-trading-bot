@@ -1,9 +1,10 @@
 from config import MIN_CANDLES
 from indicators import compute_atr, compute_rsi, compute_vwap
-from strategy import generate_signal
+from strategy import generate_signal_payload
 
 
-def get_strategy_score(strategy_name, df, signal):
+def get_strategy_score(strategy_name, df, signal_payload):
+    signal = signal_payload["execution_signal"]
     if signal not in {"BUY", "SELL"} or df.empty:
         return 0.0
 
@@ -13,6 +14,9 @@ def get_strategy_score(strategy_name, df, signal):
     atr_value = float(atr_series.iloc[-1]) if not atr_series.empty else 0.0
     normalized_atr = (atr_value / close) if close > 0 and atr_value == atr_value else 0.0
     score = 0.0
+
+    if strategy_name.startswith("ATM_"):
+        return float(signal_payload.get("strength", 0.0)) + (normalized_atr * 0.1)
 
     if strategy_name == "MA" and len(df) >= MIN_CANDLES["MA"]:
         ma20 = float(df["Close"].rolling(20).mean().iloc[-1])
@@ -62,13 +66,26 @@ def evaluate_symbol_signal(
     min_confirmations=None,
 ):
     if mode == "1":
-        signal = generate_signal(data, strategy_name)
-        score = get_strategy_score(strategy_name, data, signal)
+        signal_payload = generate_signal_payload(data, strategy_name)
+        signal = signal_payload["execution_signal"]
+        score = get_strategy_score(strategy_name, data, signal_payload)
         return {
             "signal": signal,
             "agreement_count": 1 if signal in {"BUY", "SELL"} else 0,
             "score": score,
-            "details": {strategy_name: {"signal": signal, "score": score}},
+            "details": {
+                strategy_name: {
+                    "signal": signal,
+                    "score": score,
+                    "reason": signal_payload.get("reason"),
+                    "option_signal": signal_payload.get("option_signal"),
+                    "strength": signal_payload.get("strength", 0.0),
+                }
+            },
+            "reason": signal_payload.get("reason"),
+            "option_signal": signal_payload.get("option_signal"),
+            "option_type": signal_payload.get("option_type"),
+            "strength": signal_payload.get("strength", 0.0),
         }
 
     details = {}
@@ -76,11 +93,15 @@ def evaluate_symbol_signal(
     sell_count = 0
 
     for strat in strategies:
-        strat_signal = generate_signal(data, strat)
-        strat_score = get_strategy_score(strat, data, strat_signal)
+        signal_payload = generate_signal_payload(data, strat)
+        strat_signal = signal_payload["execution_signal"]
+        strat_score = get_strategy_score(strat, data, signal_payload)
         details[strat] = {
             "signal": strat_signal,
             "score": strat_score,
+            "reason": signal_payload.get("reason"),
+            "option_signal": signal_payload.get("option_signal"),
+            "strength": signal_payload.get("strength", 0.0),
         }
         if strat_signal == "BUY":
             buy_count += 1
@@ -108,6 +129,10 @@ def evaluate_symbol_signal(
         "agreement_count": agreement_count,
         "score": score,
         "details": details,
+        "reason": None,
+        "option_signal": None,
+        "option_type": None,
+        "strength": 0.0,
     }
 
 
