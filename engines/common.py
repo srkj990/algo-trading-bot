@@ -61,6 +61,17 @@ def update_trailing_stop(position, latest_close, trailing_pct):
     old_trailing = position["trailing_stop"]
     if position["side"] == "BUY":
         position["best_price"] = max(position["best_price"], latest_close)
+        activation_distance = position.get("trailing_activation_distance")
+        if activation_distance is not None:
+            try:
+                activation_distance = float(activation_distance)
+            except (TypeError, ValueError):
+                activation_distance = None
+        if activation_distance and activation_distance > 0:
+            favorable_move = position["best_price"] - float(position["entry_price"])
+            if favorable_move < activation_distance:
+                return False
+            position["trailing_active"] = True
         if trailing_distance is not None:
             candidate = position["best_price"] - trailing_distance
         else:
@@ -68,6 +79,17 @@ def update_trailing_stop(position, latest_close, trailing_pct):
         position["trailing_stop"] = max(position["trailing_stop"], candidate)
     else:
         position["best_price"] = min(position["best_price"], latest_close)
+        activation_distance = position.get("trailing_activation_distance")
+        if activation_distance is not None:
+            try:
+                activation_distance = float(activation_distance)
+            except (TypeError, ValueError):
+                activation_distance = None
+        if activation_distance and activation_distance > 0:
+            favorable_move = float(position["entry_price"]) - position["best_price"]
+            if favorable_move < activation_distance:
+                return False
+            position["trailing_active"] = True
         if trailing_distance is not None:
             candidate = position["best_price"] + trailing_distance
         else:

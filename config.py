@@ -185,6 +185,61 @@ MIN_CANDLES = {
     "IV": 1,
 }
 
+# ----------------------------
+# Execution Safety Defaults
+# ----------------------------
+#
+# These defaults are tuned to reduce overtrading on low-conviction 1-minute signals.
+# They are environment-variable overridable via the same name.
+
+# Candidate filtering: skip very low-quality signals even if they rank high relative to others.
+# Score units are "fraction of price" (e.g. 0.01 ~= 1% move proxy).
+MIN_RANKED_CANDIDATE_SCORE = float(os.getenv("MIN_RANKED_CANDIDATE_SCORE", "0.008"))
+
+# Intraday equity auto-adaptive: normal sessions should require both MA and RSI to agree.
+INTRADAY_EQUITY_AUTO_NORMAL_MIN_CONFIRMATIONS = int(
+    os.getenv("INTRADAY_EQUITY_AUTO_NORMAL_MIN_CONFIRMATIONS", "2")
+)
+
+# Reversal exit confirmation: require opposite signal to persist this many candles.
+REVERSAL_EXIT_CONFIRMATION_CANDLES = int(
+    os.getenv("REVERSAL_EXIT_CONFIRMATION_CANDLES", "2")
+)
+
+# Trailing stop activation: trailing only starts after price moves in favor by at least
+# max(trailing_distance, stop_distance * multiplier).
+TRAILING_ACTIVATION_STOP_DISTANCE_MULTIPLIER = float(
+    os.getenv("TRAILING_ACTIVATION_STOP_DISTANCE_MULTIPLIER", "0.5")
+)
+
+# Reduce entries late in the day for intraday equity (avoid fresh entries close to square-off).
+# Default: 30 minutes before square-off (15:15 -> 14:45).
+INTRADAY_EQUITY_ENTRY_CUTOFF_MINUTES_BEFORE_SQUAREOFF = int(
+    os.getenv("INTRADAY_EQUITY_ENTRY_CUTOFF_MINUTES_BEFORE_SQUAREOFF", "30")
+)
+
+# Transaction cost model: used for pre-trade filtering and post-trade net P&L estimates.
+TRANSACTION_COST_MODEL_ENABLED = os.getenv("TRANSACTION_COST_MODEL_ENABLED", "1") not in {
+    "0",
+    "false",
+    "False",
+}
+
+# Slippage model (round-trip): applied as a fraction of price per side.
+TRANSACTION_SLIPPAGE_PCT_PER_SIDE = float(
+    os.getenv("TRANSACTION_SLIPPAGE_PCT_PER_SIDE", "0.0002")
+)
+
+# Expected edge proxy uses score * price. Multiplier lets you calibrate "how much of score
+# is realistically captured".
+EXPECTED_EDGE_SCORE_MULTIPLIER = float(
+    os.getenv("EXPECTED_EDGE_SCORE_MULTIPLIER", "1.0")
+)
+
+# Reject trades where expected edge is not large enough versus cost.
+MIN_EDGE_TO_COST_RATIO = float(os.getenv("MIN_EDGE_TO_COST_RATIO", "1.2"))
+COST_EDGE_BUFFER_RUPEES = float(os.getenv("COST_EDGE_BUFFER_RUPEES", "5.0"))
+
 # Nifty 50 symbol universe
 # Source note:
 # This list reflects the current project configuration target universe.

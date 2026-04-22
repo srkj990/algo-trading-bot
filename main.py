@@ -51,6 +51,16 @@ from signal_scoring import (
     rank_candidates,
 )
 from state_store import load_engine_state, save_engine_state
+from config import (
+    COST_EDGE_BUFFER_RUPEES,
+    EXPECTED_EDGE_SCORE_MULTIPLIER,
+    MIN_EDGE_TO_COST_RATIO,
+    TRAILING_ACTIVATION_STOP_DISTANCE_MULTIPLIER,
+    TRANSACTION_COST_MODEL_ENABLED,
+    TRANSACTION_SLIPPAGE_PCT_PER_SIDE,
+)
+from reporting import export_trade_book_report, summarize_by_exit_reason
+from transaction_costs import estimate_intraday_equity_round_trip_cost
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -832,21 +842,218 @@ def get_pair_position_metrics(positions, pair_symbols, symbol_snapshots):
     }
 
 
-def close_position_symbols(engine, positions, symbols, reason):
+def get_latest_exit_price(engine, symbol, position, symbol_snapshots=None):
+    snapshot = (symbol_snapshots or {}).get(symbol)
+    if snapshot and snapshot.get("latest_close") is not None:
+        return float(snapshot["latest_close"])
+
+    try:
+        data = get_data(
+            symbol,
+            period=engine.data_period,
+            interval=engine.data_interval,
+        )
+        if not data.empty:
+            return float(data.iloc[-1]["Close"])
+    except Exception as exc:
+        log_event(
+            f"[REPORT] Could not fetch exit price for {symbol}: {exc}",
+            "warning",
+        )
+
+    return float(position.get("best_price") or position["entry_price"])
+
+
+def record_closed_trade(trade_book, symbol, position, exit_price, exit_reason, exit_time):
+    quantity = int(position["quantity"])
+    entry_price = float(position["entry_price"])
+    side = position["side"]
+    if side == "BUY":
+        pnl = (exit_price - entry_price) * quantity
+    else:
+        pnl = (entry_price - exit_price) * quantity
+
+    invested_capital = entry_price * quantity
+    pnl_pct = (pnl / invested_capital) * 100 if invested_capital > 0 else 0.0
+
+    estimated_charges = 0.0
+    net_pnl = pnl
+    if (
+        TRANSACTION_COST_MODEL_ENABLED
+        and position.get("engine_name") == "intraday_equity"
+        and symbol.endswith(".NS")
+        and ":" not in symbol
+    ):
+        breakdown = estimate_intraday_equity_round_trip_cost(
+            entry_side=side,
+            entry_price=entry_price,
+            exit_price=float(exit_price),
+            quantity=quantity,
+            slippage_pct_per_side=float(TRANSACTION_SLIPPAGE_PCT_PER_SIDE or 0.0),
+        )
+        estimated_charges = float(breakdown.total)
+        net_pnl = pnl - estimated_charges
+
+    trade_book.append(
+        {
+            "symbol": symbol,
+            "side": side,
+            "quantity": quantity,
+            "entry_time": position.get("entry_time"),
+            "exit_time": exit_time.isoformat() if hasattr(exit_time, "isoformat") else str(exit_time),
+            "entry_price": entry_price,
+            "exit_price": float(exit_price),
+            "pnl": pnl,
+            "estimated_charges": estimated_charges,
+            "net_pnl": net_pnl,
+            "pnl_pct": pnl_pct,
+            "exit_reason": exit_reason,
+            "pair_id": position.get("pair_id"),
+        }
+    )
+
+
+def calculate_position_pnl(position, exit_price):
+    entry_price = float(position["entry_price"])
+    quantity = int(position["quantity"])
+    if position["side"] == "BUY":
+        pnl = (float(exit_price) - entry_price) * quantity
+    else:
+        pnl = (entry_price - float(exit_price)) * quantity
+
+    deployed = entry_price * quantity
+    pnl_pct = (pnl / deployed) * 100 if deployed > 0 else 0.0
+    return pnl, pnl_pct
+
+
+def build_exit_position_lines(position, exit_price, reason):
+    pnl, pnl_pct = calculate_position_pnl(position, exit_price)
+    lines = [
+        f"Symbol: {position['symbol']}",
+        f"EntrySide: {position['side']}",
+        f"ExitSide: {'SELL' if position['side'] == 'BUY' else 'BUY'}",
+        f"Qty: {position['quantity']}",
+        f"EntryPrice: {position['entry_price']:.2f}",
+        f"Current/ExitPrice: {float(exit_price):.2f}",
+        f"P&L: {pnl:+.2f} ({pnl_pct:+.2f}%)",
+        f"Reason: {reason}",
+    ]
+
+    if position.get("entry_time"):
+        lines.append(f"EntryTime: {format_trade_time(position['entry_time'])}")
+
+    if position.get("stop_loss") is not None:
+        lines.append(f"Stop: {position['stop_loss']:.2f}")
+    if position.get("target") is not None:
+        lines.append(f"Target: {position['target']:.2f}")
+    if position.get("trailing_stop") is not None:
+        lines.append(f"Trail: {position['trailing_stop']:.2f}")
+
+    return lines
+
+
+def format_trade_time(raw_value):
+    if not raw_value:
+        return "-"
+    try:
+        return datetime.fromisoformat(raw_value).strftime("%H:%M:%S")
+    except (TypeError, ValueError):
+        return str(raw_value)
+
+
+def log_trade_book_summary(capital, trade_book):
+    log_event("[REPORT] CLOSED TRADES")
+    if not trade_book:
+        log_event("[REPORT]   No closed trades recorded in this session")
+        return
+
+    sorted_trades = sorted(trade_book, key=lambda item: item.get("exit_time") or "")
+    total_realized = sum(trade["pnl"] for trade in sorted_trades)
+    total_estimated_charges = sum(float(trade.get("estimated_charges") or 0.0) for trade in sorted_trades)
+    total_net = sum(float(trade.get("net_pnl") or trade["pnl"]) for trade in sorted_trades)
+    wins = sum(1 for trade in sorted_trades if trade["pnl"] > 0)
+    losses = sum(1 for trade in sorted_trades if trade["pnl"] < 0)
+    flats = len(sorted_trades) - wins - losses
+    traded_value = sum(trade["entry_price"] * trade["quantity"] for trade in sorted_trades)
+    best_trade = max(sorted_trades, key=lambda item: item["pnl"])
+    worst_trade = min(sorted_trades, key=lambda item: item["pnl"])
+
+    log_event(
+        (
+            f"[REPORT]   Closed={len(sorted_trades)} | Wins={wins} | "
+            f"Losses={losses} | Flat={flats}"
+        )
+    )
+    log_event(f"[REPORT]   Traded value: {traded_value:.2f}")
+    log_event(f"[REPORT]   Realized P&L: {total_realized:+.2f}")
+    if TRANSACTION_COST_MODEL_ENABLED:
+        log_event(f"[REPORT]   Est. charges: {total_estimated_charges:.2f}")
+        log_event(f"[REPORT]   Est. net P&L: {total_net:+.2f}")
+    log_event(
+        f"[REPORT]   Return on starting capital: {(total_realized / capital) * 100:+.2f}%"
+    )
+    log_event(
+        f"[REPORT]   Best trade: {best_trade['symbol']} {best_trade['pnl']:+.2f}"
+    )
+    log_event(
+        f"[REPORT]   Worst trade: {worst_trade['symbol']} {worst_trade['pnl']:+.2f}"
+    )
+    log_event(
+        "[REPORT]   # | Symbol | Side | Qty | EntryTime | ExitTime | Entry | Exit | P&L | ExitReason"
+    )
+    for index, trade in enumerate(sorted_trades, start=1):
+        pair_suffix = f" [{trade['pair_id']}]" if trade.get("pair_id") else ""
+        log_event(
+            (
+                f"[REPORT]   {index:>2} | {trade['symbol']}{pair_suffix} | "
+                f"{trade['side']:<4} | {trade['quantity']:>3} | "
+                f"{format_trade_time(trade['entry_time'])} | "
+                f"{format_trade_time(trade['exit_time'])} | "
+                f"{trade['entry_price']:.2f} | {trade['exit_price']:.2f} | "
+                f"{trade['pnl']:+.2f} ({trade['pnl_pct']:+.2f}%) | "
+                f"{trade['exit_reason']}"
+            )
+        )
+
+    # Exit-reason aggregation (matches the “table-style” breakdown from logs)
+    summary_rows = summarize_by_exit_reason(sorted_trades)
+    log_event("[REPORT] Exit reason summary (gross/net):")
+    for row in summary_rows:
+        log_event(
+            (
+                f"[REPORT]   {row['exit_reason']}: "
+                f"Trades={row['trades']} | "
+                f"Gross={row['gross_pnl']:+.2f} | "
+                f"Net={row['net_pnl']:+.2f}"
+            )
+        )
+
+
+def close_position_symbols(
+    engine,
+    positions,
+    symbols,
+    reason,
+    trade_book,
+    symbol_snapshots=None,
+    exit_time=None,
+):
     changed = False
+    exit_time = exit_time or datetime.now()
     for symbol in list(symbols):
         position = positions.get(symbol)
         if not position:
             continue
         exit_side = "SELL" if position["side"] == "BUY" else "BUY"
+        exit_price = get_latest_exit_price(
+            engine,
+            symbol,
+            position,
+            symbol_snapshots=symbol_snapshots,
+        )
         log_order_signal_banner(
             "EXIT",
-            [
-                f"Symbol: {symbol}",
-                f"ExitSide: {exit_side}",
-                f"Qty: {position['quantity']}",
-                f"Reason: {reason}",
-            ],
+            build_exit_position_lines(position, exit_price, reason),
         )
         place_order(
             exit_side,
@@ -854,6 +1061,14 @@ def close_position_symbols(engine, positions, symbols, reason):
             symbol,
             note=reason,
             product=engine.order_product,
+        )
+        record_closed_trade(
+            trade_book,
+            symbol,
+            position,
+            exit_price,
+            reason,
+            exit_time,
         )
         del positions[symbol]
         changed = True
@@ -984,7 +1199,7 @@ def log_ranked_candidates(candidates):
         )
 
 
-def summarize_execution_stats(engine, capital, positions):
+def summarize_execution_stats(engine, capital, positions, trade_book):
     deployed_capital = get_deployed_capital(positions)
     open_count = len(positions)
     open_structure_count = count_open_structures(positions)
@@ -997,6 +1212,15 @@ def summarize_execution_stats(engine, capital, positions):
     log_event(f"[STATS] Open structures: {open_structure_count}")
     log_event(f"[STATS] Deployed capital (entry exposure): {deployed_capital:.2f}")
     log_event(f"[STATS] Capital reserve estimate: {max(0.0, capital - deployed_capital):.2f}")
+    log_trade_book_summary(capital, trade_book)
+
+    # Export report after the on-screen/log summary.
+    try:
+        report_path = export_trade_book_report(trade_book, engine_name=engine.name)
+        if report_path:
+            log_event(f"[REPORT] Trade report exported: {report_path}")
+    except Exception as exc:
+        log_event(f"[REPORT] Failed to export trade report: {exc}", "warning")
 
     if open_count == 0:
         log_event("[STATS] No open positions to evaluate for unrealized P/L")
@@ -1098,22 +1322,19 @@ def summarize_execution_stats(engine, capital, positions):
     log_event("="*50)
 
 
-def force_square_off_positions(engine, positions):
+def force_square_off_positions(engine, positions, trade_book):
     if not positions:
         return False
 
     log_event("[SQUAREOFF] Closing all open positions")
     changed = False
+    exit_time = datetime.now()
     for symbol, position in list(positions.items()):
         exit_side = "SELL" if position["side"] == "BUY" else "BUY"
+        exit_price = get_latest_exit_price(engine, symbol, position)
         log_order_signal_banner(
             "FORCE SQUARE OFF",
-            [
-                f"Symbol: {symbol}",
-                f"ExitSide: {exit_side}",
-                f"Qty: {position['quantity']}",
-                "Reason: Intraday square-off",
-            ],
+            build_exit_position_lines(position, exit_price, "Intraday square-off"),
         )
         place_order(
             exit_side,
@@ -1121,6 +1342,14 @@ def force_square_off_positions(engine, positions):
             symbol,
             note="Intraday square-off",
             product=engine.order_product,
+        )
+        record_closed_trade(
+            trade_book,
+            symbol,
+            position,
+            exit_price,
+            "Intraday square-off",
+            exit_time,
         )
         del positions[symbol]
         changed = True
@@ -1133,6 +1362,7 @@ def manage_open_positions(
     positions,
     symbol_snapshots,
     now,
+    trade_book,
 ):
     state_changed = False
     processed_pair_ids = set()
@@ -1153,6 +1383,9 @@ def manage_open_positions(
                     positions,
                     pair_symbols,
                     reason=f"Pair sync guard for {pair_id}",
+                    trade_book=trade_book,
+                    symbol_snapshots=symbol_snapshots,
+                    exit_time=now,
                 ):
                     state_changed = True
                 processed_pair_ids.add(pair_id)
@@ -1195,6 +1428,9 @@ def manage_open_positions(
                     positions,
                     pair_symbols,
                     reason=f"Pair range break {underlying_price:.2f}",
+                    trade_book=trade_book,
+                    symbol_snapshots=symbol_snapshots,
+                    exit_time=now,
                 ):
                     state_changed = True
                 processed_pair_ids.add(pair_id)
@@ -1209,6 +1445,9 @@ def manage_open_positions(
                         positions,
                         pair_symbols,
                         reason=f"Pair {time_exit_reason}",
+                        trade_book=trade_book,
+                        symbol_snapshots=symbol_snapshots,
+                        exit_time=now,
                     ):
                         state_changed = True
                     processed_pair_ids.add(pair_id)
@@ -1242,6 +1481,9 @@ def manage_open_positions(
                         positions,
                         pair_symbols,
                         reason=f"Pair combined stop {pair_metrics['current_total_premium']:.2f}",
+                        trade_book=trade_book,
+                        symbol_snapshots=symbol_snapshots,
+                        exit_time=now,
                     ):
                         state_changed = True
                     processed_pair_ids.add(pair_id)
@@ -1259,6 +1501,9 @@ def manage_open_positions(
                         positions,
                         pair_symbols,
                         reason=f"Pair combined target {pair_metrics['current_total_premium']:.2f}",
+                        trade_book=trade_book,
+                        symbol_snapshots=symbol_snapshots,
+                        exit_time=now,
                     ):
                         state_changed = True
                     processed_pair_ids.add(pair_id)
@@ -1304,15 +1549,24 @@ def manage_open_positions(
                     positions,
                     pair_symbols,
                     reason=f"Pair exit via {symbol} {exit_reason}",
+                    trade_book=trade_book,
+                    symbol_snapshots=symbol_snapshots,
+                    exit_time=now,
                 ):
                     state_changed = True
                 processed_pair_ids.add(pair_id)
                 continue
 
             exit_side = "SELL" if position["side"] == "BUY" else "BUY"
+            exit_price = float(snapshot["latest_close"])
             log_event(
                 f"[EXIT] {symbol} {exit_reason} triggered at "
-                f"{snapshot['latest_close']:.2f}"
+                f"{exit_price:.2f} | Entry={position['entry_price']:.2f} | "
+                f"Qty={position['quantity']}"
+            )
+            log_order_signal_banner(
+                "EXIT",
+                build_exit_position_lines(position, exit_price, exit_reason),
             )
             place_order(
                 exit_side,
@@ -1320,6 +1574,14 @@ def manage_open_positions(
                 symbol,
                 note=f"Exit {position['side']} via {exit_reason}",
                 product=engine.order_product,
+            )
+            record_closed_trade(
+                trade_book,
+                symbol,
+                position,
+                exit_price,
+                exit_reason,
+                now,
             )
             del positions[symbol]
             state_changed = True
@@ -1350,15 +1612,24 @@ def manage_open_positions(
                     positions,
                     pair_symbols,
                     reason=f"Pair close via {signal_exit_reason}",
+                    trade_book=trade_book,
+                    symbol_snapshots=symbol_snapshots,
+                    exit_time=now,
                 ):
                     state_changed = True
                 processed_pair_ids.add(pair_id)
                 continue
 
             exit_side = "SELL" if position["side"] == "BUY" else "BUY"
+            exit_price = float(snapshot["latest_close"])
             log_event(
                 f"[EXIT] Signal-based exit for {symbol}: "
-                f"{snapshot['signal']} ({signal_exit_reason})"
+                f"{snapshot['signal']} ({signal_exit_reason}) at {exit_price:.2f} | "
+                f"Entry={position['entry_price']:.2f} | Qty={position['quantity']}"
+            )
+            log_order_signal_banner(
+                "EXIT",
+                build_exit_position_lines(position, exit_price, signal_exit_reason),
             )
             place_order(
                 exit_side,
@@ -1366,6 +1637,14 @@ def manage_open_positions(
                 symbol,
                 note=f"Close {position['side']} via {signal_exit_reason}",
                 product=engine.order_product,
+            )
+            record_closed_trade(
+                trade_book,
+                symbol,
+                position,
+                exit_price,
+                signal_exit_reason,
+                now,
             )
             del positions[symbol]
             state_changed = True
@@ -1624,12 +1903,12 @@ try:
         log_event("[SETUP]   TOP N: Enter the top N highest-ranked signals")
 
         entry_selection_mode = prompt_choice(
-            "Entry selection: TOP 1(1) or TOP N(2)? [default 2]: ",
+            "Entry selection: TOP 1(1) or TOP N(2)? [default 1]: ",
             [
                 {"label": "TOP 1", "key": 1, "value": "TOP1"},
                 {"label": "TOP N", "key": 2, "value": "TOPN"},
             ],
-            default=2,
+            default=1,
         )
         top_n_count = 1
         if entry_selection_mode == "TOPN":
@@ -1750,6 +2029,7 @@ try:
     active_trade_day = parse_trade_day(saved_state["active_trade_day"])
     last_entry_time = float(saved_state["last_entry_time"])
     regime_cache = saved_state["regime_cache"]
+    trade_book = []
     save_runtime_state(
         engine.name,
         positions,
@@ -1792,7 +2072,7 @@ try:
         log_event(f"[SESSION] {cycle_state['reason']}")
 
         if cycle_state["force_square_off"]:
-            if force_square_off_positions(engine, positions):
+            if force_square_off_positions(engine, positions, trade_book):
                 save_runtime_state(
                     engine.name,
                     positions,
@@ -2100,6 +2380,7 @@ try:
                 positions,
                 symbol_snapshots,
                 now,
+                trade_book,
             )
             if state_changed:
                 save_runtime_state(
@@ -2267,10 +2548,12 @@ try:
                             leg_entry["entry_price"],
                             target_distance,
                         )
-                        trailing_stop = (
-                            leg_entry["entry_price"] - trailing_distance
-                            if candidate["signal"] == "BUY"
-                            else leg_entry["entry_price"] + trailing_distance
+                        # Same trailing activation behavior for pair legs.
+                        trailing_stop = float(leg_entry["stop_data"]["stop_loss_price"])
+                        trailing_activation_distance = max(
+                            float(trailing_distance or 0.0),
+                            float(leg_entry["stop_data"].get("stop_distance") or 0.0)
+                            * float(TRAILING_ACTIVATION_STOP_DISTANCE_MULTIPLIER or 0.0),
                         )
                         try:
                             log_order_signal_banner(
@@ -2308,6 +2591,8 @@ try:
                                     positions,
                                     entered_pair_symbols,
                                     reason=f"Pair sync unwind {pair_id}",
+                                    trade_book=trade_book,
+                                    exit_time=now,
                                 )
                             raise
                         positions[leg_symbol] = build_position(
@@ -2319,6 +2604,8 @@ try:
                             target=target_price,
                             trailing_stop=trailing_stop,
                             trailing_distance=trailing_distance,
+                            trailing_activation_distance=trailing_activation_distance,
+                            trailing_active=False,
                             atr=leg_entry["atr"],
                             stop_distance=leg_entry["stop_data"]["stop_distance"],
                             lot_size=leg_entry["lot_size"],
@@ -2333,6 +2620,8 @@ try:
                             pair_stop_loss_price=pair_stop_loss_price,
                             pair_target_price=pair_target_price,
                             entry_time=now.isoformat(),
+                            engine_name=engine.name,
+                            order_product=engine.order_product,
                         )
                         entered_pair_symbols.append(leg_symbol)
                         traded_symbols_today.add(leg_symbol)
@@ -2483,11 +2772,53 @@ try:
                     entry_price,
                     target_distance,
                 )
-                trailing_stop = (
-                    entry_price - trailing_distance
-                    if candidate["signal"] == "BUY"
-                    else entry_price + trailing_distance
+                # Trailing should not behave like an extra-tight stop from the first minute.
+                # Start trailing at the stop-loss level and only activate once price moves
+                # enough in favor (see trailing_activation_distance below).
+                trailing_stop = float(stop_data["stop_loss_price"])
+
+                # Trailing activation: delay trailing until price has moved in favor enough.
+                # This reduces 1-minute whipsaw exits where trailing behaves like a tight stop.
+                trailing_activation_distance = max(
+                    float(trailing_distance or 0.0),
+                    float(stop_data.get("stop_distance") or 0.0)
+                    * float(TRAILING_ACTIVATION_STOP_DISTANCE_MULTIPLIER or 0.0),
                 )
+
+                # Transaction-cost filter: reject trades whose expected edge proxy is smaller
+                # than estimated costs + buffer.
+                if (
+                    TRANSACTION_COST_MODEL_ENABLED
+                    and engine.name == "intraday_equity"
+                    and symbol.endswith(".NS")
+                    and ":" not in symbol
+                ):
+                    breakdown = estimate_intraday_equity_round_trip_cost(
+                        entry_side=str(candidate.get("signal") or "BUY"),
+                        entry_price=float(entry_price),
+                        exit_price=float(entry_price),  # pre-trade: assume flat for cost estimation
+                        quantity=int(qty),
+                        slippage_pct_per_side=float(TRANSACTION_SLIPPAGE_PCT_PER_SIDE or 0.0),
+                    )
+                    est_cost = float(breakdown.total)
+                    expected_edge_points = float(entry_price) * float(candidate.get("score") or 0.0) * float(
+                        EXPECTED_EDGE_SCORE_MULTIPLIER or 1.0
+                    )
+                    expected_edge_rupees = expected_edge_points * int(qty)
+                    required_edge = (est_cost * float(MIN_EDGE_TO_COST_RATIO or 1.0)) + float(
+                        COST_EDGE_BUFFER_RUPEES or 0.0
+                    )
+                    if expected_edge_rupees < required_edge:
+                        log_event(
+                            (
+                                f"[FILTER] Skipping {symbol} due to low edge vs cost | "
+                                f"Score={candidate.get('score', 0.0):.4f} | "
+                                f"ExpectedEdge≈{expected_edge_rupees:.2f} | "
+                                f"EstCost≈{est_cost:.2f} | "
+                                f"Required≥{required_edge:.2f}"
+                            )
+                        )
+                        continue
 
                 log_event(
                     (
@@ -2536,11 +2867,15 @@ try:
                     target=target_price,
                     trailing_stop=trailing_stop,
                     trailing_distance=trailing_distance,
+                    trailing_activation_distance=trailing_activation_distance,
+                    trailing_active=False,
                     atr=atr_value,
                     stop_distance=stop_data["stop_distance"],
                     lot_size=get_contract_lot_size(symbol) if ":" in symbol else 1,
                     entry_analytics=candidate.get("analytics"),
                     entry_time=now.isoformat(),
+                    engine_name=engine.name,
+                    order_product=engine.order_product,
                 )
                 traded_symbols_today.add(trade_identity)
                 if hasattr(engine, "get_trade_frequency_key"):
@@ -2583,8 +2918,14 @@ except KeyboardInterrupt:
             confirm = input("Are you sure? This will close ALL positions immediately. (YES/NO): ").strip().upper()
             if confirm == "YES":
                 log_event("[MAIN] Closing all open positions...")
+                exit_time = datetime.now()
                 for symbol, position in list(positions.items()):
                     exit_side = "SELL" if position["side"] == "BUY" else "BUY"
+                    exit_price = get_latest_exit_price(
+                        engine,
+                        symbol,
+                        position,
+                    ) if "engine" in locals() else float(position["entry_price"])
                     log_event(f"[MAIN] Closing {symbol}: {position['side']} {position['quantity']} units at market")
                     place_order(
                         exit_side,
@@ -2593,6 +2934,15 @@ except KeyboardInterrupt:
                         note="User-initiated emergency close-out",
                         product=engine.order_product if "engine" in locals() else "MIS",
                     )
+                    if "trade_book" in locals():
+                        record_closed_trade(
+                            trade_book,
+                            symbol,
+                            position,
+                            exit_price,
+                            "User-initiated emergency close-out",
+                            exit_time,
+                        )
                     del positions[symbol]
                 log_event("[MAIN] All positions closed.")
             else:
@@ -2606,7 +2956,12 @@ except Exception as exc:
 finally:
     if "positions" in locals() and "engine" in locals() and "capital" in locals():
         try:
-            summarize_execution_stats(engine, capital, positions)
+            summarize_execution_stats(
+                engine,
+                capital,
+                positions,
+                trade_book if "trade_book" in locals() else [],
+            )
         except Exception as exc:
             log_event(f"[STATS] Failed to generate summary: {exc}", "warning")
 

@@ -1,9 +1,14 @@
-from datetime import time
+from datetime import datetime, time, timedelta
 
 from indicators import compute_vwap
 from engines.common import build_position, evaluate_exit
 from executor import get_intraday_positions
 from logger import log_event
+from config import (
+    INTRADAY_EQUITY_AUTO_NORMAL_MIN_CONFIRMATIONS,
+    INTRADAY_EQUITY_ENTRY_CUTOFF_MINUTES_BEFORE_SQUAREOFF,
+    REVERSAL_EXIT_CONFIRMATION_CANDLES,
+)
 
 
 class IntradayEquityEngine:
@@ -19,7 +24,6 @@ class IntradayEquityEngine:
         "5": "ORB",
     }
     market_open = time(9, 15)
-    entry_cutoff = time(15, 10)
     square_off_time = time(15, 15)
     market_close = time(15, 30)
     sleep_seconds = 60
@@ -71,13 +75,20 @@ class IntradayEquityEngine:
                 "reason": "Square-off window active",
             }
 
-        if current_time >= self.entry_cutoff:
+        # Late-day protection: stop taking new entries well before square-off.
+        cutoff_minutes = max(0, int(INTRADAY_EQUITY_ENTRY_CUTOFF_MINUTES_BEFORE_SQUAREOFF))
+        entry_cutoff_time = (
+            datetime.combine(now.date(), self.square_off_time) - timedelta(minutes=cutoff_minutes)
+        ).time()
+        if current_time >= entry_cutoff_time:
             return {
                 "manage_positions": True,
                 "allow_entries": False,
                 "force_square_off": False,
                 "allow_scan": True,
-                "reason": "Entry cutoff reached - managing only",
+                "reason": (
+                    f"Entry cutoff reached ({entry_cutoff_time.strftime('%H:%M')}) - managing only"
+                ),
             }
 
         return {
@@ -96,7 +107,17 @@ class IntradayEquityEngine:
 
     def get_signal_exit_reason(self, position, signal):
         if signal in {"BUY", "SELL"} and signal != position["side"]:
-            return "REVERSAL"
+            required = max(1, int(REVERSAL_EXIT_CONFIRMATION_CANDLES))
+            streak = int(position.get("reversal_streak") or 0) + 1
+            position["reversal_streak"] = streak
+            if streak >= required:
+                position["reversal_streak"] = 0
+                return "REVERSAL"
+            return None
+
+        # Reset streak when signal is aligned or HOLD/no-signal.
+        if position.get("reversal_streak"):
+            position["reversal_streak"] = 0
         return None
 
     def apply_entry_allocation_limit(
@@ -289,7 +310,7 @@ class IntradayEquityEngine:
                 return ["ORB", "VWAP"], 2
             return ["VWAP", "RSI"], 2
 
-        return ["MA", "RSI"], 1
+        return ["MA", "RSI"], max(2, int(INTRADAY_EQUITY_AUTO_NORMAL_MIN_CONFIRMATIONS))
 
     def build_market_context(self, symbol, intraday_df, daily_df):
         if intraday_df.empty:

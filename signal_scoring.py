@@ -1,4 +1,5 @@
 from config import MIN_CANDLES
+from config import MIN_RANKED_CANDIDATE_SCORE
 from indicators import compute_atr, compute_rsi, compute_vwap
 from strategy import generate_signal_payload
 
@@ -136,9 +137,25 @@ def evaluate_symbol_signal(
     }
 
 
-def rank_candidates(candidates):
+def rank_candidates(candidates, min_score=None):
+    """
+    Rank candidates by agreement_count, score, ATR, symbol (descending).
+
+    Also applies a minimum-score filter (default via config) to prevent
+    weak 1-minute signals from being tradable just because they are "top" by rank.
+    """
+
+    threshold = MIN_RANKED_CANDIDATE_SCORE if min_score is None else float(min_score)
+    filtered = candidates
+    if threshold and threshold > 0:
+        filtered = [
+            item
+            for item in candidates
+            if float(item.get("score") or 0.0) >= threshold
+        ]
+
     return sorted(
-        candidates,
+        filtered,
         key=lambda item: (
             item["agreement_count"],
             item["score"],

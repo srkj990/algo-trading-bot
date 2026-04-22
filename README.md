@@ -91,6 +91,23 @@ The bot runs from `main.py`, persists runtime state under `state/`, writes sessi
 - one-trade-per-symbol-per-day control
 - persisted positions, traded symbols, trade-day tracking, and regime cache
 
+### Intraday Equity Default Safety Bias
+
+The intraday equity flow now defaults to a more selective profile so weak `1m` noise does not turn into frequent low-edge trades.
+
+Current default behavior:
+
+- `TOP 1` is the default entry-selection mode
+- one-trade-per-symbol-per-day remains default `YES`
+- ranked candidates must clear a minimum score threshold before they are even eligible
+- auto-adaptive normal-session intraday equity now requires both `MA` and `RSI` to agree
+- reversal exits now require confirmation instead of closing on the first opposite candle
+- trailing stop logic activates later so trades get some room to develop
+- fresh intraday equity entries stop earlier before the MIS square-off window
+- intraday equity entries can be rejected when estimated edge is too small relative to estimated costs
+
+These defaults are meant to reduce overtrading, cut down on whipsaw exits, and make paper results more realistic relative to live trading costs.
+
 ## Strategies
 
 The active signal framework currently uses:
@@ -464,6 +481,21 @@ EXECUTION_PROVIDER=KITE
 LOG_LEVEL=INFO
 ```
 
+Additional environment-backed controls for the stricter intraday equity defaults:
+
+```env
+MIN_RANKED_CANDIDATE_SCORE=0.008
+INTRADAY_EQUITY_AUTO_NORMAL_MIN_CONFIRMATIONS=2
+REVERSAL_EXIT_CONFIRMATION_CANDLES=2
+TRAILING_ACTIVATION_STOP_DISTANCE_MULTIPLIER=0.5
+INTRADAY_EQUITY_ENTRY_CUTOFF_MINUTES_BEFORE_SQUAREOFF=30
+TRANSACTION_COST_MODEL_ENABLED=1
+TRANSACTION_SLIPPAGE_PCT_PER_SIDE=0.0002
+EXPECTED_EDGE_SCORE_MULTIPLIER=1.0
+MIN_EDGE_TO_COST_RATIO=1.2
+COST_EDGE_BUFFER_RUPEES=5.0
+```
+
 ## State and Logging
 
 - engine state is stored in `state/`
@@ -471,6 +503,18 @@ LOG_LEVEL=INFO
 - open positions persist with stop/target/trailing state
 - daily trade counts now persist for engines that enforce intraday frequency caps
 - F&O positions can now also persist extra contract metadata such as lot size and entry analytics
+- end-of-run trade reports are exported to `Results/`
+
+### End-of-Run Trade Report
+
+At the end of a session, the bot now generates a spreadsheet-style trade report in `Results/`.
+
+Report contents:
+
+- `Trades` sheet with symbol, side, quantity, entry/exit timestamps, gross P&L, estimated charges, and estimated net P&L
+- `ExitReasonSummary` sheet with grouped counts and gross/net totals by exit reason such as `STOP_LOSS`, `TRAILING_STOP`, `TARGET`, and `REVERSAL`
+
+The exporter prefers `.xlsx`. If the environment is missing spreadsheet libraries, the repo still has a built-in fallback writer so Excel output is still generated without extra installation in normal use.
 
 ## Intraday Options Controls
 
