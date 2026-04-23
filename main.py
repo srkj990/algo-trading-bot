@@ -1654,6 +1654,7 @@ def manage_open_positions(
 
 logger = setup_session_logger()
 session_log_path = None
+previous_cycle_started_at = None
 
 try:
     log_event("Starting Algo Bot...\n")
@@ -1930,13 +1931,17 @@ try:
         strategy_name = prompt_choice(
             (
                 "Intraday options strategy: Momentum(1), ORB(2), "
-                "VWAP Reversion(3), Multi-strategy(4) [default 1]: "
+                "VWAP Reversion(3), Multi-strategy(4), Breakout Expansion(5), "
+                "IV Expansion(6), Trap Reversal(7) [default 1]: "
             ),
             [
                 {"label": "MOMENTUM", "key": 1, "value": "ATM_MOMENTUM"},
                 {"label": "ORB", "key": 2, "value": "ATM_ORB"},
                 {"label": "VWAP REVERSION", "key": 3, "value": "ATM_VWAP_REVERSION"},
                 {"label": "MULTI-STRATEGY", "key": 4, "value": "ATM_MULTI"},
+                {"label": "BREAKOUT EXPANSION", "key": 5, "value": "ATM_BREAKOUT_EXPANSION"},
+                {"label": "IV EXPANSION", "key": 6, "value": "ATM_IV_EXPANSION"},
+                {"label": "TRAP REVERSAL", "key": 7, "value": "ATM_TRAP_REVERSAL"},
             ],
             default=1,
         )
@@ -2042,6 +2047,19 @@ try:
 
     while True:
         now = datetime.now()
+        if previous_cycle_started_at is not None:
+            gap_seconds = (now - previous_cycle_started_at).total_seconds()
+            expected_cycle_seconds = max(30, int(getattr(engine, "sleep_seconds", 60)) + 30)
+            if gap_seconds > expected_cycle_seconds:
+                log_event(
+                    (
+                        f"[HEALTH] Cycle gap detected: {gap_seconds:.1f}s since previous cycle start "
+                        f"(expected around {expected_cycle_seconds}s). "
+                        "Possible causes: internet issue, provider stall, slow API response, or a blocked fetch."
+                    ),
+                    "warning",
+                )
+        previous_cycle_started_at = now
         current_trade_day = now.date()
         if current_trade_day != active_trade_day:
             active_trade_day = current_trade_day
@@ -2101,18 +2119,70 @@ try:
         )
 
         for symbol in symbols_to_refresh:
-            data = get_data(
-                symbol,
-                period=engine.data_period,
-                interval=engine.data_interval,
-            )
+            fetch_started_at = time.time()
+            try:
+                data = get_data(
+                    symbol,
+                    period=engine.data_period,
+                    interval=engine.data_interval,
+                )
+            except Exception as exc:
+                log_event(
+                    (
+                        f"[ERROR] Data fetch failed for {symbol} | "
+                        f"Provider={data_provider} | Engine={engine.name} | "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                    "error",
+                )
+                logger.exception(
+                    "[ERROR] Exception during get_data for %s | Provider=%s | Engine=%s",
+                    symbol,
+                    data_provider,
+                    engine.name,
+                )
+                continue
+            fetch_elapsed = time.time() - fetch_started_at
+            if fetch_elapsed > 15:
+                log_event(
+                    (
+                        f"[HEALTH] Slow data fetch for {symbol}: {fetch_elapsed:.2f}s "
+                        f"(provider={data_provider}, period={engine.data_period}, interval={engine.data_interval})"
+                    ),
+                    "warning",
+                )
 
             if data.empty:
-                log_event(f"[ERROR] No data for {symbol}", "error")
+                log_event(
+                    (
+                        f"[ERROR] No data for {symbol} | Provider={data_provider} | "
+                        f"Possible causes: provider returned empty candles, market-data outage, "
+                        "internet issue, symbol issue, or request throttling"
+                    ),
+                    "error",
+                )
                 continue
 
             latest_candle = data.iloc[-1]
             latest_close = float(latest_candle["Close"])
+            latest_timestamp = data.index[-1]
+            candle_age_minutes = None
+            try:
+                latest_ts = latest_timestamp.to_pydatetime()
+                if latest_ts.tzinfo is not None:
+                    latest_ts = latest_ts.astimezone().replace(tzinfo=None)
+                candle_age_minutes = (now - latest_ts).total_seconds() / 60.0
+            except Exception:
+                candle_age_minutes = None
+            if candle_age_minutes is not None and candle_age_minutes > 10:
+                log_event(
+                    (
+                        f"[DATA WARNING] Stale candle for {symbol}: last candle at {latest_timestamp} "
+                        f"({candle_age_minutes:.1f} minutes old). "
+                        "Possible causes: provider lag, stalled feed, or delayed internet."
+                    ),
+                    "warning",
+                )
             signal_data = get_stable_signal_data(engine, data, now)
             if signal_data.empty:
                 log_event(

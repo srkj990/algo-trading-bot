@@ -1,4 +1,4 @@
-# Zerodha Algo Bot
+# Trading Algo Bot
 
 This repository is an interactive algo-trading bot for Indian markets with support for:
 
@@ -124,6 +124,9 @@ For intraday options, the signal layer now supports:
 - `ATM_ORB`
 - `ATM_VWAP_REVERSION`
 - `ATM_MULTI`
+- `ATM_BREAKOUT_EXPANSION`
+- `ATM_IV_EXPANSION`
+- `ATM_TRAP_REVERSAL`
 
 These use the underlying for signal generation, then dynamically resolve the live ATM `CE` or `PE` contract before entry. Option analytics filters are still applied before the trade is allowed through.
 
@@ -224,6 +227,9 @@ For ATM single-option flow:
   - `ORB`
   - `VWAP Reversion`
   - `Multi-strategy`
+  - `Breakout Expansion`
+  - `IV Expansion`
+  - `Trap Reversal`
 - when a valid signal appears, the bot resolves the chosen strike mode automatically
 - `BUY_CE` means it buys the selected call strike
 - `BUY_PE` means it buys the selected put strike
@@ -284,7 +290,7 @@ Recommended use pattern:
 3. Choose engine `INTRADAY OPTIONS`
 4. Select `ATM SINGLE OPTION`
 5. Choose underlying, expiry, and strike mode
-6. Choose one of the four intraday ATM strategies
+6. Choose one of the available intraday ATM strategies
 7. Let the bot monitor the underlying and resolve the ATM option only when the setup is valid
 
 This is best when:
@@ -409,12 +415,60 @@ Avoid it when:
 - you want maximum trade frequency
 - you already know the session is strongly trending and want direct Momentum or ORB behavior
 
+#### 5. ATM Breakout Expansion
+
+What it looks for:
+
+- a compressed range over the recent session window
+- break above recent range high -> `BUY_CE`
+- break below recent range low -> `BUY_PE`
+- a volume spike on the underlying
+- ATR expanding versus the recent baseline
+
+Best market flow:
+
+- post-compression expansion days
+- late-morning or afternoon breakout sessions
+- volatility expansion after a quiet opening phase
+
+#### 6. ATM IV Expansion
+
+What it looks for:
+
+- a momentum candle at a key level on the underlying
+- breakout above resistance -> `BUY_CE`
+- breakdown below support -> `BUY_PE`
+- low IV percentile on the option contract, so the bot is entering before a potential IV expansion
+
+Best market flow:
+
+- compressed premium conditions before a directional move
+- setups where price is coiling near an important breakout level
+- sessions where directional price expansion may also reprice implied volatility
+
+#### 7. ATM Trap Reversal
+
+What it looks for:
+
+- failed support break and recovery -> `BUY_CE`
+- failed resistance break and rejection -> `BUY_PE`
+- strong reversal candle after the failed move
+
+Best market flow:
+
+- false-break sessions
+- stop-hunt style moves that quickly reverse
+- choppy mornings that transition into cleaner reversal legs
+
 ### Practical Strategy Selection Cheat Sheet
 
 - Use `ATM_MOMENTUM` when the market is trending and staying away from VWAP.
 - Use `ATM_ORB` when the edge is mostly in the first breakout after market open.
 - Use `ATM_VWAP_REVERSION` when the market is balanced, choppy, and repeatedly reverting.
 - Use `ATM_MULTI` when you want the safest default because it blocks conflicting signals.
+- Use `ATM_BREAKOUT_EXPANSION` when the market compresses first and then expands with volume and ATR support.
+- Use `ATM_IV_EXPANSION` when you want low-IV directional entries near key breakout levels.
+- Use `ATM_TRAP_REVERSAL` when false breaks and fast recoveries are the main edge.
 
 ### How The ATM Flow Actually Trades
 
@@ -448,6 +502,118 @@ What it does mean:
 
 - the engine is safer than before because it does not enter on incomplete candle noise
 - the console and log file show much clearer order banners for entries and exits
+
+### Intraday Options Capability Matrix
+
+Current intraday options engine capabilities:
+
+- dynamic ATM contract resolution from the underlying at entry time
+- selectable `ATM_MOMENTUM`, `ATM_ORB`, `ATM_VWAP_REVERSION`, `ATM_MULTI`, `ATM_BREAKOUT_EXPANSION`, `ATM_IV_EXPANSION`, and `ATM_TRAP_REVERSAL`
+- Greeks snapshot at entry scan time using Kite instruments plus Black-Scholes calculations
+- IV percentile / IV rank approximation from recent option history
+- IV change over the last 15 minutes for vega-crush protection
+- option premium floor, delta floor, IV-percentile gate, VWAP-band filter, and underlying bias filter
+- per-underlying trade cap, cooldown, max-hold time exit, and intraday cutoff / square-off window
+- bounded two-leg short range pair support
+
+Support status for the requested strategy ideas:
+
+1. `Breakout + Expansion Strategy (Kill Theta Decay)`
+
+- Status: `YES`
+- Already covered by:
+  - `ATM_BREAKOUT_EXPANSION` for compression -> breakout -> volume spike -> ATR expansion
+  - `ATM_ORB` for opening-range breakout
+  - `ATM_MOMENTUM` for directional breakout with RSI and VWAP alignment
+- Feasibility with Kite: `HIGH`
+  - Kite minute candles are enough for range-compression, breakout, ATR-expansion, and underlying volume-spike logic.
+  - This can be implemented without any new broker feature, only extra signal logic on top of existing spot/index candles.
+
+2. `IV Expansion Strategy (Reverse IV Crush Game)`
+
+- Status: `YES`
+- Already covered by:
+  - `ATM_IV_EXPANSION`
+  - IV percentile calculation
+  - IV change over 15 minutes
+  - option-price and underlying-price analytics at scan time
+- Current entry model:
+  - low-IV percentile gating is now applied at filter time while the directional trigger still comes from underlying price action at a key level
+  - explicit “enter before IV spike” entry model
+- Feasibility with Kite: `MEDIUM-HIGH`
+  - Feasible if we continue using our own IV calculations from Kite price data.
+  - The limitation is that this repo does not ingest full option-chain snapshots or exchange-native IV surfaces, so the signal would still use an approximate IV percentile instead of an institutional-grade volatility surface.
+
+3. `Seller Trap Detection (Best Edge)`
+
+- Status: `YES`
+- Already covered by:
+  - `ATM_TRAP_REVERSAL` for failed breakdown / failed breakout detection
+- Feasibility with Kite: `HIGH`
+  - Fully feasible from underlying minute candles alone.
+  - This is a price-action strategy and does not require extra broker-side data beyond what Kite already provides.
+
+4. `Avoid Sideways Markets (Most Important Filter)`
+
+- Status: `YES`
+- Already covered by:
+  - `ATM_MULTI` explicitly prefers reversion only in sideways ATR conditions
+  - `INTRADAY_OPTIONS_MIN_RANGE_PCT` blocks low-volatility sessions
+  - VWAP-band filter and underlying bias filter reduce entries in noisy, directionless conditions
+  - a dedicated sideways blocker now rejects entries when recent prices stay trapped in a narrow VWAP band for multiple candles
+- Current note:
+  - current sideways filter is good, but not yet a dedicated “no trade when price is trapped in a narrow VWAP band for N candles” rule
+- Feasibility with Kite: `HIGH`
+  - We already have most of the inputs and can make this stricter very easily.
+
+5. `Momentum Scalping (Speed Advantage)`
+
+- Status: `YES`
+- Already covered by:
+  - `ATM_MOMENTUM`
+  - `ATM_ORB` for early breakout continuation
+  - intraday options uses `1m` candles and a `15s` supervision loop
+  - time exits, target/stop/trailing logic, premium filters, and cooldown
+- Gap:
+  - current momentum signal does not explicitly require a volume spike
+  - current target logic is fixed for ATM single-option flow instead of a true “5-15% fast scalp profile”
+- Feasibility with Kite: `HIGH`
+  - Existing engine structure already supports this well; adding a faster scalp preset and volume confirmation would be straightforward.
+
+6. `Event-Based Strategy (Exploit Seller Risk)`
+
+- Status: `NO`
+- Already covered by:
+  - nothing event-aware
+- Missing pieces:
+  - event calendar ingestion
+  - pre-event compression detection
+  - event-time execution rules
+  - straddle-buy structure for intraday options
+- Feasibility with Kite: `MEDIUM`
+  - The market-data side is feasible, but Kite does not give you an economic/news event calendar.
+  - This would require an external event source plus new multi-leg execution support for straddles.
+  - Directional breakout-on-event is feasible; event-timed straddle automation is more involved.
+
+7. `Smart Execution Layer (Critical for Bot)`
+
+- Status: `PARTIAL`
+- Already covered by:
+  - cooldowns
+  - per-underlying trade caps
+  - lot-size aware sizing
+  - dynamic ATM contract resolution
+  - stop/target/trailing management
+  - time-based exits and square-off behavior
+  - pair synchronization for bounded two-leg range mode
+- Missing pieces:
+  - slippage-aware order management for options
+  - retry / failover logic for quote resolution and order placement
+  - entry quality guards based on spread / liquidity / market depth
+  - partial-fill handling beyond the current pair unwind safety
+- Feasibility with Kite: `MEDIUM-HIGH`
+  - Many of these are feasible with Kite order APIs and quote data.
+  - The main limitations are that robust spread/liquidity handling and multi-leg orchestration need more execution-state code, and some microstructure safeguards require quote/depth workflows rather than only candle-based workflows.
 
 ## Files to Know
 
@@ -527,6 +693,9 @@ These environment-backed controls now affect `intraday_options`:
 - `INTRADAY_OPTIONS_MIN_SIGNAL_SCORE`
 - `INTRADAY_OPTIONS_MAX_HOLD_MINUTES`
 - `INTRADAY_OPTIONS_TIME_EXIT_CUTOFF`
+- `INTRADAY_OPTIONS_IV_EXPANSION_MAX_IV_PERCENTILE`
+- `INTRADAY_OPTIONS_SIDEWAYS_VWAP_BAND_PCT`
+- `INTRADAY_OPTIONS_SIDEWAYS_LOOKBACK_CANDLES`
 
 Current behavior:
 
@@ -550,6 +719,10 @@ Current behavior:
 - single-leg ATM entries now support `ATM`, `ATM + 1 STRIKE`, and `ATM - 1 STRIKE`
 - intraday options supervision now runs every `15` seconds while signal entries still wait for closed `1m` candles
 - order logs now print clearer entry and exit banners so live actions stand out in both console and log file
+- `ATM_BREAKOUT_EXPANSION` looks for compression, breakout, volume spike, and ATR expansion on the underlying before buying the ATM option
+- `ATM_IV_EXPANSION` looks for low-IV percentile plus a momentum candle at a key level before buying the ATM option
+- `ATM_TRAP_REVERSAL` looks for failed support/resistance breaks and reversal recovery before buying the ATM option
+- the sideways blocker suppresses entries when recent price action remains stuck inside a narrow VWAP band
 
 ## Known Gaps
 

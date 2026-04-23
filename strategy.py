@@ -16,12 +16,18 @@ OPTION_STRATEGIES = {
     "ATM_ORB",
     "ATM_VWAP_REVERSION",
     "ATM_MULTI",
+    "ATM_BREAKOUT_EXPANSION",
+    "ATM_IV_EXPANSION",
+    "ATM_TRAP_REVERSAL",
 }
 OPTION_STRATEGY_MIN_CANDLES = {
     "ATM_MOMENTUM": 20,
     "ATM_ORB": 16,
     "ATM_VWAP_REVERSION": 20,
     "ATM_MULTI": 20,
+    "ATM_BREAKOUT_EXPANSION": 45,
+    "ATM_IV_EXPANSION": 30,
+    "ATM_TRAP_REVERSAL": 24,
 }
 
 
@@ -438,6 +444,248 @@ def strategy_multi(df, sideways_atr_threshold=0.0035):
     )
 
 
+def strategy_breakout_expansion(
+    df,
+    compression_lookback=45,
+    breakout_window=30,
+    volume_window=20,
+    compression_range_pct=0.0045,
+    volume_spike_multiplier=1.8,
+    atr_period=14,
+    atr_expansion_multiplier=1.1,
+):
+    strategy_name = "ATM_BREAKOUT_EXPANSION"
+    session_df = _get_session_df(df)
+    minimum = max(compression_lookback, breakout_window + 2, volume_window + 2, atr_period + 5)
+    if len(session_df) < minimum:
+        return _no_trade(
+            f"Need at least {minimum} session candles for breakout expansion",
+            strategy_name,
+        )
+
+    enriched = session_df.copy()
+    enriched["atr"] = compute_atr(enriched, period=atr_period)
+    latest = enriched.iloc[-1]
+    prior_window = enriched.iloc[-(breakout_window + 1):-1]
+    compression_window = enriched.iloc[-compression_lookback:-1]
+    volume_reference = enriched["Volume"].iloc[-(volume_window + 1):-1]
+    prior_atr_window = enriched["atr"].iloc[-6:-1]
+
+    close = float(latest["Close"])
+    high = float(prior_window["High"].max())
+    low = float(prior_window["Low"].min())
+    compression_range = (
+        (float(compression_window["High"].max()) - float(compression_window["Low"].min()))
+        / max(abs(close), 1.0)
+    )
+    latest_volume = float(latest["Volume"])
+    average_volume = float(volume_reference.mean()) if not volume_reference.empty else 0.0
+    current_atr = float(latest["atr"]) if latest["atr"] == latest["atr"] else 0.0
+    prior_atr = float(prior_atr_window.mean()) if not prior_atr_window.empty else 0.0
+
+    compression_ok = compression_range <= compression_range_pct
+    volume_available = latest_volume > 0 and average_volume > 0
+    volume_spike = (
+        latest_volume >= (average_volume * volume_spike_multiplier)
+        if volume_available
+        else True
+    )
+    atr_expanding = current_atr > 0 and prior_atr > 0 and current_atr >= (prior_atr * atr_expansion_multiplier)
+
+    if close > high and compression_ok and volume_spike and atr_expanding:
+        strength = (
+            ((close - high) / max(abs(close), 1.0))
+            + (latest_volume / max(average_volume, 1.0) / 10.0)
+            + (current_atr / max(prior_atr, 1e-6) / 10.0)
+        )
+        return _build_signal_payload(
+            signal="BUY_CE",
+            strength=strength,
+            reason=(
+                f"Breakout expansion long: close {close:.2f} above {high:.2f}, "
+                f"compression {compression_range:.4f}, volume spike {latest_volume:.0f}/{average_volume:.0f}, "
+                f"ATR {current_atr:.4f}>{prior_atr:.4f}"
+            ),
+            strategy_name=strategy_name,
+        )
+
+    if close < low and compression_ok and volume_spike and atr_expanding:
+        strength = (
+            ((low - close) / max(abs(close), 1.0))
+            + (latest_volume / max(average_volume, 1.0) / 10.0)
+            + (current_atr / max(prior_atr, 1e-6) / 10.0)
+        )
+        return _build_signal_payload(
+            signal="BUY_PE",
+            strength=strength,
+            reason=(
+                f"Breakout expansion short: close {close:.2f} below {low:.2f}, "
+                f"compression {compression_range:.4f}, volume spike {latest_volume:.0f}/{average_volume:.0f}, "
+                f"ATR {current_atr:.4f}>{prior_atr:.4f}"
+            ),
+            strategy_name=strategy_name,
+        )
+
+    return _no_trade(
+        (
+            f"No breakout expansion setup: close={close:.2f}, high={high:.2f}, low={low:.2f}, "
+            f"compression={compression_range:.4f}, volume_available={volume_available}, "
+            f"vol_spike={volume_spike}, atr_expanding={atr_expanding}"
+        ),
+        strategy_name,
+    )
+
+
+def strategy_iv_expansion(
+    df,
+    key_level_window=20,
+    body_lookback=10,
+    body_expansion_multiplier=1.8,
+    rsi_period=14,
+):
+    strategy_name = "ATM_IV_EXPANSION"
+    session_df = _get_session_df(df)
+    minimum = max(key_level_window + 2, body_lookback + 2, rsi_period + 2)
+    if len(session_df) < minimum:
+        return _no_trade(
+            f"Need at least {minimum} session candles for IV expansion setup",
+            strategy_name,
+        )
+
+    enriched = session_df.copy()
+    enriched["rsi"] = compute_rsi(enriched["Close"], period=rsi_period)
+    latest = enriched.iloc[-1]
+    prior = enriched.iloc[-(key_level_window + 1):-1]
+    body_reference = (enriched["Close"] - enriched["Open"]).abs().iloc[-(body_lookback + 1):-1]
+
+    recent_high = float(prior["High"].max())
+    recent_low = float(prior["Low"].min())
+    close = float(latest["Close"])
+    open_price = float(latest["Open"])
+    candle_body = abs(close - open_price)
+    avg_body = float(body_reference.mean()) if not body_reference.empty else 0.0
+    rsi = float(latest["rsi"]) if latest["rsi"] == latest["rsi"] else 50.0
+
+    bullish_momentum = close > recent_high and candle_body >= (avg_body * body_expansion_multiplier) and rsi >= 55
+    bearish_momentum = close < recent_low and candle_body >= (avg_body * body_expansion_multiplier) and rsi <= 45
+
+    if bullish_momentum:
+        strength = (
+            ((close - recent_high) / max(abs(close), 1.0))
+            + (candle_body / max(avg_body, 1e-6) / 10.0)
+            + max(0.0, (rsi - 55) / 100.0)
+        )
+        return _build_signal_payload(
+            signal="BUY_CE",
+            strength=strength,
+            reason=(
+                f"IV expansion bullish trigger near key level {recent_high:.2f}: "
+                f"close {close:.2f}, body {candle_body:.2f}, RSI {rsi:.1f}"
+            ),
+            strategy_name=strategy_name,
+        )
+
+    if bearish_momentum:
+        strength = (
+            ((recent_low - close) / max(abs(close), 1.0))
+            + (candle_body / max(avg_body, 1e-6) / 10.0)
+            + max(0.0, (45 - rsi) / 100.0)
+        )
+        return _build_signal_payload(
+            signal="BUY_PE",
+            strength=strength,
+            reason=(
+                f"IV expansion bearish trigger near key level {recent_low:.2f}: "
+                f"close {close:.2f}, body {candle_body:.2f}, RSI {rsi:.1f}"
+            ),
+            strategy_name=strategy_name,
+        )
+
+    return _no_trade(
+        (
+            f"No IV expansion trigger: close={close:.2f}, high={recent_high:.2f}, low={recent_low:.2f}, "
+            f"body={candle_body:.2f}, avg_body={avg_body:.2f}, RSI={rsi:.1f}"
+        ),
+        strategy_name,
+    )
+
+
+def strategy_trap_reversal(
+    df,
+    support_window=20,
+    trap_confirmation_candles=3,
+    reversal_body_multiplier=1.5,
+):
+    strategy_name = "ATM_TRAP_REVERSAL"
+    session_df = _get_session_df(df)
+    minimum = max(support_window + trap_confirmation_candles + 3, 24)
+    if len(session_df) < minimum:
+        return _no_trade(
+            f"Need at least {minimum} session candles for trap reversal",
+            strategy_name,
+        )
+
+    enriched = session_df.copy()
+    latest = enriched.iloc[-1]
+    recent = enriched.iloc[-(trap_confirmation_candles + 1):-1]
+    support_base = enriched.iloc[-(support_window + trap_confirmation_candles + 1):-(trap_confirmation_candles + 1)]
+    support = float(support_base["Low"].min())
+    resistance = float(support_base["High"].max())
+    avg_body = float((support_base["Close"] - support_base["Open"]).abs().tail(10).mean())
+    latest_body = abs(float(latest["Close"]) - float(latest["Open"]))
+
+    seller_trap = (
+        float(recent["Low"].min()) < support
+        and float(latest["Close"]) > support
+        and float(latest["Close"]) > float(latest["Open"])
+        and latest_body >= (avg_body * reversal_body_multiplier)
+    )
+    buyer_trap = (
+        float(recent["High"].max()) > resistance
+        and float(latest["Close"]) < resistance
+        and float(latest["Close"]) < float(latest["Open"])
+        and latest_body >= (avg_body * reversal_body_multiplier)
+    )
+
+    if seller_trap:
+        strength = (
+            ((float(latest["Close"]) - support) / max(abs(float(latest["Close"])), 1.0))
+            + (latest_body / max(avg_body, 1e-6) / 10.0)
+        )
+        return _build_signal_payload(
+            signal="BUY_CE",
+            strength=strength,
+            reason=(
+                f"Seller trap detected: support {support:.2f} broke and failed within "
+                f"{trap_confirmation_candles} candles; close recovered to {float(latest['Close']):.2f}"
+            ),
+            strategy_name=strategy_name,
+        )
+
+    if buyer_trap:
+        strength = (
+            ((resistance - float(latest["Close"])) / max(abs(float(latest["Close"])), 1.0))
+            + (latest_body / max(avg_body, 1e-6) / 10.0)
+        )
+        return _build_signal_payload(
+            signal="BUY_PE",
+            strength=strength,
+            reason=(
+                f"Buyer trap detected: resistance {resistance:.2f} broke and failed within "
+                f"{trap_confirmation_candles} candles; close fell back to {float(latest['Close']):.2f}"
+            ),
+            strategy_name=strategy_name,
+        )
+
+    return _no_trade(
+        (
+            f"No trap reversal setup: support={support:.2f}, resistance={resistance:.2f}, "
+            f"latest_close={float(latest['Close']):.2f}, latest_body={latest_body:.2f}"
+        ),
+        strategy_name,
+    )
+
+
 def _evaluate_legacy_signal(df, strategy_name):
     if strategy_name == "MA":
         signal = confirm_signal(df, ma_strategy)
@@ -473,6 +721,12 @@ def generate_signal_payload(df, strategy_name):
         return strategy_vwap(df)
     if strategy_name == "ATM_MULTI":
         return strategy_multi(df)
+    if strategy_name == "ATM_BREAKOUT_EXPANSION":
+        return strategy_breakout_expansion(df)
+    if strategy_name == "ATM_IV_EXPANSION":
+        return strategy_iv_expansion(df)
+    if strategy_name == "ATM_TRAP_REVERSAL":
+        return strategy_trap_reversal(df)
 
     return _evaluate_legacy_signal(df, strategy_name)
 

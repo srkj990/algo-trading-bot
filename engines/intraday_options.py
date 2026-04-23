@@ -2,10 +2,13 @@ from datetime import datetime, time
 
 from config import (
     INTRADAY_OPTIONS_EXPIRY_WARNING_DAYS,
+    INTRADAY_OPTIONS_IV_EXPANSION_MAX_IV_PERCENTILE,
     INTRADAY_OPTIONS_MAX_TRADES_PER_UNDERLYING,
     INTRADAY_OPTIONS_MAX_HOLD_MINUTES,
     INTRADAY_OPTIONS_MIN_RANGE_PCT,
     INTRADAY_OPTIONS_MIN_SIGNAL_SCORE,
+    INTRADAY_OPTIONS_SIDEWAYS_LOOKBACK_CANDLES,
+    INTRADAY_OPTIONS_SIDEWAYS_VWAP_BAND_PCT,
     INTRADAY_OPTIONS_TIME_EXIT_CUTOFF,
     INTRADAY_OPTIONS_VEGA_CRUSH_BLOCK_PERCENT,
 )
@@ -29,6 +32,9 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         "2": "ATM_ORB",
         "3": "ATM_VWAP_REVERSION",
         "4": "ATM_MULTI",
+        "5": "ATM_BREAKOUT_EXPANSION",
+        "6": "ATM_IV_EXPANSION",
+        "7": "ATM_TRAP_REVERSAL",
     }
     market_open = time(9, 20)
     entry_cutoff = time(15, 10)
@@ -48,6 +54,9 @@ class IntradayOptionsEngine(OptionsEquityEngine):
     min_underlying_range_pct = INTRADAY_OPTIONS_MIN_RANGE_PCT
     min_signal_score = INTRADAY_OPTIONS_MIN_SIGNAL_SCORE
     max_hold_minutes = INTRADAY_OPTIONS_MAX_HOLD_MINUTES
+    iv_expansion_max_iv_percentile = INTRADAY_OPTIONS_IV_EXPANSION_MAX_IV_PERCENTILE
+    sideways_vwap_band_pct = INTRADAY_OPTIONS_SIDEWAYS_VWAP_BAND_PCT
+    sideways_lookback_candles = INTRADAY_OPTIONS_SIDEWAYS_LOOKBACK_CANDLES
     time_exit_cutoff = datetime.strptime(
         INTRADAY_OPTIONS_TIME_EXIT_CUTOFF, "%H:%M"
     ).time()
@@ -173,6 +182,32 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             )
             return filtered
 
+        # Strong sideways blocker: if recent price stays close to VWAP with a muted ATR ratio,
+        # we do not want to bleed premium in chop.
+        recent_window = session_df.tail(max(3, int(self.sideways_lookback_candles)))
+        recent_vwap = compute_vwap(recent_window)
+        recent_deviation = (
+            (recent_window["Close"] - recent_vwap).abs() / recent_vwap.replace(0, 1)
+        ).fillna(0.0)
+        recent_range_pct = (
+            ((float(recent_window["High"].max()) - float(recent_window["Low"].min())) / max(session_open, 1.0)) * 100.0
+            if not recent_window.empty
+            else 0.0
+        )
+        if (
+            not recent_window.empty
+            and recent_deviation.max() <= float(self.sideways_vwap_band_pct)
+            and recent_range_pct <= self.min_underlying_range_pct
+        ):
+            filtered["signal"] = "HOLD"
+            filtered["agreement_count"] = 0
+            filtered["score"] = 0.0
+            filtered["options_filter_note"] = (
+                f"Sideways blocker: recent VWAP deviation stayed within "
+                f"{self.sideways_vwap_band_pct:.4f} and range was only {recent_range_pct:.2f}%"
+            )
+            return filtered
+
         if analytics and not analytics.get("skip_underlying_bias"):
             bias = self.get_underlying_bias(analytics["underlying"])
             filtered["underlying_bias"] = bias["bias"]
@@ -254,6 +289,19 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             return filtered
 
         iv_percentile = analytics.get("iv_percentile")
+        if (
+            filtered.get("strategy") == "ATM_IV_EXPANSION"
+            and iv_percentile is not None
+            and iv_percentile > self.iv_expansion_max_iv_percentile
+        ):
+            filtered["signal"] = "HOLD"
+            filtered["agreement_count"] = 0
+            filtered["score"] = 0.0
+            filtered["options_filter_note"] = (
+                f"IV expansion setup requires low IV percentile, got {iv_percentile:.1f} "
+                f"above threshold {self.iv_expansion_max_iv_percentile:.1f}"
+            )
+            return filtered
         if filtered["signal"] == "BUY" and iv_percentile is not None:
             if iv_percentile > self.max_buy_iv_percentile:
                 filtered["signal"] = "HOLD"

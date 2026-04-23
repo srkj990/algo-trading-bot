@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import time
 from urllib.parse import quote
 
 import pandas as pd
@@ -45,23 +46,38 @@ def get_data(symbol, period="1d", interval="1m", provider=None):
         f"(period={period}, interval={interval})..."
     )
 
-    if active_provider == "YFINANCE":
-        if symbol.upper().startswith("NFO:"):
-            raise ValueError(
-                "YFINANCE does not support F&O symbols. Use KITE data provider for F&O."
-            )
-        data = _get_data_yfinance(symbol, period, interval)
-    elif active_provider == "KITE":
-        data = _get_data_kite(symbol, period, interval)
-    elif active_provider == "UPSTOX":
-        if symbol.upper().startswith("NFO:"):
-            raise ValueError(
-                "Upstox F&O data is not supported yet. Use KITE for F&O."
-            )
-        data = _get_data_upstox(symbol, period, interval)
-    else:
-        raise ValueError(f"Unsupported data provider: {active_provider}")
+    fetch_started_at = time.time()
+    try:
+        if active_provider == "YFINANCE":
+            if symbol.upper().startswith("NFO:"):
+                raise ValueError(
+                    "YFINANCE does not support F&O symbols. Use KITE data provider for F&O."
+                )
+            data = _get_data_yfinance(symbol, period, interval)
+        elif active_provider == "KITE":
+            data = _get_data_kite(symbol, period, interval)
+        elif active_provider == "UPSTOX":
+            if symbol.upper().startswith("NFO:"):
+                raise ValueError(
+                    "Upstox F&O data is not supported yet. Use KITE for F&O."
+                )
+            data = _get_data_upstox(symbol, period, interval)
+        else:
+            raise ValueError(f"Unsupported data provider: {active_provider}")
+    except Exception as exc:
+        elapsed = time.time() - fetch_started_at
+        message = (
+            f"[DATA ERROR] Provider={active_provider} | Symbol={symbol} | "
+            f"period={period} | interval={interval} | "
+            f"elapsed={elapsed:.2f}s | {type(exc).__name__}: {exc}"
+        )
+        print(message)
+        logger.exception(message)
+        raise
 
+    elapsed = time.time() - fetch_started_at
+    print(f"[DATA] {symbol} fetch completed in {elapsed:.2f}s")
+    logger.info(f"[DATA] {symbol} fetch completed in {elapsed:.2f}s")
     print(f"[DATA] {symbol} rows fetched: {len(data)}")
     logger.info(f"[DATA] {symbol} rows fetched: {len(data)}")
 
@@ -69,6 +85,14 @@ def get_data(symbol, period="1d", interval="1m", provider=None):
         print(f"[DATA] {symbol} last candle:")
         print(data.tail(1))
         logger.info(f"[DATA] {symbol} last candle:\n{data.tail(1)}")
+    else:
+        logger.warning(
+            "[DATA WARNING] Provider=%s | Symbol=%s returned 0 rows for period=%s interval=%s",
+            active_provider,
+            symbol,
+            period,
+            interval,
+        )
 
     return data
 
@@ -80,6 +104,7 @@ def _get_data_yfinance(symbol, period, interval):
         interval=interval,
         progress=False,
         auto_adjust=False,
+        timeout=20,
     )
 
     if hasattr(data.columns, "levels"):

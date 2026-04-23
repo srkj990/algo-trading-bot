@@ -74,6 +74,7 @@ def evaluate_symbol_signal(
             "signal": signal,
             "agreement_count": 1 if signal in {"BUY", "SELL"} else 0,
             "score": score,
+            "strategy": signal_payload.get("strategy", strategy_name),
             "details": {
                 strategy_name: {
                     "signal": signal,
@@ -129,6 +130,7 @@ def evaluate_symbol_signal(
         "signal": final_signal,
         "agreement_count": agreement_count,
         "score": score,
+        "strategy": None,
         "details": details,
         "reason": None,
         "option_signal": None,
