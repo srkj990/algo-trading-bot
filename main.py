@@ -6,6 +6,8 @@ from config import (
     MANUAL_SYMBOL_TABLE,
     NIFTY50_SYMBOLS,
     SINGLE_SYMBOL_TABLE,
+    get_broker_ip_mode,
+    get_upstox_static_ip,
 )
 from data_fetcher import get_data, set_data_provider
 from engines import (
@@ -114,6 +116,25 @@ ENGINE_OPTIONS = {
 }
 
 
+def log_broker_network_banner():
+    broker_ip_mode = get_broker_ip_mode()
+    configured_static_ip = (get_upstox_static_ip() or "").strip()
+
+    log_event("[NETWORK] Broker API network mode is active")
+    log_event(f"[NETWORK]   BROKER_IP_MODE: {broker_ip_mode}")
+    if broker_ip_mode == "IPV4_ONLY":
+        log_event("[NETWORK]   Broker APIs will prefer IPv4 and avoid temporary IPv6 routes")
+
+    if configured_static_ip:
+        log_event(f"[NETWORK]   Configured Upstox static IP: {configured_static_ip}")
+    else:
+        log_event("[NETWORK]   Configured Upstox static IP: not set", "warning")
+
+
+def log_help(message):
+    log_event(f"[HELP] {message}")
+
+
 def prompt_float(message, default=None, minimum=None, maximum=None):
     while True:
         raw = input(message).strip()
@@ -197,6 +218,7 @@ def prompt_symbol_selection():
     log_event("[SETUP]   SINGLE: Scan only 1 stock (good for testing specific stocks)")
     log_event("[SETUP]   MANUAL MULTI: Choose multiple stocks from a table")
     log_event("[SETUP]   NIFTY50 UNIVERSE: Scan all 50 NIFTY stocks (comprehensive)")
+    log_help("Choose whether to scan one symbol, a custom shortlist, or the full NIFTY50 universe. Example: 1 for SINGLE")
 
     symbol_mode = prompt_choice(
         "Symbol mode: SINGLE(1), MANUAL MULTI(2), NIFTY50 UNIVERSE(3)? [default 3]: ",
@@ -222,6 +244,7 @@ def prompt_symbol_selection():
             log_event("Single symbol table:")
             for key, symbol in SINGLE_SYMBOL_TABLE.items():
                 log_event(f"{key}. {symbol}")
+            log_help("Choose a symbol number from the single-symbol table. Example: 11 for RPOWER.NS")
 
             while True:
                 raw = input("Enter single-symbol table number: ").strip()
@@ -254,6 +277,7 @@ def prompt_symbol_selection():
             log_event("Manual symbol table:")
             for key, symbol in MANUAL_SYMBOL_TABLE.items():
                 log_event(f"{key}. {symbol}")
+            log_help("Choose one or more table numbers separated by commas. Example: 11,12,13")
 
             while True:
                 raw = input("Enter table numbers separated by commas: ").strip()
@@ -324,6 +348,7 @@ def prompt_fno_base_symbols(engine_name):
     log_event("[SETUP] F&O underlying selection - choose your derivatives universe")
     for index, symbol in enumerate(FNO_INDEX_SYMBOLS, start=1):
         log_event(f"[SETUP]   {get_fno_display_name(symbol)} ({index})")
+    log_help("Choose the F&O underlying universe for this run. Example: 1 for NIFTY 50")
 
     if "futures" in engine_name:
         return prompt_choice(
@@ -361,6 +386,7 @@ def prompt_fno_expiry_selection(base_symbol, instrument_type):
         log_event(f"[SETUP]   {idx}. {expiry}")
 
     log_event("[SETUP] Choose expiry or press Enter to use the nearest available expiry")
+    log_help("Choose the expiry number from the list above. Example: 1")
     expiry_choice = prompt_int(
         f"Choose expiry [default 1]: ",
         default=1,
@@ -384,6 +410,7 @@ def prompt_option_strike_value(base_symbol, expiry, option_type, label):
     strikes_to_show = strikes[:8] if len(strikes) <= 8 else strikes[:5] + ["..."] + strikes[-3:]
     log_event(f"[SETUP]   {strikes_to_show}")
     log_event(f"[SETUP] ATM reference strike: {default_strike}")
+    log_help(f"Enter an available {option_type} strike price for {label.lower()} selection. Example: {default_strike}")
 
     while True:
         raw = input(f"Enter {label} strike [default {default_strike}]: ").strip()
@@ -410,6 +437,7 @@ def prompt_option_strike_value(base_symbol, expiry, option_type, label):
 
 def prompt_fno_option_contract_selection(base_symbol):
     expiry = prompt_fno_expiry_selection(base_symbol, instrument_type="OPT")
+    log_help("Choose the option type to trade for this positional options setup. Example: 1 for CE")
     option_type = prompt_choice(
         "Option type: CE(1) or PE(2)? [default 1]: ",
         [
@@ -429,6 +457,7 @@ def prompt_fno_option_contract_selection(base_symbol):
     strikes_to_show = strikes[:8] if len(strikes) <= 8 else strikes[:5] + ["..."] + strikes[-3:]
     log_event(f"[SETUP]   {strikes_to_show}")
     log_event(f"[SETUP] ATM reference strike: {default_strike}")
+    log_help("Choose how the strike should be selected relative to ATM. Example: 1 for ATM")
 
     strike_mode = prompt_choice(
         "Strike selection: ATM(1), OTM offset(2), ITM offset(3), MANUAL(4)? [default 1]: ",
@@ -495,6 +524,7 @@ def prompt_fno_option_contract_selection(base_symbol):
 
 def prompt_intraday_atm_option_selection(base_symbol):
     expiry = prompt_fno_expiry_selection(base_symbol, instrument_type="OPT")
+    log_help("Choose how far the dynamic ATM selection should move from the current ATM strike. Example: 1 for ATM")
     strike_offset_mode = prompt_choice(
         "ATM strike mode: ATM(1), ATM + 1 STRIKE(2), ATM - 1 STRIKE(3) [default 1]: ",
         [
@@ -530,12 +560,14 @@ def prompt_intraday_atm_option_selection(base_symbol):
 
 def prompt_fno_option_pair_selection(base_symbol):
     expiry = prompt_fno_expiry_selection(base_symbol, instrument_type="OPT")
+    log_help("First choose the lower PE strike for the bounded range pair. Example: 24000")
     lower_pe_strike = prompt_option_strike_value(
         base_symbol,
         expiry,
         "PE",
         label="Lower PE",
     )
+    log_help("Then choose the upper CE strike for the bounded range pair. Example: 24600")
     upper_ce_strike = prompt_option_strike_value(
         base_symbol,
         expiry,
@@ -678,6 +710,7 @@ def confirm_selected_fno_contracts(
         option_pair_config,
         atm_option_config,
     )
+    log_help("Confirm the resolved F&O structure before the bot proceeds. Example: 1 for YES")
     confirmation = prompt_choice(
         "Continue with these F&O contracts? YES(1) or NO(2) [default 1]: ",
         [
@@ -694,6 +727,7 @@ def prompt_multi_strategy_selection(strategy_options):
     log_event("Choose strategies:")
     for key, value in strategy_options.items():
         log_event(f"{key}. {value}")
+    log_help("Enter one or more strategy numbers separated by commas. Example: 1,3,5")
 
     while True:
         raw = input("Enter numbers separated by commas: ").strip()
@@ -721,6 +755,110 @@ def prompt_multi_strategy_selection(strategy_options):
 
         log_event(f"[MAIN] Strategies selected: {strategies}")
         return strategies
+
+
+def should_auto_select_top1(
+    symbol_mode,
+    selected_symbols,
+    option_pair_config=None,
+    atm_option_config=None,
+):
+    if atm_option_config or option_pair_config:
+        return True
+    return symbol_mode == "SINGLE" or len(selected_symbols) == 1
+
+
+def prompt_strategy_configuration(engine):
+    if engine.name == "intraday_options":
+        log_event("[SETUP] Intraday options strategy selection - choose the ATM options setup")
+        log_event("[SETUP]   MOMENTUM: Trend-following breakout with RSI and VWAP confirmation")
+        log_event("[SETUP]   ORB: Opening range breakout on the underlying")
+        log_event("[SETUP]   VWAP REVERSION: Mean-reversion back through VWAP")
+        log_event("[SETUP]   MULTI-STRATEGY: Combine momentum, ORB, and sideways logic")
+        log_event("[SETUP]   BREAKOUT EXPANSION: Compression-to-expansion breakout setup")
+        log_event("[SETUP]   IV EXPANSION: Strong expansion candle near key levels")
+        log_event("[SETUP]   TRAP REVERSAL: Failed breakout / failed breakdown reversal")
+        log_help("Choose the intraday options strategy to drive ATM option entries. Example: 3 for VWAP Reversion")
+
+        strategy_name = prompt_choice(
+            (
+                "Intraday options strategy: Momentum(1), ORB(2), "
+                "VWAP Reversion(3), Multi-strategy(4), Breakout Expansion(5), "
+                "IV Expansion(6), Trap Reversal(7) [default 1]: "
+            ),
+            [
+                {"label": "MOMENTUM", "key": 1, "value": "ATM_MOMENTUM"},
+                {"label": "ORB", "key": 2, "value": "ATM_ORB"},
+                {"label": "VWAP REVERSION", "key": 3, "value": "ATM_VWAP_REVERSION"},
+                {"label": "MULTI-STRATEGY", "key": 4, "value": "ATM_MULTI"},
+                {"label": "BREAKOUT EXPANSION", "key": 5, "value": "ATM_BREAKOUT_EXPANSION"},
+                {"label": "IV EXPANSION", "key": 6, "value": "ATM_IV_EXPANSION"},
+                {"label": "TRAP REVERSAL", "key": 7, "value": "ATM_TRAP_REVERSAL"},
+            ],
+            default=1,
+        )
+        log_event(f"[MAIN] Intraday options strategy selected: {strategy_name}")
+        return "1", strategy_name, None, None
+
+    if engine.name == "intraday_equity":
+        log_event("[SETUP] Strategy mode - choose how intraday equity signals are generated")
+        log_event("[SETUP]   SINGLE: Run one strategy only")
+        log_event("[SETUP]   MULTI: Combine strategies with agreement confirmation")
+        log_event("[SETUP]   AUTO ADAPTIVE: Switch strategies based on gap and open behavior")
+        log_help("Choose whether intraday equity should use one strategy, multiple strategies, or adaptive selection. Example: 3 for AUTO ADAPTIVE")
+        mode = prompt_choice(
+            "Strategy mode: SINGLE(1), MULTI(2), AUTO ADAPTIVE(3) [default 3]: ",
+            [
+                {"label": "SINGLE", "key": 1, "value": "1"},
+                {"label": "MULTI", "key": 2, "value": "2"},
+                {"label": "AUTO ADAPTIVE", "key": 3, "value": "3"},
+            ],
+            default=3,
+        )
+        if mode == "3":
+            log_event("[MAIN] Strategy mode selected: AUTO ADAPTIVE")
+            log_event("[MAIN] Auto Adaptive mode will dynamically select strategies based on market conditions")
+            log_event("[MAIN]   - Gap Up: Uses ORB strategy")
+            log_event("[MAIN]   - Gap Down: Uses RSI/BREAKOUT strategy")
+            log_event("[MAIN]   - Normal: Uses MA strategy with VWAP bias")
+            return mode, None, None, None
+    else:
+        log_event("[SETUP] Strategy mode - choose how entries are generated for this engine")
+        log_event("[SETUP]   SINGLE: Run one strategy only")
+        log_event("[SETUP]   MULTI: Combine strategies with agreement confirmation")
+        log_help("Choose whether this engine should use one strategy or combine multiple strategies. Example: 1 for SINGLE")
+        mode = prompt_choice(
+            "Strategy mode: SINGLE(1) or MULTI(2) [default 1]: ",
+            [
+                {"label": "SINGLE", "key": 1, "value": "1"},
+                {"label": "MULTI", "key": 2, "value": "2"},
+            ],
+            default=1,
+        )
+
+    if mode == "1":
+        choices = [
+            {"label": value, "key": key, "value": value}
+            for key, value in engine.supported_strategies.items()
+        ]
+        log_help("Choose one strategy number from the list for this engine. Example: 1")
+        strategy_name = prompt_choice("Choose strategy: ", choices)
+        log_event(f"[MAIN] Strategy selected: {strategy_name}")
+        return mode, strategy_name, None, None
+
+    strategies = prompt_multi_strategy_selection(engine.supported_strategies)
+    strategy_count = len(strategies)
+    min_confirmations = DEFAULT_CONFIRMATIONS.get(
+        strategy_count,
+        strategy_count,
+    )
+    log_event(
+        (
+            f"[MAIN] Minimum confirmations set to "
+            f"{min_confirmations} for {strategy_count} strategies"
+        )
+    )
+    return mode, None, strategies, min_confirmations
 
 
 def log_market_context(symbol, context):
@@ -1658,53 +1796,7 @@ previous_cycle_started_at = None
 
 try:
     log_event("Starting Algo Bot...\n")
-    log_event("[SETUP] Choose your data provider - this determines where market data comes from")
-    log_event("[SETUP]   YFINANCE: Free, no authentication needed, good for testing")
-    log_event("[SETUP]   KITE: Live data from Zerodha, requires API credentials")
-    log_event("[SETUP]   UPSTOX: Live data from Upstox, requires API credentials")
-
-    data_provider = prompt_choice(
-        "Data provider: YFINANCE(1), KITE(2), UPSTOX(3)? [default 1]: ",
-        [
-            {"label": "YFINANCE", "key": 1, "value": "YFINANCE"},
-            {"label": "KITE", "key": 2, "value": "KITE"},
-            {"label": "UPSTOX", "key": 3, "value": "UPSTOX"},
-        ],
-        default=1,
-    )
-    set_data_provider(data_provider)
-    log_event(f"[MAIN] Data provider selected: {data_provider}")
-
-    log_event("[SETUP] Choose execution mode - CRITICAL SAFETY SETTING")
-    log_event("[SETUP]   PAPER: Simulates trading, NO real orders placed")
-    log_event("[SETUP]   LIVE: Places REAL orders with your broker - USE WITH CAUTION")
-
-    execution_mode = prompt_choice(
-        "Execution mode: PAPER(1) or LIVE(9)? [default 9]: ",
-        [
-            {"label": "PAPER", "key": 1, "value": "PAPER"},
-            {"label": "LIVE", "key": 9, "value": "LIVE"},
-        ],
-        default=9,
-    )
-    set_execution_mode(execution_mode)
-    log_event(f"[MAIN] Execution mode selected: {execution_mode}")
-
-    log_event("[SETUP] Choose your broker for order execution")
-    log_event("[SETUP]   KITE: Zerodha's trading platform")
-    log_event("[SETUP]   UPSTOX: Upstox trading platform")
-
-    execution_provider = prompt_choice(
-        "Execution provider: KITE(1) or UPSTOX(2)? [default 1]: ",
-        [
-            {"label": "KITE", "key": 1, "value": "KITE"},
-            {"label": "UPSTOX", "key": 2, "value": "UPSTOX"},
-        ],
-        default=1,
-    )
-    set_execution_provider(execution_provider)
-    log_event(f"[MAIN] Execution provider selected: {execution_provider}")
-
+    log_broker_network_banner()
     log_event("[SETUP] Choose trading engine - determines trading style and timeframe")
     log_event("[SETUP]   INTRADAY EQUITY: 1-minute data, MIS product, 9:15-15:30, auto square-off")
     log_event("[SETUP]   DELIVERY EQUITY: Daily data, CNC product, long-term holding")
@@ -1712,6 +1804,7 @@ try:
     log_event("[SETUP]   OPTIONS EQUITY: Positional index options on NIFTY 50 and SENSEX with ATM strike assist")
     log_event("[SETUP]   INTRADAY FUTURES: MIS index futures with auto square-off and lot-aware sizing")
     log_event("[SETUP]   INTRADAY OPTIONS: MIS index options with Greeks/IV filters and auto square-off")
+    log_help("Pick the engine first so the bot can ask only the prompts relevant to that trading style. Example: 6 for INTRADAY OPTIONS")
 
     engine_choice = prompt_choice(
         "Engine: INTRADAY EQUITY(1), DELIVERY EQUITY(2), FUTURES EQUITY(3), OPTIONS EQUITY(4), INTRADAY FUTURES(5), INTRADAY OPTIONS(6)? [default 1]: ",
@@ -1725,10 +1818,71 @@ try:
         ],
         default=1,
     )
+    selected_engine_name = ENGINE_OPTIONS[engine_choice].name
+    is_fno_engine = "futures" in selected_engine_name or "options" in selected_engine_name
+
+    log_event("[SETUP] Choose execution mode - CRITICAL SAFETY SETTING")
+    log_event("[SETUP]   PAPER: Simulates trading, NO real orders placed")
+    log_event("[SETUP]   LIVE: Places REAL orders with your broker - USE WITH CAUTION")
+    log_help("Choose PAPER for simulation or LIVE for real broker orders. Example: 1 for PAPER")
+
+    execution_mode = prompt_choice(
+        "Execution mode: PAPER(1) or LIVE(9)? [default 9]: ",
+        [
+            {"label": "PAPER", "key": 1, "value": "PAPER"},
+            {"label": "LIVE", "key": 9, "value": "LIVE"},
+        ],
+        default=9,
+    )
+    set_execution_mode(execution_mode)
+    log_event(f"[MAIN] Execution mode selected: {execution_mode}")
+
+    if is_fno_engine:
+        data_provider = "KITE"
+        execution_provider = "KITE"
+        set_data_provider(data_provider)
+        set_execution_provider(execution_provider)
+        log_event("[MAIN] F&O engine detected - data provider auto-set to KITE")
+        log_event("[MAIN] F&O engine detected - execution provider auto-set to KITE")
+    else:
+        log_event("[SETUP] Choose your data provider - this determines where market data comes from")
+        log_event("[SETUP]   YFINANCE: Free, no authentication needed, good for testing")
+        log_event("[SETUP]   KITE: Live data from Zerodha, requires API credentials")
+        log_event("[SETUP]   UPSTOX: Live data from Upstox, requires API credentials")
+        log_help("Choose the market data source for signal generation. Example: 1 for YFINANCE")
+
+        data_provider = prompt_choice(
+            "Data provider: YFINANCE(1), KITE(2), UPSTOX(3)? [default 1]: ",
+            [
+                {"label": "YFINANCE", "key": 1, "value": "YFINANCE"},
+                {"label": "KITE", "key": 2, "value": "KITE"},
+                {"label": "UPSTOX", "key": 3, "value": "UPSTOX"},
+            ],
+            default=1,
+        )
+        set_data_provider(data_provider)
+        log_event(f"[MAIN] Data provider selected: {data_provider}")
+
+        log_event("[SETUP] Choose your broker for order execution")
+        log_event("[SETUP]   KITE: Zerodha's trading platform")
+        log_event("[SETUP]   UPSTOX: Upstox trading platform")
+        log_help("Choose which broker should receive live or paper order flow. Example: 1 for KITE")
+
+        execution_provider = prompt_choice(
+            "Execution provider: KITE(1) or UPSTOX(2)? [default 1]: ",
+            [
+                {"label": "KITE", "key": 1, "value": "KITE"},
+                {"label": "UPSTOX", "key": 2, "value": "UPSTOX"},
+            ],
+            default=1,
+        )
+        set_execution_provider(execution_provider)
+        log_event(f"[MAIN] Execution provider selected: {execution_provider}")
 
     log_event("[SETUP] Enter your trading capital - this is the maximum amount the bot can risk")
     log_event("[SETUP]   For PAPER mode: Use any amount for simulation")
     log_event("[SETUP]   For LIVE mode: Use amount you're comfortable losing")
+    log_help("Enter the total capital allocation for this run. Example: 10000")
 
     capital = prompt_float("Enter capital for strategy: ", minimum=1)
 
@@ -1751,6 +1905,7 @@ try:
     log_event("[SETUP]   CONSERVATIVE: 1.5x ATR stops, 0.5% risk per trade, safer but fewer trades")
     log_event("[SETUP]   BALANCED: 2.0x ATR stops, 1.0% risk per trade, good balance")
     log_event("[SETUP]   AGGRESSIVE: 2.5x ATR stops, 1.5% risk per trade, higher risk/reward")
+    log_help("Choose how aggressive the stop-loss and position sizing should be. Example: 2 for BALANCED")
 
     risk_style_key = prompt_choice(
         (
@@ -1788,6 +1943,7 @@ try:
         log_event("[SETUP] Delivery equity settings - for long-term CNC positions")
         log_event("[SETUP]   Max portfolio allocation per symbol: Maximum % of capital per stock")
         log_event("[SETUP]   Example: 25% means no single stock can exceed 25% of your capital")
+        log_help("Set the largest percent of capital allowed in one delivery position. Example: 25")
 
         max_symbol_allocation = prompt_float(
             "Max portfolio allocation per delivery symbol % [default 25]: ",
@@ -1804,20 +1960,6 @@ try:
         )
 
     if "futures" in engine.name or "options" in engine.name:
-        if data_provider != "KITE":
-            log_event(
-                "[MAIN] F&O support currently requires KITE data provider. Switching to KITE.",
-                "warning",
-            )
-            set_data_provider("KITE")
-            data_provider = "KITE"
-        if execution_provider != "KITE":
-            log_event(
-                "[MAIN] F&O support currently requires KITE execution provider. Switching to KITE.",
-                "warning",
-            )
-            set_execution_provider("KITE")
-            execution_provider = "KITE"
         log_event("[SETUP] F&O engines use Kite derivatives contracts and live broker position sync.")
         log_event(
             "[SETUP] Supported F&O underlyings in this build: NIFTY 50 and SENSEX."
@@ -1844,19 +1986,32 @@ try:
         )
     )
 
-    log_event("[SETUP] Position limits - control how many concurrent trades")
-    log_event("[SETUP]   Max open positions: How many stocks can be traded simultaneously")
-    log_event("[SETUP]   Higher = more diversification, but more capital needed")
-
-    max_open_positions = prompt_int(
-        "Max open positions [default 1]: ",
-        default=1,
-        minimum=1,
+    auto_single_selection_mode = should_auto_select_top1(
+        symbol_mode,
+        selected_symbols,
+        option_pair_config=option_pair_config,
+        atm_option_config=atm_option_config,
     )
+
+    if auto_single_selection_mode:
+        max_open_positions = 1
+        log_event("[MAIN] Single-structure mode detected - max open positions auto-set to 1")
+    else:
+        log_event("[SETUP] Position limits - control how many concurrent trades")
+        log_event("[SETUP]   Max open positions: How many stocks can be traded simultaneously")
+        log_event("[SETUP]   Higher = more diversification, but more capital needed")
+        log_help("Set how many separate positions may stay open at once. Example: 3")
+
+        max_open_positions = prompt_int(
+            "Max open positions [default 1]: ",
+            default=1,
+            minimum=1,
+        )
 
     log_event("[SETUP] Capital limits per trade - controls individual position size")
     log_event("[SETUP]   Max capital per trade: Maximum amount to risk on any single stock")
     log_event("[SETUP]   Lower = more conservative, higher = larger positions")
+    log_help("Set the largest capital allocation allowed for one trade. Example: 10000")
 
     default_max_capital_per_trade = capital / max_open_positions
     max_capital_per_trade = prompt_float(
@@ -1872,6 +2027,7 @@ try:
     log_event("[SETUP] Total capital deployment - overall portfolio exposure")
     log_event("[SETUP]   Max capital deployed: Total amount that can be invested across all positions")
     log_event("[SETUP]   Usually set to your total capital amount")
+    log_help("Set the maximum combined capital allowed across all open trades. Example: 25000")
 
     max_capital_deployed = prompt_float(
         f"Max capital deployed [default {capital:.2f}]: ",
@@ -1883,6 +2039,7 @@ try:
     log_event("[SETUP] Trading frequency - controls how often to trade each stock")
     log_event("[SETUP]   One trade per symbol per day: YES = only 1 trade per stock daily")
     log_event("[SETUP]   One trade per symbol per day: NO = can trade same stock multiple times")
+    log_help("Choose whether the same symbol can be re-entered again on the same day. Example: 1 for YES")
 
     one_trade_per_symbol_per_day = prompt_choice(
         "One trade per symbol per day? YES(1) or NO(2) [default 1]: ",
@@ -1893,15 +2050,15 @@ try:
         default=1,
     ) == "YES"
     
-    # Auto-select TOP1 for SINGLE mode (only 1 symbol, so TOP N is irrelevant)
-    if symbol_mode == "SINGLE":
+    if auto_single_selection_mode:
         entry_selection_mode = "TOP1"
         top_n_count = 1
-        log_event("[MAIN] Single mode detected - entry selection auto-set to TOP 1")
+        log_event("[MAIN] Single-structure mode detected - entry selection auto-set to TOP 1")
     else:
         log_event("[SETUP] Entry selection - how many top-ranked candidates to trade")
         log_event("[SETUP]   TOP 1: Only enter the highest-ranked signal")
         log_event("[SETUP]   TOP N: Enter the top N highest-ranked signals")
+        log_help("Choose whether to enter only the top-ranked signal or several ranked candidates. Example: 2 for TOP N")
 
         entry_selection_mode = prompt_choice(
             "Entry selection: TOP 1(1) or TOP N(2)? [default 1]: ",
@@ -1914,6 +2071,7 @@ try:
         top_n_count = 1
         if entry_selection_mode == "TOPN":
             default_top_n = min(5, max_open_positions)
+            log_help(f"Enter how many ranked candidates to enter each cycle. Example: {default_top_n}")
             top_n_count = prompt_int(
                 f"Enter N for TOP N entries [default {default_top_n}]: ",
                 default=default_top_n,
@@ -1921,88 +2079,7 @@ try:
                 maximum=max_open_positions,
             )
 
-    log_event("[SETUP] Strategy mode - how the bot generates trading signals")
-    log_event("[SETUP]   Single: Use one specific strategy (MA, RSI, BREAKOUT, VWAP, ORB)")
-    log_event("[SETUP]   Multi: Use multiple strategies with agreement confirmation")
-    log_event("[SETUP]   Auto Adaptive: Automatically choose strategy based on market conditions")
-
-    if engine.name == "intraday_options":
-        mode = "1"
-        strategy_name = prompt_choice(
-            (
-                "Intraday options strategy: Momentum(1), ORB(2), "
-                "VWAP Reversion(3), Multi-strategy(4), Breakout Expansion(5), "
-                "IV Expansion(6), Trap Reversal(7) [default 1]: "
-            ),
-            [
-                {"label": "MOMENTUM", "key": 1, "value": "ATM_MOMENTUM"},
-                {"label": "ORB", "key": 2, "value": "ATM_ORB"},
-                {"label": "VWAP REVERSION", "key": 3, "value": "ATM_VWAP_REVERSION"},
-                {"label": "MULTI-STRATEGY", "key": 4, "value": "ATM_MULTI"},
-                {"label": "BREAKOUT EXPANSION", "key": 5, "value": "ATM_BREAKOUT_EXPANSION"},
-                {"label": "IV EXPANSION", "key": 6, "value": "ATM_IV_EXPANSION"},
-                {"label": "TRAP REVERSAL", "key": 7, "value": "ATM_TRAP_REVERSAL"},
-            ],
-            default=1,
-        )
-        strategies = None
-        min_confirmations = None
-        log_event(f"[MAIN] Intraday options strategy selected: {strategy_name}")
-    else:
-        if engine.name == "intraday_equity":
-            mode_prompt = "Select Mode: 1 (Single) / 2 (Multi) / 3 (Auto Adaptive) [default 3]: "
-            default_mode = "3"
-        else:
-            mode_prompt = "Select Mode: 1 (Single) / 2 (Multi) [default 1]: "
-            default_mode = "1"
-        mode = input(mode_prompt).strip()
-
-        if not mode:
-            mode = default_mode
-            if engine.name == "intraday_equity" and default_mode == "3":
-                log_event("[MAIN] Using Auto Adaptive strategy as default for intraday_equity")
-
-        if mode == "1":
-            choices = [
-                {"label": value, "key": key, "value": value}
-                for key, value in engine.supported_strategies.items()
-            ]
-            strategy_name = prompt_choice(
-                "Choose strategy: ",
-                choices,
-            )
-            log_event(f"[MAIN] Strategy selected: {strategy_name}")
-            min_confirmations = None
-            strategies = None
-
-        elif mode == "2":
-            strategies = prompt_multi_strategy_selection(engine.supported_strategies)
-            strategy_count = len(strategies)
-            min_confirmations = DEFAULT_CONFIRMATIONS.get(
-                strategy_count,
-                strategy_count,
-            )
-            strategy_name = None
-            log_event(
-                (
-                    f"[MAIN] Minimum confirmations set to "
-                    f"{min_confirmations} for {strategy_count} strategies"
-                )
-            )
-
-        elif mode == "3" and engine.name == "intraday_equity":
-            strategy_name = None
-            strategies = None
-            min_confirmations = None
-            log_event("[MAIN] Strategy mode selected: AUTO ADAPTIVE")
-            log_event("[MAIN] Auto Adaptive mode will dynamically select strategies based on market conditions")
-            log_event("[MAIN]   - Gap Up: Uses ORB strategy")
-            log_event("[MAIN]   - Gap Down: Uses RSI/BREAKOUT strategy")
-            log_event("[MAIN]   - Normal: Uses MA strategy with VWAP bias")
-
-        else:
-            log_event("Invalid mode. Exiting.", "error")
-            raise SystemExit
+    mode, strategy_name, strategies, min_confirmations = prompt_strategy_configuration(engine)
 
     log_event(
         (

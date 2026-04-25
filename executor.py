@@ -1,13 +1,17 @@
-import requests
+import re
+
 from kiteconnect import KiteConnect
 
 from config import (
     get_access_token,
     get_api_key,
+    get_broker_ip_mode,
     get_default_execution_provider,
     get_upstox_access_token,
+    get_upstox_static_ip,
 )
 from logger import log_event
+from network_utils import broker_request, configure_kite_client_network
 
 
 EXECUTION_MODE = "PAPER"
@@ -16,6 +20,8 @@ _kite_client = None
 _kite_instruments_cache = {}
 _upstox_symbol_cache = {}
 UPSTOX_ORDER_URL = "https://api-hft.upstox.com/v3/order/place"
+IPV4_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+IPV6_PATTERN = re.compile(r"\b(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}\b")
 
 
 def set_execution_mode(mode):
@@ -35,7 +41,10 @@ def get_execution_provider():
 def _get_kite_client():
     global _kite_client
     if _kite_client is None:
-        _kite_client = KiteConnect(api_key=get_api_key())
+        _kite_client = configure_kite_client_network(
+            KiteConnect(api_key=get_api_key()),
+            ip_mode=get_broker_ip_mode(),
+        )
         _kite_client.set_access_token(get_access_token())
     return _kite_client
 
@@ -79,7 +88,8 @@ def _get_upstox_instrument_key(symbol):
     if tradingsymbol in _upstox_symbol_cache:
         return _upstox_symbol_cache[tradingsymbol]
 
-    response = requests.get(
+    response = broker_request(
+        "GET",
         "https://api.upstox.com/v2/instruments/search",
         headers=_upstox_headers(),
         params={
@@ -90,6 +100,7 @@ def _get_upstox_instrument_key(symbol):
             "records": 10,
         },
         timeout=30,
+        ip_mode=get_broker_ip_mode(),
     )
     response.raise_for_status()
     payload = response.json()
@@ -130,6 +141,7 @@ def place_order(signal, quantity, symbol, note=None, product="MIS", entry_price=
     log_event(f"[EXECUTION] Quantity: {quantity}")
     log_event(f"[EXECUTION] Mode: {EXECUTION_MODE}")
     log_event(f"[EXECUTION] Product: {(product or 'MIS').upper()}")
+    log_event(f"[EXECUTION] Broker IP Mode: {get_broker_ip_mode()}")
     
     if entry_price:
         log_event(f"[EXECUTION] Entry Price: {entry_price:.2f}")
@@ -177,6 +189,22 @@ def _place_order_kite(signal, quantity, symbol, product):
 
 
 def _place_order_upstox(signal, quantity, symbol, product, note):
+    ip_diagnostics = _collect_upstox_ip_diagnostics()
+    if ip_diagnostics["broker_public_ipv4"]:
+        log_event(
+            "[EXECUTION] Broker outbound public IPv4: "
+            f"{ip_diagnostics['broker_public_ipv4']}"
+        )
+    if ip_diagnostics["general_public_ipv6"]:
+        log_event(
+            "[EXECUTION] General public IPv6 seen on this laptop: "
+            f"{ip_diagnostics['general_public_ipv6']}"
+        )
+
+    configured_static_ip = ip_diagnostics["configured_static_ip"]
+    if configured_static_ip:
+        log_event(f"[EXECUTION] Configured Upstox static IP: {configured_static_ip}")
+
     payload = {
         "quantity": quantity,
         "product": _upstox_product_constant(product),
@@ -192,18 +220,28 @@ def _place_order_upstox(signal, quantity, symbol, product, note):
         "market_protection": 0,
         "slice": False,
     }
-    response = requests.post(
+    response = broker_request(
+        "POST",
         UPSTOX_ORDER_URL,
         headers=_upstox_headers(),
         json=payload,
         timeout=30,
+        ip_mode=get_broker_ip_mode(),
     )
     try:
         response.raise_for_status()
-    except requests.HTTPError as exc:
+    except Exception as exc:
         detail = _extract_upstox_error_detail(response)
+        hinted_ips = _extract_ip_addresses(detail)
+        diagnostics = _format_upstox_ip_diagnostics(
+            broker_public_ipv4=ip_diagnostics["broker_public_ipv4"],
+            configured_static_ip=configured_static_ip,
+            general_public_ipv6=ip_diagnostics["general_public_ipv6"],
+            hinted_ips=hinted_ips,
+        )
         raise RuntimeError(
-            f"Upstox order failed ({response.status_code}) at {UPSTOX_ORDER_URL}: {detail}"
+            f"Upstox order failed ({response.status_code}) at {UPSTOX_ORDER_URL}: "
+            f"{detail}{diagnostics}"
         ) from exc
     return response.json().get("data", {}).get("order_id")
 
@@ -224,6 +262,78 @@ def _extract_upstox_error_detail(response):
         return " | ".join(formatted)
 
     return payload.get("message") or response.text.strip() or "Unknown Upstox error"
+
+
+def _collect_upstox_ip_diagnostics():
+    broker_public_ipv4 = None
+    general_public_ipv6 = None
+
+    try:
+        response = broker_request(
+            "GET",
+            "https://api.ipify.org",
+            timeout=5,
+            ip_mode=get_broker_ip_mode(),
+        )
+        broker_public_ipv4 = response.text.strip() or None
+    except Exception:
+        broker_public_ipv4 = None
+
+    try:
+        response = broker_request(
+            "GET",
+            "https://api64.ipify.org",
+            timeout=5,
+            ip_mode="AUTO",
+        )
+        candidate_ip = response.text.strip()
+        if ":" in candidate_ip:
+            general_public_ipv6 = candidate_ip
+    except Exception:
+        general_public_ipv6 = None
+
+    return {
+        "broker_public_ipv4": broker_public_ipv4,
+        "general_public_ipv6": general_public_ipv6,
+        "configured_static_ip": (get_upstox_static_ip() or "").strip() or None,
+    }
+
+
+def _extract_ip_addresses(text):
+    candidates = []
+    for pattern in (IPV4_PATTERN, IPV6_PATTERN):
+        for match in pattern.findall(text or ""):
+            cleaned = match.strip(" .,)(")
+            if cleaned and cleaned not in candidates:
+                candidates.append(cleaned)
+    return candidates
+
+
+def _format_upstox_ip_diagnostics(
+    broker_public_ipv4,
+    configured_static_ip,
+    general_public_ipv6,
+    hinted_ips,
+):
+    parts = []
+    if broker_public_ipv4:
+        parts.append(f"broker outbound public IPv4: {broker_public_ipv4}")
+    if configured_static_ip:
+        parts.append(f"configured Upstox static IP: {configured_static_ip}")
+    if general_public_ipv6:
+        parts.append(f"general public IPv6 on this laptop: {general_public_ipv6}")
+
+    extra_ips = [
+        ip
+        for ip in hinted_ips
+        if ip not in {broker_public_ipv4, configured_static_ip, general_public_ipv6}
+    ]
+    if extra_ips:
+        parts.append(f"other IP(s) mentioned by broker: {', '.join(extra_ips)}")
+
+    if not parts:
+        return ""
+    return " | " + " | ".join(parts)
 
 
 def is_upstox_static_ip_blocked(error):
@@ -307,10 +417,12 @@ def _get_delivery_holdings_kite():
 
 
 def _get_intraday_positions_upstox():
-    response = requests.get(
+    response = broker_request(
+        "GET",
         "https://api.upstox.com/v2/portfolio/short-term-positions",
         headers=_upstox_headers(),
         timeout=30,
+        ip_mode=get_broker_ip_mode(),
     )
     response.raise_for_status()
     positions = []
@@ -329,10 +441,12 @@ def _get_intraday_positions_upstox():
 
 
 def _get_delivery_holdings_upstox():
-    response = requests.get(
+    response = broker_request(
+        "GET",
         "https://api.upstox.com/v2/portfolio/long-term-holdings",
         headers=_upstox_headers(),
         timeout=30,
+        ip_mode=get_broker_ip_mode(),
     )
     response.raise_for_status()
     holdings = []

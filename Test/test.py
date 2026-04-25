@@ -3,60 +3,32 @@ import sys
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 
-import requests
 import yfinance as yf
-
 from kiteconnect import KiteConnect
-from upstox_client import ApiClient, Configuration
-from upstox_client.api import user_api
-from upstox_client.rest import ApiException
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config import get_access_token, get_api_key, get_upstox_access_token
-from data_fetcher import get_data, set_data_provider
-from executor import (
-    is_upstox_static_ip_blocked,
-    place_order,
-    set_execution_mode,
-    set_execution_provider,
+from config import (
+    get_access_token,
+    get_api_key,
+    get_broker_ip_mode,
+    get_upstox_access_token,
+    get_upstox_static_ip,
 )
+from data_fetcher import get_data, set_data_provider
+from executor import is_upstox_static_ip_blocked, place_order, set_execution_mode, set_execution_provider
+from network_utils import broker_request, configure_kite_client_network
 
 
-class _NoopPool:
-    def close(self):
-        return None
-
-    def join(self):
-        return None
-
-
-def _safe_api_client_del(self):
-    pool = getattr(self, "pool", None)
-    if pool is None:
-        return
-    try:
-        pool.close()
-        pool.join()
-    except Exception:
-        return
-
-
-ApiClient.__del__ = _safe_api_client_del
-
-
-def build_upstox_api_client():
-    token = get_upstox_access_token().strip()
-    config = Configuration()
-    config.access_token = token
-    config.api_key["Authorization"] = token
-    config.api_key_prefix["Authorization"] = "Bearer"
-    api_client = ApiClient(config)
-    if not hasattr(api_client, "pool"):
-        api_client.pool = _NoopPool()
-    return api_client
+def build_kite_client():
+    kite = configure_kite_client_network(
+        KiteConnect(api_key=get_api_key()),
+        ip_mode=get_broker_ip_mode(),
+    )
+    kite.set_access_token(get_access_token())
+    return kite
 
 
 def print_result(label, success, detail):
@@ -71,6 +43,7 @@ def mask_token(token):
         return "*" * len(token)
     return f"{token[:4]}...{token[-4:]}"
 
+
 def prompt_yes_no(message):
     try:
         return input(message).strip().upper() == "YES"
@@ -82,17 +55,52 @@ def print_data_result(symbol, data):
     if data.empty:
         print_result(symbol, False, "No candles returned")
         return
-    print_result(
-        symbol,
-        True,
-        f"{data.iloc[-1]['Close']:.2f} ({len(data)} candles)",
-    )
+    print_result(symbol, True, f"{data.iloc[-1]['Close']:.2f} ({len(data)} candles)")
 
 
 def fetch_data_quietly(symbol, period, interval):
     buffer = StringIO()
     with redirect_stdout(buffer), redirect_stderr(buffer):
         return get_data(symbol, period=period, interval=interval)
+
+
+def get_broker_public_ipv4():
+    response = broker_request(
+        "GET",
+        "https://api.ipify.org",
+        timeout=10,
+        ip_mode=get_broker_ip_mode(),
+    )
+    return response.text.strip()
+
+
+def get_general_public_ipv6():
+    response = broker_request(
+        "GET",
+        "https://api64.ipify.org",
+        timeout=10,
+        ip_mode="AUTO",
+    )
+    candidate_ip = response.text.strip()
+    if ":" in candidate_ip:
+        return candidate_ip
+    return None
+
+
+def get_upstox_profile():
+    response = broker_request(
+        "GET",
+        "https://api.upstox.com/v2/user/profile",
+        headers={
+            "Accept": "application/json",
+            "Api-Version": "2.0",
+            "Authorization": f"Bearer {get_upstox_access_token().strip()}",
+        },
+        timeout=30,
+        ip_mode=get_broker_ip_mode(),
+    )
+    response.raise_for_status()
+    return response.json()
 
 
 def main():
@@ -103,38 +111,47 @@ def main():
     token = get_upstox_access_token().strip()
     print("TOKEN:", mask_token(token))
     print("LENGTH:", len(token))
+    print("BROKER IP MODE:", get_broker_ip_mode())
+
+    broker_public_ipv4 = None
+    general_public_ipv6 = None
+    try:
+        broker_public_ipv4 = get_broker_public_ipv4()
+        print("BROKER PUBLIC IPv4:", broker_public_ipv4)
+    except Exception as exc:
+        print_result("Broker IPv4 lookup", False, exc)
+        print("Continuing without broker IPv4 check.")
 
     try:
-        print("PUBLIC IP:", requests.get("https://api.ipify.org", timeout=10).text)
-    except Exception as exc:
-        print_result("Public IP lookup", False, exc)
-        print("Continuing without public IP check.")
+        general_public_ipv6 = get_general_public_ipv6()
+        if general_public_ipv6:
+            print("GENERAL PUBLIC IPv6:", general_public_ipv6)
+    except Exception:
+        general_public_ipv6 = None
+
+    configured_static_ip = (get_upstox_static_ip() or "").strip()
+    if configured_static_ip:
+        print("CONFIGURED UPSTOX STATIC IP:", configured_static_ip)
 
     print("=== BROKER PROFILE TEST ===")
 
     zerodha_profile_ok = False
     try:
-        kite = KiteConnect(api_key=get_api_key())
-        kite.set_access_token(get_access_token())
-        print("Zerodha:", kite.profile())
+        print("Zerodha:", build_kite_client().profile())
         zerodha_profile_ok = True
     except Exception as exc:
         print_result("Zerodha profile", False, exc)
 
     upstox_profile_ok = False
     try:
-        api_client = build_upstox_api_client()
-        upstox = user_api.UserApi(api_client)
-        print("Upstox:", upstox.get_profile(api_version="2.0"))
+        print("Upstox:", get_upstox_profile())
         upstox_profile_ok = True
-    except ApiException as exc:
-        print_result("Upstox profile", False, getattr(exc, "body", str(exc)))
-        print(
-            "Hint: run `py .\\auto_auth.py`, choose UPSTOX, and refresh "
-            "UPSTOX_ACCESS_TOKEN in .env."
-        )
     except Exception as exc:
         print_result("Upstox profile", False, exc)
+        print(
+            "Hint: run `venv\\Scripts\\python.exe .\\auto_auth.py`, choose UPSTOX, "
+            "and refresh UPSTOX_ACCESS_TOKEN in .env."
+        )
 
     print("\n=== NEW SYMBOLS DATA TEST (IRB, JPPOWER, RPOWER) ===")
 
@@ -173,14 +190,11 @@ def main():
             print_result("UPSTOX LIVE BUY 1 RPOWER.NS", True, f"Order ID {order_id}")
         except Exception as exc:
             if is_upstox_static_ip_blocked(exc):
-                print_result(
-                    "Upstox order",
-                    False,
-                    "Order APIs are blocked by Upstox static IP restrictions for this app/account.",
-                )
+                print_result("Upstox order", False, str(exc))
                 print(
-                    "Action needed: configure a static public IP in your Upstox app settings "
-                    "or use an app/account without static-IP enforcement for order placement."
+                    "Action needed: keep BROKER_IP_MODE=IPV4_ONLY so broker APIs use the "
+                    f"stable IPv4 {configured_static_ip or broker_public_ipv4}, or update "
+                    "the Upstox static IP setting to match the actual outbound broker IP."
                 )
             else:
                 print_result("Upstox order", False, exc)
@@ -192,8 +206,7 @@ def main():
         set_execution_mode("LIVE")
         set_execution_provider("KITE")
         try:
-            kite_test = KiteConnect(api_key=get_api_key())
-            kite_test.set_access_token(get_access_token())
+            kite_test = build_kite_client()
             order_id = kite_test.place_order(
                 variety=kite_test.VARIETY_AMO,
                 exchange=kite_test.EXCHANGE_NSE,
@@ -220,13 +233,13 @@ def main():
     if not zerodha_profile_ok:
         print(
             "\nZerodha profile auth or network access is failing, so Kite data/order checks may "
-            "also fail until access/IP allowlisting is fixed."
+            "also fail until auth/network access is fixed."
         )
 
     if not upstox_profile_ok:
         print(
             "\nUpstox profile auth is failing, so Upstox data/order checks may also fail "
-            "until the access token is refreshed."
+            "until the access token is refreshed or broker IP access is aligned."
         )
 
     print("Test complete!")

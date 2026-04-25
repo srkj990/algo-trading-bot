@@ -11,6 +11,6 @@ if not exist "%PYTHON_EXE%" (
 )
 
 cd /d "%SCRIPT_DIR%"
-"%PYTHON_EXE%" backtesting.py
+"%PYTHON_EXE%" Test\test.py
 
 endlocal

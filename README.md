@@ -11,6 +11,13 @@ This repository is an interactive algo-trading bot for Indian markets with suppo
 
 The bot runs from `main.py`, persists runtime state under `state/`, writes session logs under `logs/`, and can place real orders through supported brokers when `LIVE` mode is enabled.
 
+Recent UX/runtime improvements now also include:
+
+- broker API IPv4 pinning support for static-IP-sensitive Upstox order flow
+- `[HELP]` guidance lines before interactive CLI inputs in both `main.py` and `backtesting.py`
+- engine-aware setup prompts that skip irrelevant questions where the choice is fixed
+- interactive backtesting exports under `Results/BackTest/`
+
 ## Current Engine Coverage
 
 ### 1. Intraday Equity
@@ -179,6 +186,27 @@ Important:
 - F&O flows currently force `KITE` for both data and execution
 - Upstox F&O execution/data is not implemented yet
 
+### Broker Network Mode
+
+The runtime now supports a broker network mode to keep broker API calls on IPv4 when needed.
+
+Environment settings:
+
+```env
+UPSTOX_STATIC_IP=49.205.247.48
+BROKER_IP_MODE=IPV4_ONLY
+```
+
+Current behavior:
+
+- when `BROKER_IP_MODE=IPV4_ONLY`, broker API requests prefer IPv4 and avoid temporary IPv6 routes
+- this is especially useful for Upstox apps/accounts with static-IP restrictions on order APIs
+- startup now prints a small network banner showing the active broker IP mode and configured Upstox static IP
+- live Upstox order diagnostics now print:
+  - detected broker outbound IPv4
+  - general laptop IPv6 when present
+  - configured static IP
+
 ## Runtime Flow
 
 Run:
@@ -189,16 +217,24 @@ python main.py
 
 The bot will prompt for:
 
-1. data provider
+1. engine
 2. execution mode
-3. execution provider
-4. engine
-5. capital
-6. symbol or F&O contract selection
-7. risk style
-8. open-position and capital limits
-9. entry selection mode
-10. strategy mode
+3. provider selection if relevant for that engine
+4. capital
+5. symbol or F&O contract selection
+6. risk style
+7. open-position and capital limits
+8. entry selection mode if relevant
+9. strategy mode or strategy selection
+
+The CLI now also prints `[HELP]` lines before important prompts, including a short explanation and an example input.
+
+Prompt behavior is now engine-aware:
+
+- F&O engines skip provider questions that would be auto-overridden to `KITE`
+- single-structure modes auto-set `Max open positions=1`
+- single-structure modes auto-set `TOP 1` entry selection
+- intraday options asks its own strategy prompt directly instead of the generic MA/RSI/BREAKOUT strategy-mode block
 
 ### F&O Contract UX
 
@@ -645,6 +681,8 @@ UPSTOX_REDIRECT_URI=http://127.0.0.1:8001
 DATA_PROVIDER=YFINANCE
 EXECUTION_PROVIDER=KITE
 LOG_LEVEL=INFO
+UPSTOX_STATIC_IP=49.205.247.48
+BROKER_IP_MODE=IPV4_ONLY
 ```
 
 Additional environment-backed controls for the stricter intraday equity defaults:
@@ -670,6 +708,66 @@ COST_EDGE_BUFFER_RUPEES=5.0
 - daily trade counts now persist for engines that enforce intraday frequency caps
 - F&O positions can now also persist extra contract metadata such as lot size and entry analytics
 - end-of-run trade reports are exported to `Results/`
+
+## Backtesting
+
+Run:
+
+```powershell
+run_backtest.bat
+```
+
+The backtest runner is now interactive and engine-aware, similar to the live CLI.
+
+Current backtesting behavior:
+
+- prints `[HELP]` before major inputs
+- shows example input values
+- prints available strategies before `Choose strategy:`
+- prints valid Yahoo Finance periods before `Backtest period`
+- prints valid Yahoo Finance intervals before `Backtest interval`
+- exports result files automatically under `Results/BackTest/`
+
+Backtest exports:
+
+- `..._summary.txt`
+- `..._trades.csv`
+- `..._equity.csv`
+
+Backtest summary now includes:
+
+- ending equity
+- total return
+- closed trades
+- win rate
+- max drawdown
+- estimated transaction charges
+- estimated net P&L
+
+Trade CSV now includes:
+
+- gross P&L
+- estimated charges
+- estimated net P&L
+
+Current transaction-cost coverage in backtesting:
+
+- `intraday_equity`
+- `delivery_equity`
+- `futures_equity`
+- `intraday_futures`
+- `options_equity`
+- `intraday_options`
+
+### Current F&O Backtesting Limitation
+
+There is now a basic F&O backtesting entry flow, but it is still simplified.
+
+Current behavior:
+
+- `intraday_options` backtesting uses the underlying spot/index as the signal proxy
+- expiry, structure, and strike-mode inputs are captured for setup parity and reporting
+- this is not yet a true contract-premium backtest with expiry decay and live strike rollover modeling
 
 ### End-of-Run Trade Report
 
@@ -731,7 +829,7 @@ Current behavior:
 - no open-interest / option-chain analytics yet
 - no reliable PCR/OI filter yet because there is no option-chain ingestion layer
 - no dynamic ATM strike rolling yet for live open positions
-- no F&O backtesting engine yet
+- F&O backtesting is currently proxy-based for some flows rather than full contract-premium modeling
 - Upstox F&O support is still missing
 - IV percentile/rank is approximate, not a full volatility surface model
 
@@ -746,7 +844,7 @@ Current behavior:
 - add a small dashboard or TUI view for live P&L, Greeks drift, and square-off countdown
 - add order-status polling, rejection summaries, and broker-side execution reconciliation after every live order
 - add open-interest, put-call ratio, and event-volatility filters for options
-- add F&O backtesting with lot sizing, expiry, and decay modeling
+- deepen F&O backtesting with true option-premium candles, decay, rollover, and richer lot/margin modeling
 
 ## Verification
 

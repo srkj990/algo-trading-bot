@@ -9,15 +9,20 @@ from config import (
     FNO_DEFAULT_RISK_FREE_RATE,
     get_access_token,
     get_api_key,
+    get_broker_ip_mode,
     get_default_data_provider,
 )
 from data_fetcher import get_data
 from indicators import compute_vwap
+from network_utils import configure_kite_client_network
 from option_analytics import calculate_greeks, implied_volatility, years_to_expiry
 
 
 def _get_kite_client():
-    kite = KiteConnect(api_key=get_api_key())
+    kite = configure_kite_client_network(
+        KiteConnect(api_key=get_api_key()),
+        ip_mode=get_broker_ip_mode(),
+    )
     kite.set_access_token(get_access_token())
     return kite
 

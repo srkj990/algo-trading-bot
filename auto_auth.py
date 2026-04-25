@@ -3,7 +3,6 @@ import urllib.parse as urlparse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-import requests
 from kiteconnect import KiteConnect
 
 from config import (
@@ -12,10 +11,12 @@ from config import (
     get_broker_api_key,
     get_broker_api_secret,
     get_broker_config,
+    get_broker_ip_mode,
     get_broker_primary_env_name,
     get_broker_redirect_uri,
     get_supported_brokers,
 )
+from network_utils import broker_request, configure_kite_client_network
 
 
 ENV_PATH = ".env"
@@ -173,7 +174,10 @@ def _run_local_callback_server(redirect_uri, callback_handler):
 
 def _build_kite_login_url(broker, redirect_uri):
     del redirect_uri
-    kite = KiteConnect(api_key=get_broker_api_key(broker.code))
+    kite = configure_kite_client_network(
+        KiteConnect(api_key=get_broker_api_key(broker.code)),
+        ip_mode=get_broker_ip_mode(),
+    )
     return kite.login_url()
 
 
@@ -195,7 +199,10 @@ def _exchange_kite_access_token(broker, query, redirect_uri):
     if "request_token" not in query:
         raise RuntimeError("Missing request_token in callback")
 
-    kite = KiteConnect(api_key=get_broker_api_key(broker.code))
+    kite = configure_kite_client_network(
+        KiteConnect(api_key=get_broker_api_key(broker.code)),
+        ip_mode=get_broker_ip_mode(),
+    )
     session = kite.generate_session(
         query["request_token"][0],
         api_secret=get_broker_api_secret(broker.code),
@@ -207,7 +214,8 @@ def _exchange_upstox_access_token(broker, query, redirect_uri):
     if "code" not in query:
         raise RuntimeError("Missing authorization code in callback")
 
-    response = requests.post(
+    response = broker_request(
+        "POST",
         "https://api.upstox.com/v2/login/authorization/token",
         headers={
             "accept": "application/json",
@@ -221,10 +229,11 @@ def _exchange_upstox_access_token(broker, query, redirect_uri):
             "grant_type": "authorization_code",
         },
         timeout=30,
+        ip_mode=get_broker_ip_mode(),
     )
     try:
         response.raise_for_status()
-    except requests.HTTPError as exc:
+    except Exception as exc:
         detail = response.text.strip()
         raise RuntimeError(
             "Upstox token exchange failed. Confirm that UPSTOX_API_KEY, "

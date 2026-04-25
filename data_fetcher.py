@@ -3,17 +3,18 @@ import time
 from urllib.parse import quote
 
 import pandas as pd
-import requests
 import yfinance as yf
 from kiteconnect import KiteConnect
 
 from config import (
     get_access_token,
     get_api_key,
+    get_broker_ip_mode,
     get_default_data_provider,
     get_upstox_access_token,
 )
 from logger import get_logger
+from network_utils import broker_request, configure_kite_client_network
 
 
 logger = get_logger()
@@ -116,7 +117,10 @@ def _get_data_yfinance(symbol, period, interval):
 def _get_kite_client():
     global _kite_client
     if _kite_client is None:
-        _kite_client = KiteConnect(api_key=get_api_key())
+        _kite_client = configure_kite_client_network(
+            KiteConnect(api_key=get_api_key()),
+            ip_mode=get_broker_ip_mode(),
+        )
         _kite_client.set_access_token(get_access_token())
     return _kite_client
 
@@ -190,7 +194,8 @@ def _resolve_upstox_instrument_key(symbol):
     if tradingsymbol in _upstox_symbol_cache:
         return _upstox_symbol_cache[tradingsymbol]
 
-    response = requests.get(
+    response = broker_request(
+        "GET",
         "https://api.upstox.com/v2/instruments/search",
         headers=_get_upstox_headers(),
         params={
@@ -201,6 +206,7 @@ def _resolve_upstox_instrument_key(symbol):
             "records": 10,
         },
         timeout=30,
+        ip_mode=get_broker_ip_mode(),
     )
     response.raise_for_status()
     payload = response.json()
@@ -222,10 +228,12 @@ def _get_data_upstox(symbol, period, interval):
         f"{encoded_key}/{interval_key}/{to_date.strftime('%Y-%m-%d')}/"
         f"{from_date.strftime('%Y-%m-%d')}"
     )
-    response = requests.get(
+    response = broker_request(
+        "GET",
         url,
         headers=_get_upstox_headers(),
         timeout=30,
+        ip_mode=get_broker_ip_mode(),
     )
     response.raise_for_status()
     candles = response.json().get("data", {}).get("candles", [])

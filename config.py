@@ -160,6 +160,14 @@ def get_upstox_api_secret():
     return get_broker_api_secret("UPSTOX")
 
 
+def get_upstox_static_ip():
+    return os.getenv("UPSTOX_STATIC_IP")
+
+
+def get_broker_ip_mode():
+    return os.getenv("BROKER_IP_MODE", "IPV4_ONLY").upper()
+
+
 def get_default_data_provider():
     return os.getenv("DATA_PROVIDER", "YFINANCE").upper()
 
