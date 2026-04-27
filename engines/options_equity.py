@@ -1,5 +1,6 @@
 from datetime import time
 
+from engines.base import TradingEngine
 from engines.common import (
     build_position,
     evaluate_exit,
@@ -11,7 +12,7 @@ from fno_data_fetcher import get_contract_lot_size
 from logger import log_event
 
 
-class OptionsEquityEngine:
+class OptionsEquityEngine(TradingEngine):
     name = "options_equity"
     data_period = "2mo"
     data_interval = "15m"

@@ -9,6 +9,7 @@ from config import (
     get_broker_ip_mode,
     get_upstox_static_ip,
 )
+from cli import interactive_input as cli_input
 from data_fetcher import get_data, set_data_provider
 from engines import (
     DeliveryEquityEngine,
@@ -40,6 +41,8 @@ from engines.common import (
 )
 from executor import place_order, set_execution_mode, set_execution_provider
 from logger import finalize_session_logger, log_event, setup_session_logger
+from models.position_adapter import opposite_side, position_entry_price, position_quantity, position_side
+from orchestration import positions as position_flow
 from risk_manager import (
     atr_position_size,
     atr_stop_from_value,
@@ -1899,7 +1902,7 @@ try:
             atm_option_config=atm_option_config,
         )
     else:
-        selected_symbols, symbol_mode = prompt_symbol_selection()
+        selected_symbols, symbol_mode = cli_input.prompt_symbol_selection()
 
     log_event("[SETUP] Choose risk style - affects stop-loss distance and position sizing")
     log_event("[SETUP]   CONSERVATIVE: 1.5x ATR stops, 0.5% risk per trade, safer but fewer trades")
@@ -2079,7 +2082,10 @@ try:
                 maximum=max_open_positions,
             )
 
-    mode, strategy_name, strategies, min_confirmations = prompt_strategy_configuration(engine)
+    mode, strategy_name, strategies, min_confirmations = cli_input.prompt_strategy_configuration(
+        engine,
+        DEFAULT_CONFIRMATIONS,
+    )
 
     log_event(
         (
@@ -2108,11 +2114,11 @@ try:
         str(key): int(value)
         for key, value in saved_state.get("trade_counts_today", {}).items()
     }
-    active_trade_day = parse_trade_day(saved_state["active_trade_day"])
+    active_trade_day = position_flow.parse_trade_day(saved_state["active_trade_day"])
     last_entry_time = float(saved_state["last_entry_time"])
     regime_cache = saved_state["regime_cache"]
     trade_book = []
-    save_runtime_state(
+    position_flow.save_runtime_state(
         engine.name,
         positions,
         traded_symbols_today,
@@ -2120,6 +2126,7 @@ try:
         active_trade_day,
         last_entry_time,
         regime_cache,
+        save_engine_state,
     )
 
     while True:
@@ -2150,7 +2157,7 @@ try:
                 )
                 positions.clear()
             regime_cache = {}
-            save_runtime_state(
+            position_flow.save_runtime_state(
                 engine.name,
                 positions,
                 traded_symbols_today,
@@ -2158,6 +2165,7 @@ try:
                 active_trade_day,
                 last_entry_time,
                 regime_cache,
+                save_engine_state,
             )
 
         cycle_state = engine.get_cycle_state(now)
@@ -2167,8 +2175,18 @@ try:
         log_event(f"[SESSION] {cycle_state['reason']}")
 
         if cycle_state["force_square_off"]:
-            if force_square_off_positions(engine, positions, trade_book):
-                save_runtime_state(
+            if position_flow.force_square_off_positions(
+                engine,
+                positions,
+                trade_book,
+                place_order,
+                log_order_signal_banner,
+                get_data,
+                log_event,
+                TRANSACTION_COST_MODEL_ENABLED,
+                float(TRANSACTION_SLIPPAGE_PCT_PER_SIDE or 0.0),
+            ):
+                position_flow.save_runtime_state(
                     engine.name,
                     positions,
                     traded_symbols_today,
@@ -2176,6 +2194,7 @@ try:
                     active_trade_day,
                     last_entry_time,
                     regime_cache,
+                    save_engine_state,
                 )
             log_positions(positions, log_event)
             time.sleep(engine.sleep_seconds)
@@ -2322,7 +2341,7 @@ try:
                             "trade_day": current_trade_day.isoformat(),
                             "context": market_context,
                         }
-                        save_runtime_state(
+                        position_flow.save_runtime_state(
                             engine.name,
                             positions,
                             traded_symbols_today,
@@ -2330,6 +2349,7 @@ try:
                             active_trade_day,
                             last_entry_time,
                             regime_cache,
+                            save_engine_state,
                         )
                 log_market_context(symbol, market_context)
                 active_mode = "2"
@@ -2508,11 +2528,12 @@ try:
             continue
 
         if engine.name == "intraday_options" and option_pair_config:
-            pair_candidate = build_option_pair_candidate(
+            pair_candidate = position_flow.build_option_pair_candidate(
                 engine,
                 option_pair_config,
                 symbol_snapshots,
                 positions,
+                log_event,
             )
             if pair_candidate:
                 candidates.append(pair_candidate)
@@ -2522,15 +2543,21 @@ try:
 
         state_changed = False
         if cycle_state["manage_positions"]:
-            state_changed = manage_open_positions(
+            state_changed = position_flow.manage_open_positions(
                 engine,
                 positions,
                 symbol_snapshots,
                 now,
                 trade_book,
+                place_order,
+                log_order_signal_banner,
+                get_data,
+                log_event,
+                TRANSACTION_COST_MODEL_ENABLED,
+                float(TRANSACTION_SLIPPAGE_PCT_PER_SIDE or 0.0),
             )
             if state_changed:
-                save_runtime_state(
+                position_flow.save_runtime_state(
                     engine.name,
                     positions,
                     traded_symbols_today,
@@ -2538,6 +2565,7 @@ try:
                     active_trade_day,
                     last_entry_time,
                     regime_cache,
+                    save_engine_state,
                 )
 
         deployed_capital = get_deployed_capital(positions)
@@ -2733,12 +2761,18 @@ try:
                                     "closing already-entered legs to avoid partial exposure",
                                     "warning",
                                 )
-                                close_position_symbols(
+                                position_flow.close_position_symbols(
                                     engine,
                                     positions,
                                     entered_pair_symbols,
                                     reason=f"Pair sync unwind {pair_id}",
                                     trade_book=trade_book,
+                                    place_order=place_order,
+                                    log_order_signal_banner=log_order_signal_banner,
+                                    fetch_data=get_data,
+                                    log_event=log_event,
+                                    transaction_cost_model_enabled=TRANSACTION_COST_MODEL_ENABLED,
+                                    slippage_pct_per_side=float(TRANSACTION_SLIPPAGE_PCT_PER_SIDE or 0.0),
                                     exit_time=now,
                                 )
                             raise
@@ -2781,7 +2815,7 @@ try:
                     deployed_capital += estimated_trade_capital
                     last_entry_time = current_time
                     log_event(f"[RISK] Updated deployed capital: {deployed_capital:.2f}")
-                    save_runtime_state(
+                    position_flow.save_runtime_state(
                         engine.name,
                         positions,
                         traded_symbols_today,
@@ -2789,6 +2823,7 @@ try:
                         active_trade_day,
                         last_entry_time,
                         regime_cache,
+                        save_engine_state,
                     )
 
                     if entry_selection_mode == "TOP1":
@@ -3037,7 +3072,7 @@ try:
                 deployed_capital += estimated_trade_capital
                 last_entry_time = current_time
                 log_event(f"[RISK] Updated deployed capital: {deployed_capital:.2f}")
-                save_runtime_state(
+                position_flow.save_runtime_state(
                     engine.name,
                     positions,
                     traded_symbols_today,
@@ -3045,6 +3080,7 @@ try:
                     active_trade_day,
                     last_entry_time,
                     regime_cache,
+                    save_engine_state,
                 )
 
                 if entry_selection_mode == "TOP1":
@@ -3068,27 +3104,34 @@ except KeyboardInterrupt:
                 exit_time = datetime.now()
                 for symbol, position in list(positions.items()):
                     exit_side = "SELL" if position["side"] == "BUY" else "BUY"
-                    exit_price = get_latest_exit_price(
+                    exit_price = position_flow.get_latest_exit_price(
                         engine,
                         symbol,
                         position,
-                    ) if "engine" in locals() else float(position["entry_price"])
-                    log_event(f"[MAIN] Closing {symbol}: {position['side']} {position['quantity']} units at market")
+                        get_data,
+                        log_event,
+                    ) if "engine" in locals() else float(position_entry_price(position))
+                    log_event(
+                        f"[MAIN] Closing {symbol}: {position_side(position)} "
+                        f"{position_quantity(position)} units at market"
+                    )
                     place_order(
-                        exit_side,
-                        position["quantity"],
+                        opposite_side(position),
+                        position_quantity(position),
                         symbol,
                         note="User-initiated emergency close-out",
                         product=engine.order_product if "engine" in locals() else "MIS",
                     )
                     if "trade_book" in locals():
-                        record_closed_trade(
+                        position_flow.record_closed_trade(
                             trade_book,
                             symbol,
                             position,
                             exit_price,
                             "User-initiated emergency close-out",
                             exit_time,
+                            TRANSACTION_COST_MODEL_ENABLED,
+                            float(TRANSACTION_SLIPPAGE_PCT_PER_SIDE or 0.0),
                         )
                     del positions[symbol]
                 log_event("[MAIN] All positions closed.")
@@ -3103,11 +3146,15 @@ except Exception as exc:
 finally:
     if "positions" in locals() and "engine" in locals() and "capital" in locals():
         try:
-            summarize_execution_stats(
+            position_flow.summarize_execution_stats(
                 engine,
                 capital,
                 positions,
                 trade_book if "trade_book" in locals() else [],
+                get_data,
+                log_event,
+                export_trade_book_report,
+                TRANSACTION_COST_MODEL_ENABLED,
             )
         except Exception as exc:
             log_event(f"[STATS] Failed to generate summary: {exc}", "warning")

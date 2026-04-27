@@ -1,11 +1,12 @@
 from datetime import time
 
 from engines.common import build_position, evaluate_exit, get_symbol_deployed_capital
+from engines.base import TradingEngine
 from executor import get_delivery_holdings
 from logger import log_event
 
 
-class DeliveryEquityEngine:
+class DeliveryEquityEngine(TradingEngine):
     name = "delivery_equity"
     data_period = "6mo"
     data_interval = "1d"

@@ -18,6 +18,15 @@ Recent UX/runtime improvements now also include:
 - engine-aware setup prompts that skip irrelevant questions where the choice is fixed
 - interactive backtesting exports under `Results/BackTest/`
 
+Recent architecture improvements now also include:
+
+- typed `Position` foundation with validation, exit evaluation, and trailing-stop logic
+- `TradingEngine` and `BrokerClient` abstract base layers
+- broker client factory for `KITE` and `UPSTOX`
+- extracted `cli/` helpers for reusable interactive prompts
+- extracted `orchestration/` helpers for position lifecycle management
+- lazy engine package loading so foundational tests do not require broker SDK imports
+
 ## Current Engine Coverage
 
 ### 1. Intraday Equity
@@ -235,6 +244,13 @@ Prompt behavior is now engine-aware:
 - single-structure modes auto-set `Max open positions=1`
 - single-structure modes auto-set `TOP 1` entry selection
 - intraday options asks its own strategy prompt directly instead of the generic MA/RSI/BREAKOUT strategy-mode block
+
+Under the hood, the runtime now has a cleaner split:
+
+- `main.py` remains the launcher/orchestrator entry point
+- `cli/interactive_input.py` owns reusable prompt helpers
+- `orchestration/positions.py` owns reusable trade/position lifecycle helpers
+- `executor.py` routes broker calls through concrete broker clients created by a small factory
 
 ### F&O Contract UX
 
@@ -653,14 +669,34 @@ Support status for the requested strategy ideas:
 
 ## Files to Know
 
-- [main.py](./main.py): interactive runtime loop and trade orchestration
+- [main.py](./main.py): interactive runtime entry point and top-level session flow
 - [config.py](./config.py): broker env loading, symbol tables, F&O defaults
 - [fno_data_fetcher.py](./fno_data_fetcher.py): F&O contract discovery, metadata, analytics
 - [option_analytics.py](./option_analytics.py): Black-Scholes, IV, Greeks
-- [executor.py](./executor.py): broker order placement and position sync
+- [executor.py](./executor.py): broker-facing execution entry points backed by broker clients
 - [executor_fno.py](./executor_fno.py): F&O-specific position helpers
 - [engines](./engines): trading-engine implementations
+- [engines/base.py](./engines/base.py): common `TradingEngine` abstract interface
+- [brokers](./brokers): broker interfaces, concrete clients, and factory
+- [models](./models): typed domain models such as `Position`
+- [cli](./cli): extracted interactive prompt helpers
+- [orchestration](./orchestration): extracted position/trade lifecycle helpers
 - [state_store.py](./state_store.py): persistent runtime state
+
+## Architecture Notes
+
+Current refactoring status:
+
+- Phase 1 foundations are in place:
+  - typed `Position` model
+  - `TradingEngine` ABC
+  - `BrokerClient` ABC
+  - unit coverage for the core foundations
+- Phase 2 is partially in place:
+  - `backtesting.py` now uses typed position adapters for key P&L/equity paths
+  - `executor.py` now delegates to concrete broker clients through a factory
+  - `main.py` now uses extracted `cli` and `orchestration` modules for selected flows
+- `main.py` still contains legacy helper definitions alongside the extracted modules, so the runtime is safer and more modular than before, but not fully slimmed down yet
 
 ## Environment
 
@@ -705,6 +741,7 @@ COST_EDGE_BUFFER_RUPEES=5.0
 - engine state is stored in `state/`
 - session logs are written to `logs/`
 - open positions persist with stop/target/trailing state
+- position dicts are still persisted in legacy-compatible form, but are now validated through typed adapters in the refactored paths
 - daily trade counts now persist for engines that enforce intraday frequency caps
 - F&O positions can now also persist extra contract metadata such as lot size and entry analytics
 - end-of-run trade reports are exported to `Results/`
@@ -846,10 +883,19 @@ Current behavior:
 - add open-interest, put-call ratio, and event-volatility filters for options
 - deepen F&O backtesting with true option-premium candles, decay, rollover, and richer lot/margin modeling
 
+## Suggested Next Refactoring Steps
+
+- remove redundant legacy helper definitions still left inside `main.py`
+- move the remaining top-level runtime loop into a dedicated orchestration session module
+- add unit tests for `orchestration/positions.py`
+- add tests for broker-factory selection and broker client adapters
+- continue migrating remaining dict-heavy position flows to typed helpers first, then to direct model usage
+
 ## Verification
 
-The latest code changes were syntax-checked with:
+The latest refactoring changes were checked with:
 
 ```powershell
-python -m compileall main.py fno_data_fetcher.py option_analytics.py engines executor_fno.py
+python -m unittest discover -s tests -v
+python -m py_compile main.py backtesting.py executor.py brokers\base.py brokers\clients.py brokers\factory.py models\position.py models\position_adapter.py orchestration\positions.py cli\interactive_input.py
 ```

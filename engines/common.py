@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+from models import Position
+
+
 def build_position(
     symbol,
     side,
@@ -24,21 +29,23 @@ def build_position(
             target = entry_price * (1 - target_pct / 100)
             trailing_stop = entry_price * (1 + trailing_pct / 100)
 
-    position = {
-        "symbol": symbol,
-        "side": side,
-        "quantity": quantity,
-        "entry_price": entry_price,
-        "stop_loss": stop_loss,
-        "target": target,
-        "trailing_stop": trailing_stop,
-        "best_price": entry_price,
-        "atr": atr,
-        "stop_distance": stop_distance,
-        "trailing_distance": trailing_distance,
-    }
-    position.update(extra_fields)
-    return position
+    position = Position(
+        symbol=symbol,
+        side=str(side).upper(),
+        quantity=quantity,
+        entry_price=entry_price,
+        stop_loss=stop_loss,
+        target=target,
+        trailing_stop=trailing_stop,
+        best_price=entry_price,
+        atr=atr,
+        stop_distance=stop_distance,
+        trailing_distance=trailing_distance,
+        trailing_activation_distance=extra_fields.get("trailing_activation_distance"),
+        trailing_active=bool(extra_fields.get("trailing_active", False)),
+        extra_fields=extra_fields,
+    )
+    return position.to_dict()
 
 
 def merge_persisted_position_state(position, persisted_position):
@@ -54,71 +61,20 @@ def merge_persisted_position_state(position, persisted_position):
 
 
 def update_trailing_stop(position, latest_close, trailing_pct):
-    trailing_distance = position.get("trailing_distance")
-    if trailing_pct <= 0 and trailing_distance is None:
-        return False
-
-    old_trailing = position["trailing_stop"]
-    if position["side"] == "BUY":
-        position["best_price"] = max(position["best_price"], latest_close)
-        activation_distance = position.get("trailing_activation_distance")
-        if activation_distance is not None:
-            try:
-                activation_distance = float(activation_distance)
-            except (TypeError, ValueError):
-                activation_distance = None
-        if activation_distance and activation_distance > 0:
-            favorable_move = position["best_price"] - float(position["entry_price"])
-            if favorable_move < activation_distance:
-                return False
-            position["trailing_active"] = True
-        if trailing_distance is not None:
-            candidate = position["best_price"] - trailing_distance
-        else:
-            candidate = position["best_price"] * (1 - trailing_pct / 100)
-        position["trailing_stop"] = max(position["trailing_stop"], candidate)
-    else:
-        position["best_price"] = min(position["best_price"], latest_close)
-        activation_distance = position.get("trailing_activation_distance")
-        if activation_distance is not None:
-            try:
-                activation_distance = float(activation_distance)
-            except (TypeError, ValueError):
-                activation_distance = None
-        if activation_distance and activation_distance > 0:
-            favorable_move = float(position["entry_price"]) - position["best_price"]
-            if favorable_move < activation_distance:
-                return False
-            position["trailing_active"] = True
-        if trailing_distance is not None:
-            candidate = position["best_price"] + trailing_distance
-        else:
-            candidate = position["best_price"] * (1 + trailing_pct / 100)
-        position["trailing_stop"] = min(position["trailing_stop"], candidate)
-
-    return position["trailing_stop"] != old_trailing
+    typed_position = Position.from_mapping(position)
+    changed = typed_position.update_trailing_stop(latest_close, trailing_pct)
+    position.update(typed_position.to_dict())
+    return changed
 
 
 def evaluate_exit(position, latest_candle, include_target=True):
-    high = float(latest_candle["High"])
-    low = float(latest_candle["Low"])
-
-    if position["side"] == "BUY":
-        if low <= position["stop_loss"]:
-            return "STOP_LOSS"
-        if low <= position["trailing_stop"]:
-            return "TRAILING_STOP"
-        if include_target and high >= position["target"]:
-            return "TARGET"
-    else:
-        if high >= position["stop_loss"]:
-            return "STOP_LOSS"
-        if high >= position["trailing_stop"]:
-            return "TRAILING_STOP"
-        if include_target and low <= position["target"]:
-            return "TARGET"
-
-    return None
+    typed_position = Position.from_mapping(position)
+    exit_reason = typed_position.evaluate_exit(
+        latest_high=latest_candle["High"],
+        latest_low=latest_candle["Low"],
+        include_target=include_target,
+    )
+    return exit_reason.value if exit_reason else None
 
 
 def log_positions(positions, log_event, current_prices=None):

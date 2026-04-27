@@ -1,27 +1,13 @@
-import re
-
-from kiteconnect import KiteConnect
-
-from config import (
-    get_access_token,
-    get_api_key,
-    get_broker_ip_mode,
-    get_default_execution_provider,
-    get_upstox_access_token,
-    get_upstox_static_ip,
-)
+from brokers.base import OrderRequest
+from brokers.clients import UpstoxBrokerClient
+from brokers.factory import create_broker_client
+from config import get_broker_ip_mode, get_default_execution_provider
 from logger import log_event
-from network_utils import broker_request, configure_kite_client_network
 
 
 EXECUTION_MODE = "PAPER"
 EXECUTION_PROVIDER = get_default_execution_provider()
-_kite_client = None
-_kite_instruments_cache = {}
-_upstox_symbol_cache = {}
-UPSTOX_ORDER_URL = "https://api-hft.upstox.com/v3/order/place"
-IPV4_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
-IPV6_PATTERN = re.compile(r"\b(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}\b")
+_broker_clients = {}
 
 
 def set_execution_mode(mode):
@@ -38,99 +24,13 @@ def get_execution_provider():
     return EXECUTION_PROVIDER
 
 
-def _get_kite_client():
-    global _kite_client
-    if _kite_client is None:
-        _kite_client = configure_kite_client_network(
-            KiteConnect(api_key=get_api_key()),
-            ip_mode=get_broker_ip_mode(),
-        )
-        _kite_client.set_access_token(get_access_token())
-    return _kite_client
-
-
-def _parse_symbol_exchange(symbol):
-    if not symbol:
-        raise ValueError("Symbol is required")
-
-    if ":" in symbol:
-        exchange, tradingsymbol = symbol.split(":", 1)
-        return exchange.upper(), tradingsymbol.replace(".NS", "")
-
-    return "NSE", symbol.replace(".NS", "")
-
-
-def _get_kite_instrument(symbol):
-    exchange, tradingsymbol = _parse_symbol_exchange(symbol)
-    cache_key = f"{exchange}:{tradingsymbol}"
-    if cache_key not in _kite_instruments_cache:
-        kite = _get_kite_client()
-        instruments = kite.instruments(exchange)
-        for item in instruments:
-            key = f"{item['exchange']}:{item['tradingsymbol']}"
-            _kite_instruments_cache[key] = item
-    instrument = _kite_instruments_cache.get(cache_key)
-    if instrument is None:
-        raise RuntimeError(f"Kite instrument metadata not found for {symbol}")
-    return instrument
-
-
-def _upstox_headers():
-    return {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "Authorization": f"Bearer {get_upstox_access_token().strip()}",
-    }
-
-
-def _get_upstox_instrument_key(symbol):
-    tradingsymbol = symbol.replace(".NS", "")
-    if tradingsymbol in _upstox_symbol_cache:
-        return _upstox_symbol_cache[tradingsymbol]
-
-    response = broker_request(
-        "GET",
-        "https://api.upstox.com/v2/instruments/search",
-        headers=_upstox_headers(),
-        params={
-            "query": tradingsymbol,
-            "exchanges": "NSE",
-            "segments": "EQ",
-            "page_number": 1,
-            "records": 10,
-        },
-        timeout=30,
-        ip_mode=get_broker_ip_mode(),
-    )
-    response.raise_for_status()
-    payload = response.json()
-    for item in payload.get("data", []):
-        if item.get("exchange") == "NSE" and item.get("trading_symbol") == tradingsymbol:
-            _upstox_symbol_cache[tradingsymbol] = item["instrument_key"]
-            return item["instrument_key"]
-
-    raise RuntimeError(f"Upstox instrument key not found for {symbol}")
-
-
-def _kite_product_constant(product):
-    kite = _get_kite_client()
-    normalized = (product or "MIS").upper()
-    mapping = {
-        "MIS": kite.PRODUCT_MIS,
-        "CNC": kite.PRODUCT_CNC,
-        "NRML": kite.PRODUCT_NRML,
-    }
-    return mapping.get(normalized, kite.PRODUCT_MIS)
-
-
-def _upstox_product_constant(product):
-    normalized = (product or "MIS").upper()
-    mapping = {
-        "MIS": "I",
-        "CNC": "D",
-        "NRML": "D",
-    }
-    return mapping.get(normalized, "I")
+def _get_broker_client(provider=None):
+    resolved_provider = (provider or EXECUTION_PROVIDER or "KITE").upper()
+    client = _broker_clients.get(resolved_provider)
+    if client is None:
+        client = create_broker_client(resolved_provider)
+        _broker_clients[resolved_provider] = client
+    return client
 
 
 def place_order(signal, quantity, symbol, note=None, product="MIS", entry_price=None):
@@ -142,7 +42,7 @@ def place_order(signal, quantity, symbol, note=None, product="MIS", entry_price=
     log_event(f"[EXECUTION] Mode: {EXECUTION_MODE}")
     log_event(f"[EXECUTION] Product: {(product or 'MIS').upper()}")
     log_event(f"[EXECUTION] Broker IP Mode: {get_broker_ip_mode()}")
-    
+
     if entry_price:
         log_event(f"[EXECUTION] Entry Price: {entry_price:.2f}")
         log_event(f"[EXECUTION] Entry Value: {entry_price * quantity:.2f}")
@@ -154,159 +54,29 @@ def place_order(signal, quantity, symbol, note=None, product="MIS", entry_price=
         log_event("Order NOT placed (paper mode)")
         return None
 
-    if EXECUTION_PROVIDER == "KITE":
-        return _place_order_kite(signal, quantity, symbol, product)
-    if EXECUTION_PROVIDER == "UPSTOX":
-        return _place_order_upstox(signal, quantity, symbol, product, note)
-
-    raise ValueError(f"Unsupported execution provider: {EXECUTION_PROVIDER}")
-
-
-def _place_order_kite(signal, quantity, symbol, product):
-    kite = _get_kite_client()
-    exchange, tradingsymbol = _parse_symbol_exchange(symbol)
-    transaction_type = (
-        kite.TRANSACTION_TYPE_BUY if signal == "BUY" else kite.TRANSACTION_TYPE_SELL
-    )
-    exchange_map = {
-        "NSE": kite.EXCHANGE_NSE,
-        "BSE": kite.EXCHANGE_BSE,
-        "NFO": kite.EXCHANGE_NFO,
-        "BFO": kite.EXCHANGE_BFO,
-    }
-    kite_exchange = exchange_map.get(exchange)
-    if kite_exchange is None:
-        raise ValueError(f"Unsupported Kite exchange for order placement: {exchange}")
-    return kite.place_order(
-        variety=kite.VARIETY_REGULAR,
-        exchange=kite_exchange,
-        tradingsymbol=tradingsymbol,
-        transaction_type=transaction_type,
-        quantity=quantity,
-        product=_kite_product_constant(product),
-        order_type=kite.ORDER_TYPE_MARKET,
-    )
-
-
-def _place_order_upstox(signal, quantity, symbol, product, note):
-    ip_diagnostics = _collect_upstox_ip_diagnostics()
-    if ip_diagnostics["broker_public_ipv4"]:
-        log_event(
-            "[EXECUTION] Broker outbound public IPv4: "
-            f"{ip_diagnostics['broker_public_ipv4']}"
+    client = _get_broker_client()
+    order_result = client.place_order(
+        OrderRequest(
+            symbol=symbol,
+            side=signal,
+            quantity=quantity,
+            product=product,
+            note=note,
         )
-    if ip_diagnostics["general_public_ipv6"]:
-        log_event(
-            "[EXECUTION] General public IPv6 seen on this laptop: "
-            f"{ip_diagnostics['general_public_ipv6']}"
-        )
-
-    configured_static_ip = ip_diagnostics["configured_static_ip"]
-    if configured_static_ip:
-        log_event(f"[EXECUTION] Configured Upstox static IP: {configured_static_ip}")
-
-    payload = {
-        "quantity": quantity,
-        "product": _upstox_product_constant(product),
-        "validity": "DAY",
-        "price": 0,
-        "tag": (note or "algo")[:40],
-        "instrument_token": _get_upstox_instrument_key(symbol),
-        "order_type": "MARKET",
-        "transaction_type": signal,
-        "disclosed_quantity": 0,
-        "trigger_price": 0,
-        "is_amo": False,
-        "market_protection": 0,
-        "slice": False,
-    }
-    response = broker_request(
-        "POST",
-        UPSTOX_ORDER_URL,
-        headers=_upstox_headers(),
-        json=payload,
-        timeout=30,
-        ip_mode=get_broker_ip_mode(),
     )
-    try:
-        response.raise_for_status()
-    except Exception as exc:
-        detail = _extract_upstox_error_detail(response)
-        hinted_ips = _extract_ip_addresses(detail)
-        diagnostics = _format_upstox_ip_diagnostics(
-            broker_public_ipv4=ip_diagnostics["broker_public_ipv4"],
-            configured_static_ip=configured_static_ip,
-            general_public_ipv6=ip_diagnostics["general_public_ipv6"],
-            hinted_ips=hinted_ips,
-        )
-        raise RuntimeError(
-            f"Upstox order failed ({response.status_code}) at {UPSTOX_ORDER_URL}: "
-            f"{detail}{diagnostics}"
-        ) from exc
-    return response.json().get("data", {}).get("order_id")
+    return order_result.order_id
 
 
 def _extract_upstox_error_detail(response):
-    try:
-        payload = response.json()
-    except ValueError:
-        return response.text.strip() or "Unknown Upstox error"
-
-    errors = payload.get("errors") or []
-    if errors:
-        formatted = []
-        for item in errors:
-            code = item.get("errorCode") or item.get("error_code") or "UNKNOWN"
-            message = item.get("message") or "Unknown error"
-            formatted.append(f"{code}: {message}")
-        return " | ".join(formatted)
-
-    return payload.get("message") or response.text.strip() or "Unknown Upstox error"
+    return UpstoxBrokerClient.extract_error_detail(response)
 
 
 def _collect_upstox_ip_diagnostics():
-    broker_public_ipv4 = None
-    general_public_ipv6 = None
-
-    try:
-        response = broker_request(
-            "GET",
-            "https://api.ipify.org",
-            timeout=5,
-            ip_mode=get_broker_ip_mode(),
-        )
-        broker_public_ipv4 = response.text.strip() or None
-    except Exception:
-        broker_public_ipv4 = None
-
-    try:
-        response = broker_request(
-            "GET",
-            "https://api64.ipify.org",
-            timeout=5,
-            ip_mode="AUTO",
-        )
-        candidate_ip = response.text.strip()
-        if ":" in candidate_ip:
-            general_public_ipv6 = candidate_ip
-    except Exception:
-        general_public_ipv6 = None
-
-    return {
-        "broker_public_ipv4": broker_public_ipv4,
-        "general_public_ipv6": general_public_ipv6,
-        "configured_static_ip": (get_upstox_static_ip() or "").strip() or None,
-    }
+    return UpstoxBrokerClient()._collect_ip_diagnostics()
 
 
 def _extract_ip_addresses(text):
-    candidates = []
-    for pattern in (IPV4_PATTERN, IPV6_PATTERN):
-        for match in pattern.findall(text or ""):
-            cleaned = match.strip(" .,)(")
-            if cleaned and cleaned not in candidates:
-                candidates.append(cleaned)
-    return candidates
+    return UpstoxBrokerClient.extract_ip_addresses(text)
 
 
 def _format_upstox_ip_diagnostics(
@@ -315,25 +85,12 @@ def _format_upstox_ip_diagnostics(
     general_public_ipv6,
     hinted_ips,
 ):
-    parts = []
-    if broker_public_ipv4:
-        parts.append(f"broker outbound public IPv4: {broker_public_ipv4}")
-    if configured_static_ip:
-        parts.append(f"configured Upstox static IP: {configured_static_ip}")
-    if general_public_ipv6:
-        parts.append(f"general public IPv6 on this laptop: {general_public_ipv6}")
-
-    extra_ips = [
-        ip
-        for ip in hinted_ips
-        if ip not in {broker_public_ipv4, configured_static_ip, general_public_ipv6}
-    ]
-    if extra_ips:
-        parts.append(f"other IP(s) mentioned by broker: {', '.join(extra_ips)}")
-
-    if not parts:
-        return ""
-    return " | " + " | ".join(parts)
+    return UpstoxBrokerClient.format_ip_diagnostics(
+        broker_public_ipv4,
+        configured_static_ip,
+        general_public_ipv6,
+        hinted_ips,
+    )
 
 
 def is_upstox_static_ip_blocked(error):
@@ -342,122 +99,12 @@ def is_upstox_static_ip_blocked(error):
 
 
 def get_intraday_positions():
-    if EXECUTION_PROVIDER == "KITE":
-        return _get_intraday_positions_kite()
-    if EXECUTION_PROVIDER == "UPSTOX":
-        return _get_intraday_positions_upstox()
-    raise ValueError(f"Unsupported execution provider: {EXECUTION_PROVIDER}")
+    return _get_broker_client().get_intraday_positions()
 
 
 def get_delivery_holdings():
-    if EXECUTION_PROVIDER == "KITE":
-        return _get_delivery_holdings_kite()
-    if EXECUTION_PROVIDER == "UPSTOX":
-        return _get_delivery_holdings_upstox()
-    raise ValueError(f"Unsupported execution provider: {EXECUTION_PROVIDER}")
+    return _get_broker_client().get_delivery_holdings()
 
 
 def get_nfo_positions():
-    if EXECUTION_PROVIDER == "KITE":
-        return _get_nfo_positions_kite()
-    if EXECUTION_PROVIDER == "UPSTOX":
-        return _get_nfo_positions_upstox()
-    raise ValueError(f"Unsupported execution provider: {EXECUTION_PROVIDER}")
-
-
-def _get_nfo_positions_kite():
-    kite = _get_kite_client()
-    response = kite.positions()
-    positions = []
-    for item in response.get("net", []):
-        tradingsymbol = item.get("tradingsymbol")
-        if not tradingsymbol:
-            continue
-        exchange = (item.get("exchange") or "").upper()
-        if exchange != "NFO" and not tradingsymbol.upper().endswith(("FUT", "CE", "PE")):
-            continue
-
-        quantity = int(item.get("quantity") or item.get("net_quantity") or 0)
-        if quantity == 0:
-            continue
-
-        positions.append(
-            {
-                "exchange": exchange,
-                "tradingsymbol": tradingsymbol,
-                "quantity": quantity,
-                "average_price": float(
-                    item.get("average_price") or item.get("buy_price") or 0
-                ),
-                "product": item.get("product"),
-            }
-        )
-    return positions
-
-
-def _get_nfo_positions_upstox():
-    raise NotImplementedError(
-        "Upstox NFO position retrieval is not implemented."
-    )
-
-
-def _get_intraday_positions_kite():
-    kite = _get_kite_client()
-    response = kite.positions()
-    return [
-        item
-        for item in response.get("net", [])
-        if (item.get("product") or "").upper() == "MIS"
-    ]
-
-
-def _get_delivery_holdings_kite():
-    kite = _get_kite_client()
-    return kite.holdings()
-
-
-def _get_intraday_positions_upstox():
-    response = broker_request(
-        "GET",
-        "https://api.upstox.com/v2/portfolio/short-term-positions",
-        headers=_upstox_headers(),
-        timeout=30,
-        ip_mode=get_broker_ip_mode(),
-    )
-    response.raise_for_status()
-    positions = []
-    for item in response.json().get("data", []):
-        if (item.get("product") or "").upper() != "I":
-            continue
-        positions.append(
-            {
-                "tradingsymbol": item.get("trading_symbol"),
-                "quantity": int(item.get("quantity") or item.get("net_quantity") or 0),
-                "average_price": float(item.get("average_price") or item.get("buy_price") or 0),
-                "product": "MIS",
-            }
-        )
-    return positions
-
-
-def _get_delivery_holdings_upstox():
-    response = broker_request(
-        "GET",
-        "https://api.upstox.com/v2/portfolio/long-term-holdings",
-        headers=_upstox_headers(),
-        timeout=30,
-        ip_mode=get_broker_ip_mode(),
-    )
-    response.raise_for_status()
-    holdings = []
-    for item in response.json().get("data", []):
-        holdings.append(
-            {
-                "tradingsymbol": item.get("trading_symbol"),
-                "quantity": int(item.get("quantity") or 0),
-                "t1_quantity": int(item.get("t1_quantity") or 0),
-                "average_price": float(item.get("average_price") or 0),
-                "last_price": float(item.get("last_price") or 0),
-            }
-        )
-    return holdings
+    return _get_broker_client().get_nfo_positions()

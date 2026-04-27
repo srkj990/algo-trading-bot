@@ -1,6 +1,7 @@
 from datetime import datetime, time, timedelta
 
 from indicators import compute_vwap
+from engines.base import TradingEngine
 from engines.common import build_position, evaluate_exit
 from executor import get_intraday_positions
 from logger import log_event
@@ -11,7 +12,7 @@ from config import (
 )
 
 
-class IntradayEquityEngine:
+class IntradayEquityEngine(TradingEngine):
     name = "intraday_equity"
     data_period = "1d"
     data_interval = "1m"

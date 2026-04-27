@@ -26,6 +26,13 @@ from engines import (
 )
 from engines.common import build_position, evaluate_exit, update_trailing_stop
 from fno_data_fetcher import get_available_expiries, get_available_option_strikes, get_fno_display_name
+from models.position_adapter import (
+    calculate_position_pnl,
+    position_entry_price,
+    position_quantity,
+    position_side,
+    signed_position_value,
+)
 from risk_manager import atr_position_size, atr_stop_from_value, calculate_target_price
 from signal_scoring import evaluate_symbol_signal, get_atr_value, rank_candidates
 from transaction_costs import estimate_intraday_equity_round_trip_cost
@@ -404,14 +411,10 @@ class BacktestEngine:
 
     def _exit_position(self, symbol, exit_price, timestamp, reason):
         position = self.positions.pop(symbol)
-        quantity = position["quantity"]
-        entry_price = float(position["entry_price"])
-        side = position["side"]
-        pnl = (
-            (exit_price - entry_price) * quantity
-            if side == "BUY"
-            else (entry_price - exit_price) * quantity
-        )
+        quantity = position_quantity(position)
+        entry_price = position_entry_price(position)
+        side = position_side(position)
+        pnl, _ = calculate_position_pnl(position, exit_price)
 
         estimated_charges = self._estimate_transaction_charges(
             symbol=symbol,
@@ -510,9 +513,8 @@ class BacktestEngine:
     def _current_equity(self, latest_prices):
         market_value = 0.0
         for symbol, position in self.positions.items():
-            price = latest_prices.get(symbol, position["entry_price"])
-            signed_quantity = position["quantity"] if position["side"] == "BUY" else -position["quantity"]
-            market_value += price * signed_quantity
+            price = latest_prices.get(symbol, position_entry_price(position))
+            market_value += signed_position_value(position, price)
         return self.cash + market_value
 
     def _mark_equity(self, timestamp, latest_prices):

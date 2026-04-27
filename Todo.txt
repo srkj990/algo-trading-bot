@@ -1,179 +1,126 @@
-Add false signal filter (must-have) 🔥
-Add stop-loss & trailing SL
-Add multi-stock support\
+# Trading Bot TODO
 
+This file tracks the refactoring roadmap from `trading_bot_review.md` plus the current feature/status notes for this repo.
 
+## Implemented Today
 
-Trade Management Engine
+### Phase 1 Foundations
+- [x] Create `Position` data model with type hints and validation
+- [x] Create `TradingEngine` base abstract class
+- [x] Create `BrokerClient` interface
+- [x] Add unit tests for the new foundations
 
-Stop-loss
-Trailing SL
-Exit conditions
+Delivered today:
+- [x] Added typed `Position`, `PositionSide`, and `ExitReason` in `models/position.py`
+- [x] Added legacy-compatible position adapters in `models/position_adapter.py`
+- [x] Updated shared position helpers in `engines/common.py` to validate through the typed model
+- [x] Added `engines/base.py`
+- [x] Added `brokers/base.py`
+- [x] Added foundation unit tests under `tests/unit/`
 
+### Phase 2 Refactoring
+- [x] Extract reusable CLI helpers from `main.py` into `cli/interactive_input.py`
+- [x] Extract reusable position/orchestration helpers into `orchestration/positions.py`
+- [x] Replace executor broker `if/elif` logic with concrete broker clients plus a factory
+- [x] Start migrating `backtesting.py` position math to typed helpers
+- [x] Start routing `main.py` through extracted CLI/orchestration modules
 
-add trade management
+Delivered today:
+- [x] Added `brokers/clients.py`
+- [x] Added `brokers/factory.py`
+- [x] Refactored `executor.py` to use broker clients created by factory
+- [x] Added extracted orchestration helpers for:
+  - close/exit flow
+  - trade recording
+  - pair metrics
+  - execution summaries
+  - square-off handling
+  - open-position management
+- [x] Updated `backtesting.py` P&L/equity calculations to use typed position adapters
+- [x] Updated `README.md` to document the new architecture
 
+## Current Pending Roadmap
 
+### Phase 2 Remaining
+- [ ] Remove redundant legacy helper definitions still left inside `main.py`
+- [ ] Move the remaining top-level runtime loop into a dedicated orchestration session module
+- [ ] Split signal-evaluation logic into its own workflow module
+- [ ] Split remaining setup/configuration flow into a dedicated CLI/configuration module
+- [ ] Split `data_fetcher.py` into provider plugins with a common interface
+- [ ] Create DI container / trading context for engine, broker, data, logger, and config wiring
 
-## ✅ Best Strategy to Add F&O Support
+### Phase 3 Quality
+- [ ] Add broader type hints across the codebase
+- [ ] Add `mypy` and target strict checking for refactored modules first
+- [ ] Expand unit test suite to 50+ tests
+- [ ] Add broker integration tests with mocks/fakes
+- [ ] Add state persistence tests
+- [ ] Add engine workflow tests
+- [ ] Set up formatting/lint/pre-commit hooks
 
-To extend this repo for F&O, build the new capability in layers:
+### Phase 4 Documentation
+- [ ] Create architecture diagrams
+- [ ] Document live trading workflows with state machines
+- [ ] Document position lifecycle and exit flows
+- [ ] Add docstrings to public APIs
+- [ ] Add troubleshooting guide
+- [ ] Split README into `docs/` structure when ready
 
-### 1. Add F&O Data & Market Context
-- Support option chain and futures price data
-- Add contract metadata:
-  - lot size
-  - expiry date
-  - strike price
-  - option type (CE/PE)
-  - underlying symbol
-- Add Greeks and volatility:
-  - delta, gamma, theta, vega, rho
-  - implied volatility
-- Add time/expiry filters:
-  - nearest monthly/weekly expiry
-  - weekly contract handling
+## Review Suggestions Mapped To Tasks
 
-### 2. Extend Symbol Definitions
-- Add new symbol tables for F&O eligible underlyings
-- Map underlying → available futures/options contracts
-- Keep separate `FNO_UNIVERSE` or `FNO_SYMBOL_TABLE`
-- Support both `SINGLE`, `MANUAL_MULTI`, `UNIVERSE` for F&O
+### Architecture
+- [x] Introduce typed position model
+- [x] Introduce engine base class
+- [x] Introduce broker abstraction
+- [ ] Introduce data-provider abstraction layer
+- [ ] Introduce dependency injection / trading context
+- [ ] Reduce `main.py` to thin entry point
 
-### 3. Add F&O-Specific Risk Management
-- Track notional exposure, margin, and leverage
-- Use lot-based sizing, not share count
-- Compute position risk using:
-  - Greeks
-  - premium paid/received
-  - maximum loss scenarios
-- Add product rules:
-  - MIS/Future intraday
-  - NRML/CNC for futures/options
-- Enforce max exposure / max margin per symbol
+### Configuration
+- [ ] Move runtime config out of scattered constants into structured config objects
+- [ ] Consider YAML-backed config for engines/risk/strategies
+- [ ] Add config validation
 
-### 4. Update Execution Layer
-- Extend executor.py for F&O order types:
-  - FUT, CE, PE products
-  - MIS vs NRML contracts
-  - bracket orders / SL orders for options
-- Add contract lookup and token mapping for broker API
-- Handle order quantity as `lots × lot_size`
+### Performance
+- [ ] Add candle/data caching to reduce repeated fetches
+- [ ] Reduce repeated fetches inside the main scan loop
 
-### 5. Build F&O Strategy Modules
-- Start with simple strategies:
-  - Futures trend following
-  - Option premium selling / credit spreads
-  - Straddle/strangle around volatility events
-  - Delta-neutral hedges
-- Add F&O-specific signals:
-  - open interest momentum
-  - IV rank / IV percentile
-  - roll yield
-  - put-call ratio
-  - gamma scalping
-- Reuse existing signal framework where possible, but extend to contract-level logic.
+### Risk & Safety
+- [ ] Add pre-flight order validation before live orders
+- [ ] Add structured trade/audit model and persistent trade store
+- [ ] Add better live-order reconciliation and status handling
 
-### 6. Add Backtesting for F&O
-- Extend backtesting.py to support futures/options contract pricing
-- Simulate:
-  - expiry rollover
-  - premium decay
-  - margin and funding cost
-  - lot-based P/L
-- Add contract-level history and synthetic underlying mapping
+## F&O Feature Status
 
-### 7. Add F&O-Specific Analysis Data
-- Historical IV surface
-- Option chain analytics per expiry
-- Open interest and volume by strike
-- Greeks and expected move
-- Volatility surface shift analysis
+### Done
+- [x] F&O data and contract metadata support
+- [x] Lot-size aware F&O engines
+- [x] Greeks and IV snapshot support
+- [x] Expiry warning alert
+- [x] Vega crush block
+- [x] Underlying bias filter for single-leg intraday options
+- [x] Volatility proxy filter using intraday range percentage
+- [x] Minimum signal-score gating for intraday options entries
+- [x] Time-based exit support for intraday options
+- [x] Single-option vs two-leg bounded range pair selection in setup flow
+- [x] Pair startup reconciliation / state survival after restart
+- [x] Pair combined stop/target and combined P&L tracking
+- [x] Pair synchronization guard for partial failures
+- [x] Max open positions counts a bounded pair as one structure
 
-### 8. Improve State / Logging
-- Track contract expiry and roll dates
-- Persist F&O positions with:
-  - contract symbol
-  - lot size
-  - expiry
-  - greeks at entry
-- Log F&O-specific exits and margin events
+### Not Done Yet
+- [ ] OI / PCR filter
+- [ ] Dynamic ATM roll for live open positions
+- [ ] General multi-strike basket logic
+- [ ] Basket-aware options engine
+- [ ] Margin-aware options selling model
+- [ ] Full option-chain ingestion layer
+- [ ] Open-interest analytics by strike
+- [ ] Richer F&O backtesting with true contract-premium history
 
-### 9. Keep Safety & Isolation
-- Add a separate `fno` engine module:
-  - `engines/futures_equity.py`
-  - `engines/options_equity.py`
-- Keep F&O logic isolated from existing equity engines
-- Add `FNO` as a new execution mode or separate workflow
+## Best Next Steps
 
-### 10. Roadmap Recommendation
-1. Create F&O data fetcher and contract model
-2. Add F&O symbol tables and lot-size config
-3. Add F&O risk sizing and margin-aware sizing
-4. Add an F&O executor wrapper for broker contract orders
-5. Add a simple futures strategy first
-6. Then add options strategies once data + execution are stable
-7. Add backtesting support for futures/options last
-
----
-
-## 🔧 Minimum Required Additions
-
-- `fno_data_fetcher.py`
-- `fno_symbol_tables` in config.py
-- `fno` engine(s) in engines
-- executor.py contract order support
-- `risk_manager` extension for lot-based sizing
-- backtesting.py support for futures/options
-- README.md F&O docs and limitations
-
----
-
-## 💡 Practical First Target
-
-Start with:
-- **Nifty futures**
-- **BankNifty futures**
-- A single options strategy like:
-  - ATM short strangle
-  - Iron condor
-  - Futures breakout
-
-This gives you a clean expansion path without rewriting core equity logic first.
-
-
-
-Feasibility call:
-
-VWAP Band Filter: best to add now. Done.
-Max Options/Day: best to add now. Done as per-underlying cap, default 4.
-Expiry Warning: best to add now. Done as alert, not hard block.
-Vega Crush Alert: good to add now. Done as a block if IV falls more than 20% in 15 minutes.
-OI/PCR Filter: not best yet. We don’t have a proper option-chain/OI pipeline, so adding it now would be unreliable.
-Dynamic ATM Roll: not best yet. Current runtime scans fixed contracts; rolling needs underlying-driven contract regeneration plus migration of open-position state.
-CE+PE Pairs: not best yet. This needs basket order entry/exit, pair-level risk, and grouped position tracking.
-Multi-Strike: not best yet for the same reason as pairs; the current engine is symbol-keyed, not portfolio-leg keyed.
-
-
-
-Best next step if you want the remaining ideas is a basket-aware options engine:
-
-grouped legs per strategy
-pair/multi-strike entry and exit orchestration
-basket P&L and risk limits
-option-chain/OI snapshot layer for PCR/OI filters
-
-
-Two-Leg Strategy for bounded market between two options : one pe vs one ce? if the market is going to fluctuates between 24500 and 24300 scenario, i think this will be helpful. if yes, continue implementing this and add user action to select single option or twoo options.
-Status update:
-- Single option vs two-leg range pair selection is available in the intraday options setup flow.
-- F&O contract summary confirmation is available before the run starts.
-- Pair state now survives live restart/reconciliation so linked exits still work after reconnect.
-- Max open positions now treats one bounded pair as one strategy structure.
-- Added underlying bias filter for single-leg options using underlying VWAP + EMA.
-- Added simple volatility proxy filter using intraday range percentage.
-- Added minimum signal-score gating for intraday options entries.
-- Added time-based exit support for intraday options positions.
-- Added combined stop/target and combined P&L tracking for bounded two-leg pairs.
-- Added synchronization guard to unwind remaining pair exposure on partial pair failures.
-- OI/PCR, dynamic ATM roll, and general multi-strike basket logic are still pending because they need an option-chain and broader basket engine.
+1. Finish slimming `main.py` by moving the remaining runtime loop and helper functions out.
+2. Add a proper data-provider abstraction and start untangling `data_fetcher.py`.
+3. Add tests for `orchestration/positions.py`, broker factory selection, and persistence flows.
+4. Add order validation and structured trade/audit persistence before more live-trading complexity.
