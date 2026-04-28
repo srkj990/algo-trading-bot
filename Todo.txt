@@ -42,21 +42,41 @@ Delivered today:
 ## Current Pending Roadmap
 
 ### Phase 2 Remaining
-- [ ] Remove redundant legacy helper definitions still left inside `main.py`
-- [ ] Move the remaining top-level runtime loop into a dedicated orchestration session module
-- [ ] Split signal-evaluation logic into its own workflow module
-- [ ] Split remaining setup/configuration flow into a dedicated CLI/configuration module
-- [ ] Split `data_fetcher.py` into provider plugins with a common interface
-- [ ] Create DI container / trading context for engine, broker, data, logger, and config wiring
+- [x] Remove redundant legacy helper definitions still left inside `main.py`
+- [x] Move the remaining top-level runtime loop into a dedicated orchestration session module
+- [x] Split signal-evaluation logic into its own workflow module
+- [x] Split remaining setup/configuration flow into a dedicated CLI/configuration module
+- [x] Split `data_fetcher.py` into provider plugins with a common interface
+- [x] Create DI container / trading context for engine, broker, data, logger, and config wiring
+
+Delivered in this pass:
+- [x] Reduced `main.py` to a thin launcher
+- [x] Added `cli/configuration.py` for interactive runtime setup/config collection
+- [x] Added `orchestration/context.py` for dependency wiring and runtime state hydration
+- [x] Added `orchestration/signal_workflow.py` for per-symbol scan/evaluation flow
+- [x] Added `orchestration/session.py` for the runtime supervision loop and entry orchestration
+- [x] Added `data_providers/` plugin-style provider implementations plus shared market-data service
+- [x] Added unit coverage for the market-data service seam
 
 ### Phase 3 Quality
-- [ ] Add broader type hints across the codebase
-- [ ] Add `mypy` and target strict checking for refactored modules first
-- [ ] Expand unit test suite to 50+ tests
-- [ ] Add broker integration tests with mocks/fakes
-- [ ] Add state persistence tests
-- [ ] Add engine workflow tests
-- [ ] Set up formatting/lint/pre-commit hooks
+- [x] Add broader type hints across the codebase
+- [x] Add `mypy` and target strict checking for refactored modules first
+- [x] Expand unit test suite to 50+ tests
+- [x] Add broker integration tests with mocks/fakes
+- [x] Add state persistence tests
+- [x] Add engine workflow tests
+- [x] Set up formatting/lint/pre-commit hooks
+
+Delivered in this pass:
+- [x] Added broader type hints to refactored orchestration, state, broker-factory, execution, data-service, and shared helper modules
+- [x] Added `pyproject.toml` with `mypy` and `ruff` configuration
+- [x] Added `requirements-dev.txt` for quality tooling dependencies
+- [x] Added `.pre-commit-config.yaml` with hooks for formatting, linting, and type checking
+- [x] Expanded automated coverage to 100 unit tests
+- [x] Added broker/executor mock-based tests
+- [x] Added state persistence and trading-context hydration tests
+- [x] Added engine workflow tests across delivery, futures, intraday futures, intraday equity, options, and intraday options
+- [x] Added orchestration helper and signal-workflow tests
 
 ### Phase 4 Documentation
 - [ ] Create architecture diagrams
@@ -72,9 +92,9 @@ Delivered today:
 - [x] Introduce typed position model
 - [x] Introduce engine base class
 - [x] Introduce broker abstraction
-- [ ] Introduce data-provider abstraction layer
-- [ ] Introduce dependency injection / trading context
-- [ ] Reduce `main.py` to thin entry point
+- [x] Introduce data-provider abstraction layer
+- [x] Introduce dependency injection / trading context
+- [x] Reduce `main.py` to thin entry point
 
 ### Configuration
 - [ ] Move runtime config out of scattered constants into structured config objects
@@ -89,6 +109,18 @@ Delivered today:
 - [ ] Add pre-flight order validation before live orders
 - [ ] Add structured trade/audit model and persistent trade store
 - [ ] Add better live-order reconciliation and status handling
+
+### Intraday Options Entry Profiles
+- [x] Add profile mapping for momentum, mean-reversion, volatility, and hybrid option strategies
+- [x] Add shared momentum entry validator for `ATM_MOMENTUM`, `ATM_ORB`, and `ATM_BREAKOUT_EXPANSION`
+- [x] Add shared mean-reversion entry validator for `ATM_VWAP_REVERSION` and `ATM_TRAP_REVERSAL`
+- [x] Add shared volatility entry validator for `ATM_IV_EXPANSION`
+- [x] Add unit coverage for profile-based entry validators and routing
+- [x] Add stateful breakout confirmation / follow-through workflow for momentum profiles
+- [x] Add pullback-entry orchestration after confirmation instead of same-candle acceptance
+- [x] Persist intraday-options momentum setup state across runtime saves
+- [ ] Decide whether `ATM_MULTI` should route into dynamic profile-specific validators
+- [ ] Add India VIX or a substitute volatility-regime input for advanced confirmation rules
 
 ## F&O Feature Status
 
@@ -107,6 +139,8 @@ Delivered today:
 - [x] Pair combined stop/target and combined P&L tracking
 - [x] Pair synchronization guard for partial failures
 - [x] Max open positions counts a bounded pair as one structure
+- [x] Profile-based intraday-options entry quality validation
+- [x] Stateful momentum confirmation and pullback workflow for intraday options
 
 ### Not Done Yet
 - [ ] OI / PCR filter
@@ -120,7 +154,7 @@ Delivered today:
 
 ## Best Next Steps
 
-1. Finish slimming `main.py` by moving the remaining runtime loop and helper functions out.
-2. Add a proper data-provider abstraction and start untangling `data_fetcher.py`.
-3. Add tests for `orchestration/positions.py`, broker factory selection, and persistence flows.
-4. Add order validation and structured trade/audit persistence before more live-trading complexity.
+1. Add order validation and structured trade/audit persistence before more live-trading complexity.
+2. Move more runtime constants into structured config objects with validation.
+3. Add data caching so repeated fetches inside a cycle are reduced.
+4. Start migrating more dict-heavy runtime payloads to typed domain objects and typed dictionaries.

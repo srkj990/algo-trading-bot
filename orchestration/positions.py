@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Callable
 
 from engines.common import count_open_structures, get_deployed_capital, update_trailing_stop
 from models.position_adapter import (
@@ -15,7 +15,7 @@ from reporting import summarize_by_exit_reason
 from transaction_costs import estimate_intraday_equity_round_trip_cost
 
 
-def get_pair_symbols(positions, pair_id):
+def get_pair_symbols(positions: dict[str, dict[str, Any]], pair_id: str) -> list[str]:
     return [
         symbol
         for symbol, position in positions.items()
@@ -23,7 +23,11 @@ def get_pair_symbols(positions, pair_id):
     ]
 
 
-def get_pair_position_metrics(positions, pair_symbols, symbol_snapshots):
+def get_pair_position_metrics(
+    positions: dict[str, dict[str, Any]],
+    pair_symbols: list[str],
+    symbol_snapshots: dict[str, dict[str, Any]],
+) -> dict[str, float] | None:
     entry_total = 0.0
     current_total = 0.0
     total_pnl = 0.0
@@ -43,7 +47,14 @@ def get_pair_position_metrics(positions, pair_symbols, symbol_snapshots):
     }
 
 
-def get_latest_exit_price(engine, symbol, position, fetch_data, log_event, symbol_snapshots=None):
+def get_latest_exit_price(
+    engine: Any,
+    symbol: str,
+    position: dict[str, Any],
+    fetch_data: Callable[..., Any],
+    log_event: Callable[..., Any],
+    symbol_snapshots: dict[str, dict[str, Any]] | None = None,
+) -> float:
     snapshot = (symbol_snapshots or {}).get(symbol)
     if snapshot and snapshot.get("latest_close") is not None:
         return float(snapshot["latest_close"])
@@ -57,15 +68,15 @@ def get_latest_exit_price(engine, symbol, position, fetch_data, log_event, symbo
 
 
 def record_closed_trade(
-    trade_book,
-    symbol,
-    position,
-    exit_price,
-    exit_reason,
-    exit_time,
-    transaction_cost_model_enabled,
-    slippage_pct_per_side,
-):
+    trade_book: list[dict[str, Any]],
+    symbol: str,
+    position: dict[str, Any],
+    exit_price: float,
+    exit_reason: str,
+    exit_time: Any,
+    transaction_cost_model_enabled: bool,
+    slippage_pct_per_side: float,
+) -> None:
     quantity = position_quantity(position)
     entry_price = position_entry_price(position)
     side = position_side(position)
@@ -108,7 +119,7 @@ def record_closed_trade(
     )
 
 
-def build_exit_position_lines(position, exit_price, reason):
+def build_exit_position_lines(position: dict[str, Any], exit_price: float, reason: str) -> list[str]:
     pnl, pnl_pct = calculate_position_pnl(position, exit_price)
     lines = [
         f"Symbol: {position['symbol']}",
@@ -131,7 +142,7 @@ def build_exit_position_lines(position, exit_price, reason):
     return lines
 
 
-def format_trade_time(raw_value):
+def format_trade_time(raw_value: Any) -> str:
     if not raw_value:
         return "-"
     try:
@@ -140,7 +151,12 @@ def format_trade_time(raw_value):
         return str(raw_value)
 
 
-def log_trade_book_summary(capital, trade_book, log_event, transaction_cost_model_enabled):
+def log_trade_book_summary(
+    capital: float,
+    trade_book: list[dict[str, Any]],
+    log_event: Callable[..., Any],
+    transaction_cost_model_enabled: bool,
+) -> None:
     log_event("[REPORT] CLOSED TRADES")
     if not trade_book:
         log_event("[REPORT]   No closed trades recorded in this session")
@@ -185,20 +201,20 @@ def log_trade_book_summary(capital, trade_book, log_event, transaction_cost_mode
 
 
 def close_position_symbols(
-    engine,
-    positions,
-    symbols,
-    reason,
-    trade_book,
-    place_order,
-    log_order_signal_banner,
-    fetch_data,
-    log_event,
-    transaction_cost_model_enabled,
-    slippage_pct_per_side,
-    symbol_snapshots=None,
-    exit_time=None,
-):
+    engine: Any,
+    positions: dict[str, dict[str, Any]],
+    symbols: list[str],
+    reason: str,
+    trade_book: list[dict[str, Any]],
+    place_order: Callable[..., Any],
+    log_order_signal_banner: Callable[..., Any],
+    fetch_data: Callable[..., Any],
+    log_event: Callable[..., Any],
+    transaction_cost_model_enabled: bool,
+    slippage_pct_per_side: float,
+    symbol_snapshots: dict[str, dict[str, Any]] | None = None,
+    exit_time: datetime | None = None,
+) -> bool:
     changed = False
     exit_time = exit_time or datetime.now()
     for symbol in list(symbols):
@@ -223,7 +239,13 @@ def close_position_symbols(
     return changed
 
 
-def build_option_pair_candidate(engine, pair_config, symbol_snapshots, positions, log_event):
+def build_option_pair_candidate(
+    engine: Any,
+    pair_config: dict[str, Any] | None,
+    symbol_snapshots: dict[str, dict[str, Any]],
+    positions: dict[str, dict[str, Any]],
+    log_event: Callable[..., Any],
+) -> dict[str, Any] | None:
     del engine
     if not pair_config or pair_config.get("mode") != "TWO_LEG_RANGE":
         return None
@@ -283,7 +305,7 @@ def build_option_pair_candidate(engine, pair_config, symbol_snapshots, positions
     }
 
 
-def parse_trade_day(raw_value):
+def parse_trade_day(raw_value: Any) -> date:
     try:
         return date.fromisoformat(raw_value)
     except (TypeError, ValueError):
@@ -291,15 +313,16 @@ def parse_trade_day(raw_value):
 
 
 def save_runtime_state(
-    engine_name,
-    positions,
-    traded_symbols_today,
-    trade_counts_today,
-    active_trade_day,
-    last_entry_time,
-    regime_cache,
-    save_engine_state,
-):
+    engine_name: str,
+    positions: dict[str, dict[str, Any]],
+    traded_symbols_today: set[str],
+    trade_counts_today: dict[str, int],
+    active_trade_day: date,
+    last_entry_time: float,
+    regime_cache: dict[str, Any],
+    engine_runtime_state: dict[str, Any],
+    save_engine_state: Callable[..., Any],
+) -> None:
     save_engine_state(
         engine_name=engine_name,
         positions=positions,
@@ -308,10 +331,11 @@ def save_runtime_state(
         active_trade_day=active_trade_day,
         last_entry_time=last_entry_time,
         regime_cache=regime_cache,
+        engine_runtime_state=engine_runtime_state,
     )
 
 
-def log_ranked_candidates(candidates, log_event):
+def log_ranked_candidates(candidates: list[dict[str, Any]], log_event: Callable[..., Any]) -> None:
     if not candidates:
         log_event("[SCAN] No actionable ranked candidates")
         return

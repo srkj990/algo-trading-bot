@@ -25,6 +25,11 @@ Recent architecture improvements now also include:
 - broker client factory for `KITE` and `UPSTOX`
 - extracted `cli/` helpers for reusable interactive prompts
 - extracted `orchestration/` helpers for position lifecycle management
+- extracted `cli/configuration.py` for runtime setup/configuration flow
+- extracted `orchestration/session.py` and `orchestration/signal_workflow.py` for runtime supervision and scan logic
+- provider-based `data_providers/` plugins behind a shared market-data service
+- dependency-wired trading context for engine, broker, data, logger, and persisted runtime state
+- quality-tooling config for `mypy`, `ruff`, and `pre-commit`
 - lazy engine package loading so foundational tests do not require broker SDK imports
 
 ## Current Engine Coverage
@@ -247,10 +252,15 @@ Prompt behavior is now engine-aware:
 
 Under the hood, the runtime now has a cleaner split:
 
-- `main.py` remains the launcher/orchestrator entry point
+- `main.py` is now a thin launcher
 - `cli/interactive_input.py` owns reusable prompt helpers
+- `cli/configuration.py` owns the interactive runtime setup/configuration flow
+- `orchestration/context.py` wires engine, data, execution, logging, and persisted state into a trading context
+- `orchestration/signal_workflow.py` owns per-symbol scan and signal-evaluation flow
+- `orchestration/session.py` owns the runtime supervision loop, entry orchestration, and session shutdown handling
 - `orchestration/positions.py` owns reusable trade/position lifecycle helpers
 - `executor.py` routes broker calls through concrete broker clients created by a small factory
+- `data_fetcher.py` is now a compatibility facade over the provider-backed market-data service
 
 ### F&O Contract UX
 
@@ -565,6 +575,12 @@ Current intraday options engine capabilities:
 - IV percentile / IV rank approximation from recent option history
 - IV change over the last 15 minutes for vega-crush protection
 - option premium floor, delta floor, IV-percentile gate, VWAP-band filter, and underlying bias filter
+- profile-based entry validation after the raw strategy signal:
+  - `MOMENTUM`: trend alignment, breakout arming, follow-through confirmation, and pullback-entry gating
+  - `MEAN_REVERSION`: VWAP retest plus controlled candle/range checks
+  - `VOLATILITY`: trend alignment, range expansion, and supportive IV behavior
+  - `ATM_MULTI` currently stays hybrid and is not forced into one shared entry validator
+- momentum entry setups are persisted in engine runtime state so armed/confirmed setups survive normal state saves during the session
 - per-underlying trade cap, cooldown, max-hold time exit, and intraday cutoff / square-off window
 - bounded two-leg short range pair support
 
@@ -626,11 +642,11 @@ Support status for the requested strategy ideas:
   - `ATM_ORB` for early breakout continuation
   - intraday options uses `1m` candles and a `15s` supervision loop
   - time exits, target/stop/trailing logic, premium filters, and cooldown
-- Gap:
-  - current momentum signal does not explicitly require a volume spike
-  - current target logic is fixed for ATM single-option flow instead of a true “5-15% fast scalp profile”
+- Current note:
+  - momentum-profile entries now move through a three-step workflow: breakout arm -> follow-through confirmation -> pullback entry near EMA9/VWAP
+  - current target logic is still fixed for ATM single-option flow instead of a true “5-15% fast scalp profile”
 - Feasibility with Kite: `HIGH`
-  - Existing engine structure already supports this well; adding a faster scalp preset and volume confirmation would be straightforward.
+  - Existing engine structure already supports this well; adding a faster scalp preset would be the next clean refinement.
 
 6. `Event-Based Strategy (Exploit Seller Risk)`
 
@@ -669,8 +685,10 @@ Support status for the requested strategy ideas:
 
 ## Files to Know
 
-- [main.py](./main.py): interactive runtime entry point and top-level session flow
+- [main.py](./main.py): thin runtime launcher
 - [config.py](./config.py): broker env loading, symbol tables, F&O defaults
+- [data_providers](./data_providers): provider plugins plus shared market-data service
+- [data_fetcher.py](./data_fetcher.py): compatibility facade over the market-data service
 - [fno_data_fetcher.py](./fno_data_fetcher.py): F&O contract discovery, metadata, analytics
 - [option_analytics.py](./option_analytics.py): Black-Scholes, IV, Greeks
 - [executor.py](./executor.py): broker-facing execution entry points backed by broker clients
@@ -679,8 +697,8 @@ Support status for the requested strategy ideas:
 - [engines/base.py](./engines/base.py): common `TradingEngine` abstract interface
 - [brokers](./brokers): broker interfaces, concrete clients, and factory
 - [models](./models): typed domain models such as `Position`
-- [cli](./cli): extracted interactive prompt helpers
-- [orchestration](./orchestration): extracted position/trade lifecycle helpers
+- [cli](./cli): prompt helpers and runtime setup/configuration flow
+- [orchestration](./orchestration): context wiring, scan/session workflows, and position lifecycle helpers
 - [state_store.py](./state_store.py): persistent runtime state
 
 ## Architecture Notes
@@ -692,11 +710,43 @@ Current refactoring status:
   - `TradingEngine` ABC
   - `BrokerClient` ABC
   - unit coverage for the core foundations
-- Phase 2 is partially in place:
+- Phase 2 is now in place:
   - `backtesting.py` now uses typed position adapters for key P&L/equity paths
   - `executor.py` now delegates to concrete broker clients through a factory
-  - `main.py` now uses extracted `cli` and `orchestration` modules for selected flows
-- `main.py` still contains legacy helper definitions alongside the extracted modules, so the runtime is safer and more modular than before, but not fully slimmed down yet
+  - `main.py` is now reduced to a thin launcher
+  - runtime setup now lives in `cli/configuration.py`
+  - session orchestration now lives in `orchestration/session.py`
+  - signal scanning/evaluation now lives in `orchestration/signal_workflow.py`
+  - market-data providers now live behind a shared plugin-style service in `data_providers/`
+  - trading dependencies and persisted runtime state now hydrate through `orchestration/context.py`
+- Phase 3 quality baseline is now in place:
+  - broader type hints were added across refactored runtime seams
+  - `pyproject.toml` now configures `mypy` and `ruff`
+  - `.pre-commit-config.yaml` now wires formatting, lint, and type-check hooks
+  - `requirements-dev.txt` now lists the developer tooling dependencies
+  - the unit suite now covers broker/executor seams, persistence, orchestration helpers, signal helpers, and engine workflow behavior
+  - automated coverage is now at `100` unit tests in this workspace
+
+## Developer Quality
+
+Developer tooling files now included:
+
+- `pyproject.toml`
+- `.pre-commit-config.yaml`
+- `requirements-dev.txt`
+
+Suggested local setup:
+
+```powershell
+venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+venv\Scripts\python.exe -m pre_commit install
+```
+
+Configured quality gates:
+
+- `ruff` for linting and formatting
+- `mypy` with stricter checking targeted first at refactored modules
+- `pre-commit` hooks for formatting, linting, type checking, and basic file hygiene
 
 ## Environment
 
@@ -885,10 +935,9 @@ Current behavior:
 
 ## Suggested Next Refactoring Steps
 
-- remove redundant legacy helper definitions still left inside `main.py`
-- move the remaining top-level runtime loop into a dedicated orchestration session module
-- add unit tests for `orchestration/positions.py`
-- add tests for broker-factory selection and broker client adapters
+- add order validation and richer execution-state handling before more live-trading complexity
+- move more runtime constants into structured config objects with validation
+- add repeated-fetch caching inside a session cycle
 - continue migrating remaining dict-heavy position flows to typed helpers first, then to direct model usage
 
 ## Verification
@@ -896,6 +945,6 @@ Current behavior:
 The latest refactoring changes were checked with:
 
 ```powershell
-python -m unittest discover -s tests -v
-python -m py_compile main.py backtesting.py executor.py brokers\base.py brokers\clients.py brokers\factory.py models\position.py models\position_adapter.py orchestration\positions.py cli\interactive_input.py
+venv\Scripts\python.exe -m unittest discover -s tests -v
+venv\Scripts\python.exe -m py_compile main.py backtesting.py executor.py state_store.py data_fetcher.py cli\configuration.py orchestration\context.py orchestration\signal_workflow.py orchestration\session.py
 ```

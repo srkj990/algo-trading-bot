@@ -1,0 +1,35 @@
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+exclude = ["venv", "__pycache__", "logs", "state"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.14"
+warn_unused_configs = true
+ignore_missing_imports = true
+exclude = "(venv|logs|state)"
+
+[[tool.mypy.overrides]]
+module = [
+  "brokers.factory",
+  "cli.configuration",
+  "data_fetcher",
+  "data_providers.service",
+  "engines.common",
+  "executor",
+  "orchestration.context",
+  "orchestration.signal_workflow",
+  "state_store",
+]
+disallow_untyped_defs = true
+check_untyped_defs = true
+warn_return_any = true
+no_implicit_optional = true
+disallow_incomplete_defs = true

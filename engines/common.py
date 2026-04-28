@@ -1,24 +1,26 @@
 from __future__ import annotations
 
+from typing import Any, Callable
+
 from models import Position
 
 
 def build_position(
-    symbol,
-    side,
-    quantity,
-    entry_price,
-    sl_pct=None,
-    target_pct=None,
-    trailing_pct=None,
-    stop_loss=None,
-    target=None,
-    trailing_stop=None,
-    trailing_distance=None,
-    atr=None,
-    stop_distance=None,
-    **extra_fields,
-):
+    symbol: str,
+    side: str,
+    quantity: int,
+    entry_price: float,
+    sl_pct: float | None = None,
+    target_pct: float | None = None,
+    trailing_pct: float | None = None,
+    stop_loss: float | None = None,
+    target: float | None = None,
+    trailing_stop: float | None = None,
+    trailing_distance: float | None = None,
+    atr: float | None = None,
+    stop_distance: float | None = None,
+    **extra_fields: Any,
+) -> dict[str, Any]:
     if stop_loss is None or target is None or trailing_stop is None:
         if side == "BUY":
             stop_loss = entry_price * (1 - sl_pct / 100)
@@ -48,7 +50,10 @@ def build_position(
     return position.to_dict()
 
 
-def merge_persisted_position_state(position, persisted_position):
+def merge_persisted_position_state(
+    position: dict[str, Any],
+    persisted_position: dict[str, Any] | None,
+) -> dict[str, Any]:
     if not persisted_position:
         return position
 
@@ -60,14 +65,18 @@ def merge_persisted_position_state(position, persisted_position):
     return merged
 
 
-def update_trailing_stop(position, latest_close, trailing_pct):
+def update_trailing_stop(position: dict[str, Any], latest_close: float, trailing_pct: float) -> bool:
     typed_position = Position.from_mapping(position)
     changed = typed_position.update_trailing_stop(latest_close, trailing_pct)
     position.update(typed_position.to_dict())
     return changed
 
 
-def evaluate_exit(position, latest_candle, include_target=True):
+def evaluate_exit(
+    position: dict[str, Any],
+    latest_candle: dict[str, Any],
+    include_target: bool = True,
+) -> str | None:
     typed_position = Position.from_mapping(position)
     exit_reason = typed_position.evaluate_exit(
         latest_high=latest_candle["High"],
@@ -77,7 +86,11 @@ def evaluate_exit(position, latest_candle, include_target=True):
     return exit_reason.value if exit_reason else None
 
 
-def log_positions(positions, log_event, current_prices=None):
+def log_positions(
+    positions: dict[str, dict[str, Any]],
+    log_event: Callable[..., Any],
+    current_prices: dict[str, float] | None = None,
+) -> None:
     if not positions:
         log_event("[POSITION] Flat")
         return
@@ -110,14 +123,14 @@ def log_positions(positions, log_event, current_prices=None):
         )
 
 
-def get_deployed_capital(positions):
+def get_deployed_capital(positions: dict[str, dict[str, Any]]) -> float:
     return sum(
         position["entry_price"] * position["quantity"]
         for position in positions.values()
     )
 
 
-def get_symbol_deployed_capital(positions, symbol):
+def get_symbol_deployed_capital(positions: dict[str, dict[str, Any]], symbol: str) -> float:
     position = positions.get(symbol)
     if not position:
         return 0.0
@@ -125,7 +138,7 @@ def get_symbol_deployed_capital(positions, symbol):
     return position["entry_price"] * position["quantity"]
 
 
-def count_open_structures(positions):
+def count_open_structures(positions: dict[str, dict[str, Any]]) -> int:
     structure_keys = set()
     for symbol, position in positions.items():
         pair_id = position.get("pair_id")
@@ -134,13 +147,13 @@ def count_open_structures(positions):
 
 
 def apply_capital_limits_to_quantity(
-    quantity,
-    entry_price,
-    max_capital_per_trade,
-    max_capital_deployed,
-    deployed_capital,
-    log_event,
-):
+    quantity: int,
+    entry_price: float,
+    max_capital_per_trade: float,
+    max_capital_deployed: float,
+    deployed_capital: float,
+    log_event: Callable[..., Any],
+) -> int:
     if quantity <= 0 or entry_price <= 0:
         return 0
 
