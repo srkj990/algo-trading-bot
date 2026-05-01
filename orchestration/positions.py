@@ -4,6 +4,10 @@ from datetime import date, datetime
 from typing import Any, Callable
 
 from engines.common import count_open_structures, get_deployed_capital, update_trailing_stop
+from config import (
+    INTRADAY_OPTIONS_THETA_EXIT_MIN_MINUTES,
+    INTRADAY_OPTIONS_THETA_EXIT_RATIO,
+)
 from models.position_adapter import (
     calculate_position_pnl,
     opposite_side,
@@ -159,6 +163,37 @@ def format_trade_time(raw_value: Any) -> str:
         return str(raw_value)
 
 
+def get_theta_exit_reason(
+    position: dict[str, Any],
+    snapshot: dict[str, Any],
+    now: datetime,
+) -> str | None:
+    if position.get("engine_name") != "intraday_options":
+        return None
+    if position_side(position) != "BUY":
+        return None
+    analytics = snapshot.get("analytics") or {}
+    theta = analytics.get("theta")
+    premium = analytics.get("option_price") or snapshot.get("latest_close")
+    if theta is None or premium in (None, 0):
+        return None
+
+    minimum_hold = int(INTRADAY_OPTIONS_THETA_EXIT_MIN_MINUTES or 0)
+    entry_time_raw = position.get("entry_time")
+    if minimum_hold > 0 and entry_time_raw:
+        try:
+            held_minutes = (now - datetime.fromisoformat(entry_time_raw)).total_seconds() / 60.0
+            if held_minutes < minimum_hold:
+                return None
+        except ValueError:
+            return None
+
+    theta_ratio = abs(float(theta)) / max(float(premium), 0.01)
+    if float(theta) < 0 and theta_ratio >= float(INTRADAY_OPTIONS_THETA_EXIT_RATIO or 0.0):
+        return f"THETA_EXIT_{theta_ratio:.3f}"
+    return None
+
+
 def log_trade_book_summary(
     capital: float,
     trade_book: list[dict[str, Any]],
@@ -232,7 +267,18 @@ def close_position_symbols(
             continue
         exit_price = get_latest_exit_price(engine, symbol, position, fetch_data, log_event, symbol_snapshots=symbol_snapshots)
         log_order_signal_banner("EXIT", build_exit_position_lines(position, exit_price, reason))
-        place_order(opposite_side(position), position_quantity(position), symbol, note=reason, product=engine.order_product)
+        order_result = place_order(
+            opposite_side(position),
+            position_quantity(position),
+            symbol,
+            note=reason,
+            product=engine.order_product,
+            enforce_spread_check=False,
+            enforce_margin_check=False,
+            entry_price=exit_price,
+        )
+        if order_result is not None and order_result.average_price is not None:
+            exit_price = float(order_result.average_price)
         record_closed_trade(
             trade_book,
             trade_store,
@@ -503,13 +549,18 @@ def force_square_off_positions(
     for symbol, position in list(positions.items()):
         exit_price = get_latest_exit_price(engine, symbol, position, fetch_data, log_event)
         log_order_signal_banner("FORCE SQUARE OFF", build_exit_position_lines(position, exit_price, "Intraday square-off"))
-        place_order(
+        order_result = place_order(
             opposite_side(position),
             position_quantity(position),
             symbol,
             note="Intraday square-off",
             product=engine.order_product,
+            enforce_spread_check=False,
+            enforce_margin_check=False,
+            entry_price=exit_price,
         )
+        if order_result is not None and order_result.average_price is not None:
+            exit_price = float(order_result.average_price)
         record_closed_trade(
             trade_book,
             trade_store,
@@ -629,6 +680,8 @@ def manage_open_positions(
         exit_reason = engine.evaluate_position_exit(position, snapshot["latest_candle"])
         if not exit_reason and hasattr(engine, "get_time_exit_reason"):
             exit_reason = engine.get_time_exit_reason(position, now)
+        if not exit_reason:
+            exit_reason = get_theta_exit_reason(position, snapshot, now)
         if exit_reason:
             if pair_id:
                 pair_symbols = get_pair_symbols(positions, pair_id)
@@ -659,13 +712,18 @@ def manage_open_positions(
                 f"Entry={position_entry_price(position):.2f} | Qty={position_quantity(position)}"
             )
             log_order_signal_banner("EXIT", build_exit_position_lines(position, exit_price, exit_reason))
-            place_order(
+            order_result = place_order(
                 opposite_side(position),
                 position_quantity(position),
                 symbol,
                 note=f"Exit {position_side(position)} via {exit_reason}",
                 product=engine.order_product,
+                enforce_spread_check=False,
+                enforce_margin_check=False,
+                entry_price=exit_price,
             )
+            if order_result is not None and order_result.average_price is not None:
+                exit_price = float(order_result.average_price)
             record_closed_trade(
                 trade_book,
                 trade_store,
@@ -689,13 +747,18 @@ def manage_open_positions(
                 f"Entry={position_entry_price(position):.2f} | Qty={position_quantity(position)}"
             )
             log_order_signal_banner("EXIT", build_exit_position_lines(position, exit_price, signal_exit_reason))
-            place_order(
+            order_result = place_order(
                 opposite_side(position),
                 position_quantity(position),
                 symbol,
                 note=f"Close {position_side(position)} via {signal_exit_reason}",
                 product=engine.order_product,
+                enforce_spread_check=False,
+                enforce_margin_check=False,
+                entry_price=exit_price,
             )
+            if order_result is not None and order_result.average_price is not None:
+                exit_price = float(order_result.average_price)
             record_closed_trade(
                 trade_book,
                 trade_store,

@@ -136,6 +136,9 @@ class PositionWorkflowHelperTests(unittest.TestCase):
             "SBIN.NS": build_position("SBIN.NS", "BUY", 1, 100.0, sl_pct=5, target_pct=10, trailing_pct=4)
         }
         trade_book = []
+        place_order = Mock(
+            return_value=Mock(average_price=101.25)
+        )
         changed = position_flow.close_position_symbols(
             engine=Mock(data_period="1d", data_interval="1m", order_product="MIS"),
             positions=positions,
@@ -143,7 +146,7 @@ class PositionWorkflowHelperTests(unittest.TestCase):
             reason="Manual close",
             trade_book=trade_book,
             trade_store=None,
-            place_order=Mock(),
+            place_order=place_order,
             log_order_signal_banner=Mock(),
             fetch_data=Mock(),
             log_event=Mock(),
@@ -155,6 +158,26 @@ class PositionWorkflowHelperTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(positions, {})
         self.assertEqual(len(trade_book), 1)
+        self.assertEqual(trade_book[0]["exit_price"], 101.25)
+
+    def test_get_theta_exit_reason_returns_reason_for_heavy_decay(self) -> None:
+        position = build_position(
+            "NFO:NIFTYTEST",
+            "BUY",
+            50,
+            100.0,
+            sl_pct=5,
+            target_pct=10,
+            trailing_pct=4,
+            entry_time="2026-05-02T09:20:00",
+            engine_name="intraday_options",
+        )
+        reason = position_flow.get_theta_exit_reason(
+            position,
+            {"latest_close": 95.0, "analytics": {"theta": -9.0, "option_price": 95.0}},
+            datetime(2026, 5, 2, 9, 40, 0),
+        )
+        self.assertTrue(str(reason).startswith("THETA_EXIT_"))
 
     def test_force_square_off_positions_returns_false_when_flat(self) -> None:
         changed = position_flow.force_square_off_positions(

@@ -339,7 +339,7 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
         ):
             normalized_signal = None
         if normalized_signal:
-            candidates.append(
+                candidates.append(
                 {
                     "symbol": candidate_symbol,
                     "signal": normalized_signal,
@@ -350,6 +350,12 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
                     "analytics": option_analytics,
                     "trade_identity": trade_identity,
                     "underlying_signal": evaluation.get("option_signal"),
+                    "strike_offset": (
+                        contract_snapshot["strike_offset"] if dynamic_atm_scan else None
+                    ),
+                    "strike_offset_mode": (
+                        contract_snapshot["strike_offset_mode"] if dynamic_atm_scan else None
+                    ),
                 }
             )
 

@@ -24,10 +24,23 @@ data_cache:
 orders:
   enabled: true
   allowed_products: ["MIS", "CNC", "NRML"]
+  allowed_order_types: ["MARKET", "LIMIT", "SL", "SL-M"]
   min_quantity: 1
   max_live_order_notional: 0
   reconcile_attempts: 3
   reconcile_delay_seconds: 1.5
+  fill_confirmation_required: true
+  default_entry_order_type: "MARKET"
+  entry_limit_price_buffer_pct: 0
+  max_spread_pct: 0.05
+  margin_check_enabled: true
+  margin_buffer_pct: 0.05
+  partial_fill_retry_enabled: true
+  partial_fill_retry_attempts: 1
+  rejection_retry_enabled: true
+  rejection_retry_attempts: 2
+  rejection_retry_reduce_quantity_pct: 0.25
+  rejection_retry_price_buffer_pct: 0.002
 
 trade_store:
   enabled: true
@@ -49,3 +62,6 @@ fno:
   intraday_options_regime_sideways_range_pct: 0.55
   intraday_options_regime_sideways_vwap_dev_pct: 0.0025
   intraday_options_regime_expansion_iv_change_pct: 2.0
+  intraday_options_roll_trigger_pct: 2.0
+  intraday_options_theta_exit_ratio: 0.08
+  intraday_options_theta_exit_min_minutes: 10

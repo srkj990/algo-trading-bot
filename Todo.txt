@@ -109,6 +109,14 @@ Delivered in this pass:
 - [x] Add pre-flight order validation before live orders
 - [x] Add structured trade/audit model and persistent trade store
 - [x] Add better live-order reconciliation and status handling
+- [x] Implement limit order support
+- [x] Implement bracket-order entry support scaffold
+- [x] Add partial fill handling and retry logic
+- [x] Add bid-ask spread checks before entries
+- [x] Add rejection retry logic with smaller-size and repriced follow-up attempts
+- [x] Add margin checks before live entries
+- [x] Poll broker to confirm live fill state before trusting the submission path
+- [x] Track slippage on broker-confirmed fills for later analysis
 
 ### Intraday Options Entry Profiles
 - [x] Add profile mapping for momentum, mean-reversion, volatility, and hybrid option strategies
@@ -141,13 +149,14 @@ Delivered in this pass:
 - [x] Max open positions counts a bounded pair as one structure
 - [x] Profile-based intraday-options entry quality validation
 - [x] Stateful momentum confirmation and pullback workflow for intraday options
+- [x] Dynamic ATM roll for live open positions when the underlying moves materially
+- [x] Theta-aware explicit exit guard for single-leg intraday options
 
 ### Not Done Yet
 - [ ] OI / PCR filter
-- [ ] Dynamic ATM roll for live open positions
 - [ ] General multi-strike basket logic
 - [ ] Basket-aware options engine
-- [ ] Margin-aware options selling model
+- [ ] Rich broker-native margin calculator for complex option-selling structures
 - [ ] Full option-chain ingestion layer
 - [ ] Open-interest analytics by strike
 - [ ] Richer F&O backtesting with true contract-premium history
@@ -157,4 +166,4 @@ Delivered in this pass:
 1. Expand the YAML-backed runtime config into richer engine/risk presets when the CLI setup flow is ready for it.
 2. Start migrating more dict-heavy runtime payloads to typed domain objects and typed dictionaries.
 3. Add margin/notional previews to the interactive `LIVE` confirmation flow.
-4. Persist and surface richer broker reconciliation diagnostics for partial fills and rejected exits.
+4. Extend the synthetic bracket scaffold into fully managed OCO exit orchestration.

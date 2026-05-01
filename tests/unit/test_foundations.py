@@ -173,11 +173,19 @@ class BrokerInterfaceTests(unittest.TestCase):
             def get_nfo_positions(self):
                 return []
 
+            def cancel_order(self, order_id: str) -> bool:
+                return True
+
         broker = DummyBroker()
         result = broker.place_order(OrderRequest(symbol="SBIN.NS", side="BUY", quantity=1))
         quote = broker.get_quote("SBIN.NS")
         self.assertEqual(result.status, OrderStatus.PENDING)
         self.assertEqual(quote.last_price, 100.0)
+
+    def test_quote_spread_helpers(self):
+        quote = Quote(symbol="SBIN.NS", last_price=100.0, bid_price=99.0, ask_price=101.0)
+        self.assertEqual(quote.spread, 2.0)
+        self.assertEqual(quote.spread_pct, 0.02)
 
 
 if __name__ == "__main__":

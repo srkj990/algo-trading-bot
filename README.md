@@ -33,6 +33,8 @@ Recent architecture improvements now also include:
 - market-data caching at both the shared provider layer and the per-cycle trading-context layer
 - structured trade and order-audit persistence under `state/trade_store/`
 - live-order pre-flight validation plus broker order-status reconciliation
+- limit-order support, broker fill-confirmation polling, rejection retries, partial-fill retries, margin checks, slippage audits, and spread-aware entry checks in the execution layer
+- synthetic bracket-order entry support for strategies that want to stage broker-managed exits later
 - quality-tooling config for `mypy`, `ruff`, and `pre-commit`
 - lazy engine package loading so foundational tests do not require broker SDK imports
 
@@ -104,6 +106,8 @@ Recent architecture improvements now also include:
   - configurable per-underlying daily trade cap
   - selectable `ATM SINGLE OPTION` or `TWO-LEG RANGE PAIR` entry flow
   - bounded-market two-leg short pair with linked exits on range break or leg stop
+  - dynamic ATM strike rolling when the underlying moves beyond the configured threshold
+  - theta-aware explicit exit guard for long single-leg intraday options
   - lot-size aware sizing and startup sync for MIS options only
 
 ## Trading Features
@@ -719,13 +723,12 @@ Support status for the requested strategy ideas:
   - time-based exits and square-off behavior
   - pair synchronization for bounded two-leg range mode
 - Missing pieces:
-  - slippage-aware order management for options
   - retry / failover logic for quote resolution and order placement
-  - entry quality guards based on spread / liquidity / market depth
-  - partial-fill handling beyond the current pair unwind safety
+  - deeper slippage-aware order management for options beyond current limit/spread controls
+  - full OCO lifecycle management for synthetic bracket exits
 - Feasibility with Kite: `MEDIUM-HIGH`
   - Many of these are feasible with Kite order APIs and quote data.
-  - The main limitations are that robust spread/liquidity handling and multi-leg orchestration need more execution-state code, and some microstructure safeguards require quote/depth workflows rather than only candle-based workflows.
+  - The main limitations are now around full multi-leg/OCO execution-state management rather than basic quote/depth access.
 
 ## Files to Know
 
@@ -925,6 +928,9 @@ These environment-backed controls now affect `intraday_options`:
 - `INTRADAY_OPTIONS_IV_EXPANSION_MAX_IV_PERCENTILE`
 - `INTRADAY_OPTIONS_SIDEWAYS_VWAP_BAND_PCT`
 - `INTRADAY_OPTIONS_SIDEWAYS_LOOKBACK_CANDLES`
+- `INTRADAY_OPTIONS_ROLL_TRIGGER_PCT`
+- `INTRADAY_OPTIONS_THETA_EXIT_RATIO`
+- `INTRADAY_OPTIONS_THETA_EXIT_MIN_MINUTES`
 
 Current behavior:
 
@@ -935,6 +941,13 @@ Current behavior:
 - ATM single-leg `BUY_CE` entries are allowed only when the underlying is bullish on VWAP plus EMA
 - ATM single-leg `BUY_PE` entries are allowed only when the underlying is bearish on VWAP plus EMA
 - low-score signals are skipped even if they are directionally valid
+- live entries can now be blocked when the best bid/ask spread is wider than the configured threshold
+- live entries can now be blocked when available broker margin is below the estimated requirement
+- broker-submitted orders are polled until a fill/reject/cancel state is confirmed instead of trusting the initial response alone
+- live entries can now be sent as `MARKET` or `LIMIT` orders based on runtime config
+- rejected live entries can retry with a reduced quantity and a repriced limit order
+- partially filled live entries now retry the remaining quantity and size positions from the actual filled quantity
+- broker-confirmed fills now emit slippage audit rows under `state/trade_store/`
 - low-DTE contracts are warned about, but not force-blocked
 - trade count limits are enforced per underlying, not per individual strike
 - in two-leg range mode, both legs are entered together and both legs are exited together on range break or paired stop conditions
@@ -946,8 +959,11 @@ Current behavior:
 - live startup reconciliation now preserves persisted pair metadata so paired exits still work after a restart
 - single-leg ATM entries are deduplicated at the underlying level so the bot does not keep stacking fresh ATM contracts for the same underlying in one session
 - single-leg ATM entries now support `ATM`, `ATM + 1 STRIKE`, and `ATM - 1 STRIKE`
+- open single-leg ATM positions can now roll to a refreshed strike when the underlying has moved far enough from the original ATM anchor
+- long single-leg ATM positions can now exit explicitly when theta decay becomes too aggressive for the remaining premium
 - intraday options supervision now runs every `15` seconds while signal entries still wait for closed `1m` candles
 - order logs now print clearer entry and exit banners so live actions stand out in both console and log file
+- bracket-order entry support is now exposed as a synthetic execution helper; it records stop-loss and target intent even though current Kite docs expose `regular` and `co` varieties rather than native `BO`
 - `ATM_BREAKOUT_EXPANSION` looks for compression, breakout, volume spike, and ATR expansion on the underlying before buying the ATM option
 - `ATM_IV_EXPANSION` looks for low-IV percentile plus a momentum candle at a key level before buying the ATM option
 - `ATM_TRAP_REVERSAL` looks for failed support/resistance breaks and reversal recovery before buying the ATM option
@@ -955,11 +971,10 @@ Current behavior:
 
 ## Known Gaps
 
-- no margin-aware options selling model yet
+- no rich broker-native margin calculator yet for complex option-selling structures
 - no general basket/multi-leg options strategy engine yet beyond the bounded two-leg range pair
 - no open-interest / option-chain analytics yet
 - no reliable PCR/OI filter yet because there is no option-chain ingestion layer
-- no dynamic ATM strike rolling yet for live open positions
 - F&O backtesting is currently proxy-based for some flows rather than full contract-premium modeling
 - Upstox F&O support is still missing
 - IV percentile/rank is approximate, not a full volatility surface model
@@ -975,6 +990,7 @@ Current behavior:
 - add a small dashboard or TUI view for live P&L, Greeks drift, and square-off countdown
 - add open-interest, put-call ratio, and event-volatility filters for options
 - deepen F&O backtesting with true option-premium candles, decay, rollover, and richer lot/margin modeling
+- extend synthetic bracket support into managed OCO cancellation and broker-side child-order reconciliation
 
 ## Suggested Next Refactoring Steps
 

@@ -47,6 +47,17 @@ class KiteBrokerClient(BrokerClient):
         mapping = {"MIS": kite.PRODUCT_MIS, "CNC": kite.PRODUCT_CNC, "NRML": kite.PRODUCT_NRML}
         return mapping.get(normalized, kite.PRODUCT_MIS)
 
+    def _order_type_constant(self, order_type):
+        kite = self._get_client()
+        normalized = (order_type or "MARKET").upper()
+        mapping = {
+            "MARKET": kite.ORDER_TYPE_MARKET,
+            "LIMIT": kite.ORDER_TYPE_LIMIT,
+            "SL": kite.ORDER_TYPE_SL,
+            "SL-M": kite.ORDER_TYPE_SLM,
+        }
+        return mapping.get(normalized, kite.ORDER_TYPE_MARKET)
+
     def place_order(self, order: OrderRequest) -> OrderResult:
         kite = self._get_client()
         exchange, tradingsymbol = self._parse_symbol_exchange(order.symbol)
@@ -67,9 +78,17 @@ class KiteBrokerClient(BrokerClient):
             transaction_type=transaction_type,
             quantity=order.quantity,
             product=self._product_constant(order.product),
-            order_type=kite.ORDER_TYPE_MARKET,
+            order_type=self._order_type_constant(order.order_type),
+            price=float(order.price or 0),
+            trigger_price=float(order.trigger_price or 0),
+            validity=order.validity,
         )
-        return OrderResult(order_id=str(order_id), status=OrderStatus.PENDING)
+        return OrderResult(
+            order_id=str(order_id),
+            status=OrderStatus.PENDING,
+            requested_quantity=int(order.quantity),
+            pending_quantity=int(order.quantity),
+        )
 
     def get_order_status(self, order_id: str) -> OrderResult | None:
         for item in reversed(self._get_client().orders()):
@@ -79,6 +98,10 @@ class KiteBrokerClient(BrokerClient):
             status = OrderStatus.PENDING
             if status_text in {"COMPLETE", "FILLED"}:
                 status = OrderStatus.FILLED
+            elif status_text in {"OPEN", "OPEN PENDING", "TRIGGER PENDING", "MODIFY PENDING", "PUT ORDER REQ RECEIVED"}:
+                status = OrderStatus.PENDING
+            elif int(item.get("filled_quantity") or 0) > 0:
+                status = OrderStatus.PARTIAL
             elif status_text in {"REJECTED"}:
                 status = OrderStatus.REJECTED
             elif status_text in {"CANCELLED", "CANCELED"}:
@@ -87,6 +110,11 @@ class KiteBrokerClient(BrokerClient):
                 order_id=str(order_id),
                 status=status,
                 message=item.get("status_message"),
+                requested_quantity=int(item.get("quantity") or 0),
+                filled_quantity=int(item.get("filled_quantity") or 0),
+                pending_quantity=int(item.get("pending_quantity") or 0),
+                average_price=float(item.get("average_price") or 0) or None,
+                parent_order_id=item.get("parent_order_id"),
             )
         return None
 
@@ -112,7 +140,21 @@ class KiteBrokerClient(BrokerClient):
         quote_key = f"{exchange}:{tradingsymbol}"
         payload = self._get_client().quote([quote_key])
         data = payload.get(quote_key) or {}
-        return Quote(symbol=symbol, last_price=float(data.get("last_price") or 0.0))
+        depth = data.get("depth") or {}
+        buy = depth.get("buy") or []
+        sell = depth.get("sell") or []
+        best_bid = buy[0].get("price") if buy else None
+        best_ask = sell[0].get("price") if sell else None
+        return Quote(
+            symbol=symbol,
+            last_price=float(data.get("last_price") or 0.0),
+            bid_price=float(best_bid) if best_bid is not None else None,
+            ask_price=float(best_ask) if best_ask is not None else None,
+        )
+
+    def cancel_order(self, order_id: str) -> bool:
+        self._get_client().cancel_order(variety="regular", order_id=order_id)
+        return True
 
     def get_intraday_positions(self) -> list[dict]:
         response = self._get_client().positions()
@@ -144,6 +186,26 @@ class KiteBrokerClient(BrokerClient):
                 }
             )
         return positions
+
+    def get_available_margin(self, product: str | None = None) -> float | None:
+        del product
+        margins = self._get_client().margins()
+        equity = margins.get("equity") or {}
+        available = equity.get("available") or {}
+        candidates = (
+            available.get("live_balance"),
+            available.get("cash"),
+            available.get("opening_balance"),
+            equity.get("net"),
+        )
+        for value in candidates:
+            try:
+                amount = float(value)
+            except (TypeError, ValueError):
+                continue
+            if amount >= 0:
+                return amount
+        return None
 
 
 class UpstoxBrokerClient(BrokerClient):
@@ -263,16 +325,16 @@ class UpstoxBrokerClient(BrokerClient):
         payload = {
             "quantity": order.quantity,
             "product": self._product_constant(order.product),
-            "validity": "DAY",
-            "price": 0,
+            "validity": order.validity,
+            "price": float(order.price or 0),
             "tag": (order.note or "algo")[:40],
             "instrument_token": self._get_instrument_key(order.symbol),
-            "order_type": "MARKET",
+            "order_type": (order.order_type or "MARKET").upper(),
             "transaction_type": order.side,
             "disclosed_quantity": 0,
-            "trigger_price": 0,
+            "trigger_price": float(order.trigger_price or 0),
             "is_amo": False,
-            "market_protection": 0,
+            "market_protection": -1,
             "slice": False,
         }
         response = broker_request(
@@ -296,6 +358,8 @@ class UpstoxBrokerClient(BrokerClient):
         return OrderResult(
             order_id=str(response.json().get("data", {}).get("order_id")),
             status=OrderStatus.PENDING,
+            requested_quantity=int(order.quantity),
+            pending_quantity=int(order.quantity),
         )
 
     def get_order_status(self, order_id: str) -> OrderResult | None:
@@ -312,6 +376,8 @@ class UpstoxBrokerClient(BrokerClient):
         status = OrderStatus.PENDING
         if status_text in {"COMPLETE", "FILLED"}:
             status = OrderStatus.FILLED
+        elif int(payload.get("filled_quantity") or 0) > 0:
+            status = OrderStatus.PARTIAL
         elif status_text == "REJECTED":
             status = OrderStatus.REJECTED
         elif status_text in {"CANCELLED", "CANCELED"}:
@@ -320,6 +386,11 @@ class UpstoxBrokerClient(BrokerClient):
             order_id=str(order_id),
             status=status,
             message=payload.get("status_message") or payload.get("message"),
+            requested_quantity=int(payload.get("quantity") or 0),
+            filled_quantity=int(payload.get("filled_quantity") or 0),
+            pending_quantity=int(payload.get("pending_quantity") or 0),
+            average_price=float(payload.get("average_price") or 0) or None,
+            parent_order_id=payload.get("parent_order_id"),
         )
 
     def get_positions(self) -> list[PositionSnapshot]:
@@ -341,7 +412,7 @@ class UpstoxBrokerClient(BrokerClient):
     def get_quote(self, symbol: str) -> Quote:
         response = broker_request(
             "GET",
-            "https://api.upstox.com/v2/market-quote/ltp",
+            "https://api.upstox.com/v2/market-quote/quotes",
             headers=self._headers(),
             params={"instrument_key": self._get_instrument_key(symbol)},
             timeout=30,
@@ -350,7 +421,28 @@ class UpstoxBrokerClient(BrokerClient):
         response.raise_for_status()
         data = response.json().get("data", {})
         first_item = next(iter(data.values()), {})
-        return Quote(symbol=symbol, last_price=float(first_item.get("last_price") or 0.0))
+        depth = first_item.get("depth") or {}
+        buy = depth.get("buy") or []
+        sell = depth.get("sell") or []
+        best_bid = buy[0].get("price") if buy else None
+        best_ask = sell[0].get("price") if sell else None
+        return Quote(
+            symbol=symbol,
+            last_price=float(first_item.get("last_price") or 0.0),
+            bid_price=float(best_bid) if best_bid is not None else None,
+            ask_price=float(best_ask) if best_ask is not None else None,
+        )
+
+    def cancel_order(self, order_id: str) -> bool:
+        response = broker_request(
+            "DELETE",
+            f"https://api.upstox.com/v2/order/cancel?order_id={order_id}",
+            headers=self._headers(),
+            timeout=30,
+            ip_mode=get_broker_ip_mode(),
+        )
+        response.raise_for_status()
+        return True
 
     def get_intraday_positions(self) -> list[dict]:
         response = broker_request(
@@ -399,3 +491,25 @@ class UpstoxBrokerClient(BrokerClient):
 
     def get_nfo_positions(self) -> list[dict]:
         raise NotImplementedError("Upstox NFO position retrieval is not implemented.")
+
+    def get_available_margin(self, product: str | None = None) -> float | None:
+        del product
+        response = broker_request(
+            "GET",
+            "https://api.upstox.com/v2/user/get-funds-and-margin",
+            headers=self._headers(),
+            timeout=30,
+            ip_mode=get_broker_ip_mode(),
+        )
+        response.raise_for_status()
+        payload = response.json().get("data") or {}
+        equity = payload.get("equity") or payload
+        available = equity.get("available_margin")
+        if available is None:
+            available = equity.get("available_funds")
+        if available is None:
+            available = (equity.get("available") or {}).get("cash")
+        try:
+            return None if available is None else float(available)
+        except (TypeError, ValueError):
+            return None

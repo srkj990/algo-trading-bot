@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from typing import Any
 
@@ -58,7 +59,9 @@ def _validate_order_request(
     quantity: int,
     symbol: str,
     product: str,
+    order_type: str,
     entry_price: float | None,
+    trigger_price: float | None,
     runtime_config: RuntimeConfig,
     execution_mode: str,
 ) -> None:
@@ -78,8 +81,18 @@ def _validate_order_request(
             f"Unsupported product '{normalized_product}'. Allowed products: "
             f"{', '.join(runtime_config.orders.allowed_products)}"
         )
+    normalized_order_type = (order_type or "MARKET").upper()
+    if normalized_order_type not in runtime_config.orders.allowed_order_types:
+        raise ValueError(
+            f"Unsupported order type '{normalized_order_type}'. Allowed order types: "
+            f"{', '.join(runtime_config.orders.allowed_order_types)}"
+        )
     if entry_price is not None and float(entry_price) <= 0:
         raise ValueError("Entry price must be positive when provided")
+    if normalized_order_type == "LIMIT" and entry_price is None:
+        raise ValueError("Limit orders require a price")
+    if normalized_order_type in {"SL", "SL-M"} and trigger_price is None:
+        raise ValueError("Stop-loss orders require a trigger price")
     if (
         execution_mode == "LIVE"
         and entry_price is not None
@@ -149,6 +162,7 @@ def _reconcile_order_status(
         elif status is not None:
             return latest
         if latest.status in {
+            OrderStatus.PARTIAL,
             OrderStatus.FILLED,
             OrderStatus.REJECTED,
             OrderStatus.CANCELLED,
@@ -159,6 +173,428 @@ def _reconcile_order_status(
     return latest
 
 
+def _ensure_fill_confirmation(
+    reconciled: OrderResult,
+    runtime_config: RuntimeConfig,
+) -> None:
+    if not runtime_config.orders.fill_confirmation_required:
+        return
+    if reconciled.status == OrderStatus.PENDING:
+        raise RuntimeError(
+            "Broker did not confirm the order fill state within the configured polling window."
+        )
+
+
+def _build_retry_request(order: OrderRequest, remaining_quantity: int) -> OrderRequest:
+    return OrderRequest(
+        symbol=order.symbol,
+        side=order.side,
+        quantity=int(remaining_quantity),
+        product=order.product,
+        note=order.note,
+        order_type=order.order_type,
+        price=order.price,
+        trigger_price=order.trigger_price,
+        validity=order.validity,
+    )
+
+
+def _append_order_lineage(previous: OrderResult, current: OrderResult) -> OrderResult:
+    child_ids = tuple(
+        item
+        for item in (
+            *previous.child_order_ids,
+            previous.order_id,
+            *current.child_order_ids,
+        )
+        if item and item != current.order_id
+    )
+    return OrderResult(
+        order_id=current.order_id,
+        status=current.status,
+        message=current.message,
+        requested_quantity=current.requested_quantity,
+        filled_quantity=current.filled_quantity,
+        pending_quantity=current.pending_quantity,
+        average_price=current.average_price,
+        parent_order_id=current.parent_order_id,
+        child_order_ids=child_ids,
+        metadata={
+            **previous.metadata,
+            **current.metadata,
+            "previous_order_id": previous.order_id,
+        },
+    )
+
+
+def _merge_order_results(primary: OrderResult, secondary: OrderResult) -> OrderResult:
+    child_ids = tuple(
+        item
+        for item in (
+            *primary.child_order_ids,
+            primary.order_id,
+            *secondary.child_order_ids,
+            secondary.order_id,
+        )
+        if item
+    )
+    final_status = secondary.status if secondary.status != OrderStatus.PENDING else primary.status
+    total_requested = max(
+        int(primary.requested_quantity or 0),
+        int(primary.filled_quantity or 0) + int(primary.pending_quantity or 0),
+    )
+    total_filled = int(primary.filled_quantity or 0) + int(secondary.filled_quantity or 0)
+    pending_quantity = max(0, total_requested - total_filled)
+    average_price = primary.average_price
+    if total_filled > 0:
+        weighted_total = (
+            (float(primary.average_price or 0) * int(primary.filled_quantity or 0))
+            + (float(secondary.average_price or 0) * int(secondary.filled_quantity or 0))
+        )
+        average_price = weighted_total / total_filled if weighted_total else None
+    return OrderResult(
+        order_id=secondary.order_id or primary.order_id,
+        status=final_status if pending_quantity == 0 else OrderStatus.PARTIAL,
+        message=secondary.message or primary.message,
+        requested_quantity=total_requested,
+        filled_quantity=total_filled,
+        pending_quantity=pending_quantity,
+        average_price=average_price,
+        child_order_ids=child_ids,
+        metadata={
+            "retry_attempted": True,
+            "primary_order_id": primary.order_id,
+            "secondary_order_id": secondary.order_id,
+        },
+    )
+
+
+def _retry_partial_fill(
+    client: BrokerClient,
+    base_request: OrderRequest,
+    order_result: OrderResult,
+    runtime_config: RuntimeConfig,
+    trade_store: TradeStore | None,
+    resolved_mode: str,
+    resolved_provider: str,
+    entry_price: float | None,
+) -> OrderResult:
+    latest = order_result
+    if (
+        not runtime_config.orders.partial_fill_retry_enabled
+        or latest.filled_quantity >= latest.requested_quantity
+    ):
+        return latest
+
+    remaining_quantity = max(0, int(latest.requested_quantity or 0) - int(latest.filled_quantity or 0))
+    attempts = int(runtime_config.orders.partial_fill_retry_attempts or 0)
+    while remaining_quantity > 0 and attempts > 0:
+        retry_request = _build_retry_request(base_request, remaining_quantity)
+        retry_result = client.place_order(retry_request)
+        _record_order_audit(
+            trade_store,
+            stage="partial_fill_retry_submitted",
+            signal=retry_request.side,
+            quantity=retry_request.quantity,
+            symbol=retry_request.symbol,
+            product=retry_request.product,
+            execution_mode=resolved_mode,
+            provider=resolved_provider,
+            status=retry_result.status.value,
+            note=retry_request.note,
+            order_id=retry_result.order_id,
+            entry_price=entry_price,
+            metadata={"remaining_quantity": remaining_quantity},
+        )
+        reconciled_retry = _reconcile_order_status(client, retry_result, runtime_config)
+        latest = _merge_order_results(latest, reconciled_retry)
+        remaining_quantity = max(
+            0,
+            int(latest.requested_quantity or 0) - int(latest.filled_quantity or 0),
+        )
+        attempts -= 1
+    return latest
+
+
+def _safe_quote_price(client: BrokerClient, order: OrderRequest) -> float | None:
+    try:
+        quote = client.get_quote(order.symbol)
+    except Exception:
+        return None
+    if order.side == "BUY":
+        for candidate in (quote.ask_price, quote.last_price, quote.bid_price):
+            if candidate and float(candidate) > 0:
+                return float(candidate)
+    for candidate in (quote.bid_price, quote.last_price, quote.ask_price):
+        if candidate and float(candidate) > 0:
+            return float(candidate)
+    return None
+
+
+def _round_retry_quantity(symbol: str, quantity: int) -> int:
+    lot_size = 1
+    if ":" in str(symbol):
+        try:
+            from fno_data_fetcher import get_contract_lot_size
+
+            lot_size = max(1, int(get_contract_lot_size(symbol)))
+        except Exception:
+            lot_size = 1
+    if lot_size <= 1:
+        return max(0, int(quantity))
+    return max(0, (int(quantity) // lot_size) * lot_size)
+
+
+def _estimate_required_margin(
+    order: OrderRequest,
+    reference_price: float | None,
+    runtime_config: RuntimeConfig,
+) -> float | None:
+    if reference_price is None or float(reference_price) <= 0:
+        return None
+    required = float(reference_price) * int(order.quantity)
+    return required * (1 + float(runtime_config.orders.margin_buffer_pct or 0.0))
+
+
+def _check_margin_availability(
+    client: BrokerClient,
+    order: OrderRequest,
+    runtime_config: RuntimeConfig,
+    reference_price: float | None,
+) -> tuple[bool, dict[str, Any]]:
+    metadata: dict[str, Any] = {
+        "margin_check_enabled": runtime_config.orders.margin_check_enabled,
+        "reference_price": reference_price,
+    }
+    if not runtime_config.orders.margin_check_enabled:
+        return True, metadata
+    try:
+        available = client.get_available_margin(order.product)
+    except NotImplementedError:
+        metadata["margin_supported"] = False
+        return True, metadata
+    try:
+        available = None if available is None else float(available)
+    except (TypeError, ValueError):
+        available = None
+    metadata["margin_supported"] = True
+    metadata["available_margin"] = available
+    required = _estimate_required_margin(order, reference_price, runtime_config)
+    metadata["required_margin_estimate"] = required
+    if available is None or required is None:
+        return True, metadata
+    return available >= float(required), metadata
+
+
+def _is_margin_rejection(message: str | None) -> bool:
+    text = str(message or "").lower()
+    return any(
+        token in text
+        for token in ("margin", "fund", "insufficient", "rms", "available cash", "not enough balance")
+    )
+
+
+def _build_rejection_retry_request(
+    client: BrokerClient,
+    order: OrderRequest,
+    rejected: OrderResult,
+    runtime_config: RuntimeConfig,
+    reference_price: float | None,
+) -> OrderRequest | None:
+    next_quantity = int(order.quantity)
+    rejection_message = rejected.message
+
+    try:
+        available_margin = client.get_available_margin(order.product)
+    except NotImplementedError:
+        available_margin = None
+
+    if _is_margin_rejection(rejection_message) and available_margin and reference_price:
+        affordable_qty = int(
+            math.floor(
+                float(available_margin)
+                / max(
+                    float(reference_price) * (1 + float(runtime_config.orders.margin_buffer_pct or 0.0)),
+                    0.01,
+                )
+            )
+        )
+        next_quantity = min(next_quantity, affordable_qty)
+    else:
+        next_quantity = int(
+            math.floor(
+                int(order.quantity)
+                * (1 - float(runtime_config.orders.rejection_retry_reduce_quantity_pct or 0.0))
+            )
+        )
+
+    next_quantity = _round_retry_quantity(order.symbol, next_quantity)
+    if next_quantity <= 0 or next_quantity == int(order.quantity):
+        return None
+
+    quote_anchor = _safe_quote_price(client, order)
+    price_anchor = quote_anchor or order.price or reference_price
+    if price_anchor is None or float(price_anchor) <= 0:
+        return None
+
+    price_buffer = float(runtime_config.orders.rejection_retry_price_buffer_pct or 0.0)
+    if order.side == "BUY":
+        retry_price = float(price_anchor) * (1 + price_buffer)
+    else:
+        retry_price = max(0.01, float(price_anchor) * (1 - price_buffer))
+
+    return OrderRequest(
+        symbol=order.symbol,
+        side=order.side,
+        quantity=next_quantity,
+        product=order.product,
+        note=order.note,
+        order_type="LIMIT",
+        price=retry_price,
+        trigger_price=order.trigger_price,
+        validity=order.validity,
+    )
+
+
+def _retry_rejected_order(
+    client: BrokerClient,
+    base_request: OrderRequest,
+    order_result: OrderResult,
+    runtime_config: RuntimeConfig,
+    trade_store: TradeStore | None,
+    resolved_mode: str,
+    resolved_provider: str,
+    reference_price: float | None,
+) -> OrderResult:
+    latest = order_result
+    if not runtime_config.orders.rejection_retry_enabled:
+        return latest
+
+    attempts = int(runtime_config.orders.rejection_retry_attempts or 0)
+    current_request = base_request
+    while latest.status in {OrderStatus.REJECTED, OrderStatus.CANCELLED} and attempts > 0:
+        retry_request = _build_rejection_retry_request(
+            client,
+            current_request,
+            latest,
+            runtime_config,
+            reference_price,
+        )
+        if retry_request is None:
+            break
+        _record_order_audit(
+            trade_store,
+            stage="rejection_retry_planned",
+            signal=retry_request.side,
+            quantity=retry_request.quantity,
+            symbol=retry_request.symbol,
+            product=retry_request.product,
+            execution_mode=resolved_mode,
+            provider=resolved_provider,
+            status=latest.status.value,
+            note=retry_request.note,
+            order_id=latest.order_id,
+            entry_price=reference_price,
+            message=latest.message,
+            metadata={
+                "original_order_id": latest.order_id,
+                "retry_order_type": retry_request.order_type,
+                "retry_price": retry_request.price,
+                "retry_quantity": retry_request.quantity,
+            },
+        )
+        retry_result = client.place_order(retry_request)
+        _record_order_audit(
+            trade_store,
+            stage="rejection_retry_submitted",
+            signal=retry_request.side,
+            quantity=retry_request.quantity,
+            symbol=retry_request.symbol,
+            product=retry_request.product,
+            execution_mode=resolved_mode,
+            provider=resolved_provider,
+            status=retry_result.status.value,
+            note=retry_request.note,
+            order_id=retry_result.order_id,
+            entry_price=reference_price,
+            message=retry_result.message,
+            metadata={
+                "order_type": retry_request.order_type,
+                "price": retry_request.price,
+            },
+        )
+        reconciled_retry = _reconcile_order_status(client, retry_result, runtime_config)
+        latest = _append_order_lineage(latest, reconciled_retry)
+        current_request = retry_request
+        attempts -= 1
+    return latest
+
+
+def _enforce_spread_check(
+    client: BrokerClient,
+    symbol: str,
+    runtime_config: RuntimeConfig,
+) -> tuple[bool, dict[str, Any]]:
+    max_spread_pct = float(runtime_config.orders.max_spread_pct or 0.0)
+    if max_spread_pct <= 0:
+        return True, {}
+    quote = client.get_quote(symbol)
+    spread_pct = quote.spread_pct
+    metadata = {
+        "last_price": quote.last_price,
+        "bid_price": quote.bid_price,
+        "ask_price": quote.ask_price,
+        "spread": quote.spread,
+        "spread_pct": spread_pct,
+    }
+    if spread_pct is None:
+        return True, metadata
+    return spread_pct <= max_spread_pct, metadata
+
+
+def _record_slippage_audit(
+    trade_store: TradeStore | None,
+    *,
+    signal: str,
+    quantity: int,
+    symbol: str,
+    product: str,
+    execution_mode: str,
+    provider: str,
+    note: str | None,
+    order_id: str | None,
+    reference_price: float | None,
+    order_result: OrderResult,
+) -> None:
+    if reference_price is None or order_result.average_price is None or int(order_result.filled_quantity or 0) <= 0:
+        return
+    expected = float(reference_price)
+    actual = float(order_result.average_price)
+    signed_slippage = (actual - expected) if signal == "BUY" else (expected - actual)
+    slippage_pct = signed_slippage / expected if expected else None
+    _record_order_audit(
+        trade_store,
+        stage="slippage",
+        signal=signal,
+        quantity=quantity,
+        symbol=symbol,
+        product=product,
+        execution_mode=execution_mode,
+        provider=provider,
+        status=order_result.status.value,
+        note=note,
+        order_id=order_id,
+        entry_price=reference_price,
+        metadata={
+            "expected_price": expected,
+            "actual_price": actual,
+            "signed_slippage": signed_slippage,
+            "slippage_pct": slippage_pct,
+            "filled_quantity": int(order_result.filled_quantity or 0),
+        },
+    )
+
+
 def place_order(
     signal: str,
     quantity: int,
@@ -166,11 +602,17 @@ def place_order(
     note: str | None = None,
     product: str = "MIS",
     entry_price: float | None = None,
+    order_type: str = "MARKET",
+    price: float | None = None,
+    trigger_price: float | None = None,
+    validity: str = "DAY",
     runtime_config: RuntimeConfig | None = None,
     trade_store: TradeStore | None = None,
     execution_provider: str | None = None,
     execution_mode: str | None = None,
-) -> str | None:
+    enforce_spread_check: bool = True,
+    enforce_margin_check: bool = True,
+) -> OrderResult | None:
     runtime_config = runtime_config or get_runtime_config()
     resolved_provider = _normalize_execution_provider(execution_provider)
     resolved_mode = _normalize_execution_mode(execution_mode)
@@ -181,6 +623,7 @@ def place_order(
     log_event(f"[EXECUTION] Quantity: {quantity}")
     log_event(f"[EXECUTION] Mode: {resolved_mode}")
     log_event(f"[EXECUTION] Product: {(product or 'MIS').upper()}")
+    log_event(f"[EXECUTION] Order Type: {(order_type or 'MARKET').upper()}")
     log_event(f"[EXECUTION] Broker IP Mode: {get_broker_ip_mode()}")
 
     if entry_price:
@@ -195,7 +638,9 @@ def place_order(
         int(quantity),
         symbol,
         product,
-        entry_price,
+        order_type,
+        price if price is not None else entry_price,
+        trigger_price,
         runtime_config,
         resolved_mode,
     )
@@ -211,6 +656,12 @@ def place_order(
         status="PASSED",
         note=note,
         entry_price=entry_price,
+        metadata={
+            "order_type": (order_type or "MARKET").upper(),
+            "price": price,
+            "trigger_price": trigger_price,
+            "validity": validity,
+        },
     )
 
     if resolved_mode != "LIVE":
@@ -228,18 +679,77 @@ def place_order(
             note=note,
             entry_price=entry_price,
             message="Order skipped because execution mode is PAPER",
+            metadata={"order_type": (order_type or "MARKET").upper(), "price": price},
         )
         return None
 
     client = _get_broker_client(resolved_provider)
-    order_result = client.place_order(
-        OrderRequest(
-            symbol=symbol,
-            side=signal,
+    if enforce_spread_check:
+        spread_ok, spread_metadata = _enforce_spread_check(client, symbol, runtime_config)
+        _record_order_audit(
+            trade_store,
+            stage="spread_check",
+            signal=signal,
             quantity=quantity,
+            symbol=symbol,
             product=product,
+            execution_mode=resolved_mode,
+            provider=resolved_provider,
+            status="PASSED" if spread_ok else "BLOCKED",
             note=note,
+            entry_price=entry_price,
+            metadata=spread_metadata,
         )
+        if not spread_ok:
+            spread_pct = float(spread_metadata.get("spread_pct") or 0.0) * 100.0
+            raise RuntimeError(
+                f"Spread check blocked {symbol}: spread {spread_pct:.2f}% exceeds allowed "
+                f"{runtime_config.orders.max_spread_pct * 100:.2f}%"
+            )
+
+    normalized_order_type = (order_type or "MARKET").upper()
+    resolved_price = price
+    if normalized_order_type == "LIMIT" and resolved_price is None:
+        resolved_price = entry_price
+
+    request = OrderRequest(
+        symbol=symbol,
+        side=signal,
+        quantity=quantity,
+        product=product,
+        note=note,
+        order_type=normalized_order_type,
+        price=resolved_price,
+        trigger_price=trigger_price,
+        validity=validity,
+    )
+    if enforce_margin_check:
+        margin_ok, margin_metadata = _check_margin_availability(
+            client,
+            request,
+            runtime_config,
+            resolved_price if resolved_price is not None else entry_price,
+        )
+        _record_order_audit(
+            trade_store,
+            stage="margin_check",
+            signal=signal,
+            quantity=quantity,
+            symbol=symbol,
+            product=product,
+            execution_mode=resolved_mode,
+            provider=resolved_provider,
+            status="PASSED" if margin_ok else "BLOCKED",
+            note=note,
+            entry_price=entry_price,
+            metadata=margin_metadata,
+        )
+        if not margin_ok:
+            raise RuntimeError(
+                "Margin check blocked order: available margin is below the estimated requirement."
+            )
+    order_result = client.place_order(
+        request
     )
     _record_order_audit(
         trade_store,
@@ -255,11 +765,40 @@ def place_order(
         order_id=order_result.order_id,
         entry_price=entry_price,
         message=order_result.message,
+        metadata={
+            "order_type": normalized_order_type,
+            "price": resolved_price,
+            "trigger_price": trigger_price,
+        },
     )
     reconciled = _reconcile_order_status(client, order_result, runtime_config)
+    _ensure_fill_confirmation(reconciled, runtime_config)
+    reconciled = _retry_rejected_order(
+        client,
+        request,
+        reconciled,
+        runtime_config,
+        trade_store,
+        resolved_mode,
+        resolved_provider,
+        resolved_price if resolved_price is not None else entry_price,
+    )
+    _ensure_fill_confirmation(reconciled, runtime_config)
+    reconciled = _retry_partial_fill(
+        client,
+        request,
+        reconciled,
+        runtime_config,
+        trade_store,
+        resolved_mode,
+        resolved_provider,
+        entry_price,
+    )
+    _ensure_fill_confirmation(reconciled, runtime_config)
     if reconciled.order_id != order_result.order_id or reconciled.status != order_result.status:
         log_event(
-            f"[EXECUTION] Order reconciliation | OrderId={reconciled.order_id} | Status={reconciled.status.value}"
+            f"[EXECUTION] Order reconciliation | OrderId={reconciled.order_id} | "
+            f"Status={reconciled.status.value} | Filled={reconciled.filled_quantity}/{reconciled.requested_quantity}"
         )
     _record_order_audit(
         trade_store,
@@ -275,12 +814,83 @@ def place_order(
         order_id=reconciled.order_id,
         entry_price=entry_price,
         message=reconciled.message,
+        metadata={
+            "filled_quantity": reconciled.filled_quantity,
+            "requested_quantity": reconciled.requested_quantity,
+            "pending_quantity": reconciled.pending_quantity,
+            "average_price": reconciled.average_price,
+            "child_order_ids": list(reconciled.child_order_ids),
+        },
+    )
+    _record_slippage_audit(
+        trade_store,
+        signal=signal,
+        quantity=quantity,
+        symbol=symbol,
+        product=product,
+        execution_mode=resolved_mode,
+        provider=resolved_provider,
+        note=note,
+        order_id=reconciled.order_id,
+        reference_price=resolved_price if resolved_price is not None else entry_price,
+        order_result=reconciled,
     )
     if reconciled.status in {OrderStatus.REJECTED, OrderStatus.CANCELLED}:
         raise RuntimeError(
             f"Live order failed with status {reconciled.status.value}: {reconciled.message or 'No broker message'}"
         )
-    return reconciled.order_id
+    return reconciled
+
+
+def place_bracket_order(
+    signal: str,
+    quantity: int,
+    symbol: str,
+    entry_price: float,
+    stop_loss_price: float,
+    target_price: float,
+    note: str | None = None,
+    product: str = "MIS",
+    runtime_config: RuntimeConfig | None = None,
+    trade_store: TradeStore | None = None,
+    execution_provider: str | None = None,
+    execution_mode: str | None = None,
+) -> OrderResult | None:
+    runtime_config = runtime_config or get_runtime_config()
+    if stop_loss_price <= 0 or target_price <= 0:
+        raise ValueError("Bracket orders require positive stop-loss and target prices")
+    if abs(float(entry_price) - float(stop_loss_price)) <= 0:
+        raise ValueError("Bracket orders require entry and stop-loss prices to differ")
+
+    # Kite Connect docs currently expose regular and cover orders, not BO.
+    # We therefore place the entry order and return bracket intent metadata for the caller.
+    entry_result = place_order(
+        signal,
+        quantity,
+        symbol,
+        note=note or "Bracket entry",
+        product=product,
+        entry_price=entry_price,
+        order_type="LIMIT",
+        price=entry_price,
+        runtime_config=runtime_config,
+        trade_store=trade_store,
+        execution_provider=execution_provider,
+        execution_mode=execution_mode,
+        enforce_spread_check=True,
+    )
+    if entry_result is None:
+        return None
+    entry_result.metadata.update(
+        {
+            "bracket_requested": True,
+            "bracket_mode": "SYNTHETIC",
+            "stop_loss_price": stop_loss_price,
+            "target_price": target_price,
+            "note": "Native Kite BO is not wired because current docs expose regular/co varieties; this records synthetic bracket intent.",
+        }
+    )
+    return entry_result
 
 
 def _extract_upstox_error_detail(response: Any) -> str:
@@ -324,3 +934,11 @@ def get_delivery_holdings() -> list[dict[str, Any]]:
 
 def get_nfo_positions() -> list[dict[str, Any]]:
     return _get_broker_client().get_nfo_positions()
+
+
+def get_quote(symbol: str, provider: str | None = None):
+    return _get_broker_client(provider).get_quote(symbol)
+
+
+def get_available_margin(product: str | None = None, provider: str | None = None) -> float | None:
+    return _get_broker_client(provider).get_available_margin(product)

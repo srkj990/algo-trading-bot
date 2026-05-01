@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from brokers.base import OrderRequest, OrderResult, OrderStatus
+from brokers.base import OrderRequest, OrderResult, OrderStatus, Quote
 from brokers.clients import KiteBrokerClient, UpstoxBrokerClient
 from brokers.factory import create_broker_client
 import executor
@@ -38,11 +39,217 @@ class ExecutorTests(unittest.TestCase):
 
     def test_place_order_in_live_mode_uses_broker_client(self) -> None:
         fake_client = Mock()
-        fake_client.place_order.return_value = OrderResult("OID-1", OrderStatus.PENDING)
+        fake_client.get_quote.return_value = Quote("SBIN.NS", 100.0, 99.9, 100.1)
+        fake_client.place_order.return_value = OrderResult(
+            "OID-1",
+            OrderStatus.PENDING,
+            requested_quantity=2,
+            pending_quantity=2,
+        )
+        fake_client.get_order_status.return_value = OrderResult(
+            "OID-1",
+            OrderStatus.FILLED,
+            requested_quantity=2,
+            filled_quantity=2,
+            pending_quantity=0,
+            average_price=100.0,
+        )
         executor.set_execution_mode("LIVE")
         with patch.object(executor, "_get_broker_client", return_value=fake_client):
             result = executor.place_order("BUY", 2, "SBIN.NS", note="Entry", product="CNC")
-        self.assertEqual(result, "OID-1")
+        self.assertEqual(result.order_id, "OID-1")
+        self.assertEqual(result.filled_quantity, 2)
+
+    def test_place_order_passes_limit_order_details(self) -> None:
+        fake_client = Mock()
+        fake_client.get_quote.return_value = Quote("SBIN.NS", 100.0, 99.95, 100.05)
+        fake_client.place_order.return_value = OrderResult(
+            "OID-2",
+            OrderStatus.PENDING,
+            requested_quantity=1,
+            pending_quantity=1,
+        )
+        fake_client.get_order_status.return_value = OrderResult(
+            "OID-2",
+            OrderStatus.FILLED,
+            requested_quantity=1,
+            filled_quantity=1,
+            pending_quantity=0,
+            average_price=99.8,
+        )
+        executor.set_execution_mode("LIVE")
+        with patch.object(executor, "_get_broker_client", return_value=fake_client):
+            executor.place_order(
+                "BUY",
+                1,
+                "SBIN.NS",
+                order_type="LIMIT",
+                price=99.8,
+                entry_price=99.8,
+            )
+        request = fake_client.place_order.call_args.args[0]
+        self.assertEqual(request.order_type, "LIMIT")
+        self.assertEqual(request.price, 99.8)
+
+    def test_place_order_retries_partial_fill(self) -> None:
+        fake_client = Mock()
+        fake_client.get_quote.return_value = Quote("SBIN.NS", 100.0, 99.95, 100.05)
+        fake_client.place_order.side_effect = [
+            OrderResult("OID-1", OrderStatus.PENDING, requested_quantity=5, pending_quantity=5),
+            OrderResult("OID-2", OrderStatus.PENDING, requested_quantity=2, pending_quantity=2),
+        ]
+        fake_client.get_order_status.side_effect = [
+            OrderResult(
+                "OID-1",
+                OrderStatus.PARTIAL,
+                requested_quantity=5,
+                filled_quantity=3,
+                pending_quantity=2,
+                average_price=100.0,
+            ),
+            OrderResult(
+                "OID-2",
+                OrderStatus.FILLED,
+                requested_quantity=2,
+                filled_quantity=2,
+                pending_quantity=0,
+                average_price=100.2,
+            ),
+        ]
+        executor.set_execution_mode("LIVE")
+        with patch.object(executor, "_get_broker_client", return_value=fake_client):
+            result = executor.place_order("BUY", 5, "SBIN.NS", entry_price=100.0)
+        self.assertEqual(result.filled_quantity, 5)
+        self.assertEqual(fake_client.place_order.call_count, 2)
+
+    def test_place_order_blocks_wide_spread(self) -> None:
+        fake_client = Mock()
+        fake_client.get_quote.return_value = Quote("SBIN.NS", 100.0, 94.0, 106.0)
+        executor.set_execution_mode("LIVE")
+        with patch.object(executor, "_get_broker_client", return_value=fake_client):
+            with self.assertRaises(RuntimeError):
+                executor.place_order("BUY", 1, "SBIN.NS", entry_price=100.0)
+
+    def test_place_order_blocks_when_margin_is_insufficient(self) -> None:
+        fake_client = Mock()
+        fake_client.get_quote.return_value = Quote("SBIN.NS", 100.0, 99.95, 100.05)
+        fake_client.get_available_margin.return_value = 50.0
+        runtime_config = replace(
+            executor.get_runtime_config(),
+            orders=replace(executor.get_runtime_config().orders, margin_check_enabled=True),
+        )
+        executor.set_execution_mode("LIVE")
+        with patch.object(executor, "_get_broker_client", return_value=fake_client):
+            with self.assertRaises(RuntimeError):
+                executor.place_order(
+                    "BUY",
+                    1,
+                    "SBIN.NS",
+                    entry_price=100.0,
+                    runtime_config=runtime_config,
+                )
+
+    def test_place_order_retries_rejected_order_with_smaller_limit_order(self) -> None:
+        fake_client = Mock()
+        fake_client.get_quote.return_value = Quote("SBIN.NS", 100.0, 99.9, 100.1)
+        fake_client.get_available_margin.return_value = None
+        fake_client.place_order.side_effect = [
+            OrderResult("OID-10", OrderStatus.PENDING, requested_quantity=4, pending_quantity=4),
+            OrderResult("OID-11", OrderStatus.PENDING, requested_quantity=3, pending_quantity=3),
+        ]
+        fake_client.get_order_status.side_effect = [
+            OrderResult(
+                "OID-10",
+                OrderStatus.REJECTED,
+                requested_quantity=4,
+                filled_quantity=0,
+                pending_quantity=0,
+                message="Price band breach",
+            ),
+            OrderResult(
+                "OID-11",
+                OrderStatus.FILLED,
+                requested_quantity=3,
+                filled_quantity=3,
+                pending_quantity=0,
+                average_price=100.1,
+            ),
+        ]
+        executor.set_execution_mode("LIVE")
+        with patch.object(executor, "_get_broker_client", return_value=fake_client):
+            result = executor.place_order("BUY", 4, "SBIN.NS", entry_price=100.0)
+        self.assertEqual(result.order_id, "OID-11")
+        self.assertEqual(result.filled_quantity, 3)
+        retry_request = fake_client.place_order.call_args_list[1].args[0]
+        self.assertEqual(retry_request.order_type, "LIMIT")
+        self.assertEqual(retry_request.quantity, 3)
+
+    def test_place_order_requires_fill_confirmation(self) -> None:
+        fake_client = Mock()
+        fake_client.get_quote.return_value = Quote("SBIN.NS", 100.0, 99.9, 100.1)
+        fake_client.get_available_margin.return_value = None
+        fake_client.place_order.return_value = OrderResult(
+            "OID-20",
+            OrderStatus.PENDING,
+            requested_quantity=1,
+            pending_quantity=1,
+        )
+        fake_client.get_order_status.return_value = OrderResult(
+            "OID-20",
+            OrderStatus.PENDING,
+            requested_quantity=1,
+            pending_quantity=1,
+        )
+        runtime_config = replace(
+            executor.get_runtime_config(),
+            orders=replace(
+                executor.get_runtime_config().orders,
+                reconcile_attempts=1,
+                fill_confirmation_required=True,
+                rejection_retry_enabled=False,
+                partial_fill_retry_enabled=False,
+            ),
+        )
+        executor.set_execution_mode("LIVE")
+        with patch.object(executor, "_get_broker_client", return_value=fake_client):
+            with self.assertRaises(RuntimeError):
+                executor.place_order(
+                    "BUY",
+                    1,
+                    "SBIN.NS",
+                    entry_price=100.0,
+                    runtime_config=runtime_config,
+                )
+
+    def test_place_bracket_order_marks_synthetic_mode(self) -> None:
+        fake_client = Mock()
+        fake_client.get_quote.return_value = Quote("SBIN.NS", 100.0, 99.95, 100.05)
+        fake_client.place_order.return_value = OrderResult(
+            "OID-3",
+            OrderStatus.PENDING,
+            requested_quantity=1,
+            pending_quantity=1,
+        )
+        fake_client.get_order_status.return_value = OrderResult(
+            "OID-3",
+            OrderStatus.FILLED,
+            requested_quantity=1,
+            filled_quantity=1,
+            pending_quantity=0,
+            average_price=100.0,
+        )
+        executor.set_execution_mode("LIVE")
+        with patch.object(executor, "_get_broker_client", return_value=fake_client):
+            result = executor.place_bracket_order(
+                "BUY",
+                1,
+                "SBIN.NS",
+                entry_price=100.0,
+                stop_loss_price=97.0,
+                target_price=105.0,
+            )
+        self.assertTrue(result.metadata["bracket_requested"])
+        self.assertEqual(result.metadata["bracket_mode"], "SYNTHETIC")
 
     def test_get_broker_client_caches_by_provider(self) -> None:
         with patch.object(executor, "create_broker_client", return_value=Mock()) as factory:

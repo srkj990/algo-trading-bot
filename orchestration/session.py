@@ -18,7 +18,12 @@ from engines.common import (
     get_deployed_capital,
     log_positions,
 )
-from fno_data_fetcher import get_contract_lot_size
+from fno_data_fetcher import (
+    get_atm_option_strike,
+    get_contract_lot_size,
+    get_option_greeks_snapshot,
+    resolve_option_contract,
+)
 from models.position_adapter import opposite_side, position_entry_price, position_quantity, position_side
 from risk_manager import (
     atr_position_size,
@@ -40,6 +45,166 @@ def log_order_signal_banner(log_event, title, lines):
     for line in lines:
         log_event(f"[ORDER] {line}")
     log_event(border)
+
+
+def _resolve_entry_order_type(context) -> str:
+    return str(context.runtime_config.orders.default_entry_order_type or "MARKET").upper()
+
+
+def _resolve_limit_price(entry_price: float, side: str, buffer_pct: float) -> float:
+    price = float(entry_price)
+    buffer = price * float(buffer_pct or 0.0)
+    if side == "BUY":
+        return price + buffer
+    return max(0.01, price - buffer)
+
+
+def _build_intraday_option_position_from_roll(context, current_position, symbol, qty, entry_price, analytics, now):
+    stop_distance = float(entry_price) * 0.10
+    stop_loss_price = float(entry_price) - stop_distance
+    target_distance = float(entry_price) * 0.20
+    trailing_distance = float(entry_price) * 0.075
+    target_price = calculate_target_price("BUY", float(entry_price), target_distance)
+    trailing_stop = float(stop_loss_price)
+    trailing_activation_distance = max(
+        float(trailing_distance or 0.0),
+        float(stop_distance) * float(TRAILING_ACTIVATION_STOP_DISTANCE_MULTIPLIER or 0.0),
+    )
+    return build_position(
+        symbol=symbol,
+        side="BUY",
+        quantity=qty,
+        entry_price=float(entry_price),
+        stop_loss=stop_loss_price,
+        target=target_price,
+        trailing_stop=trailing_stop,
+        trailing_distance=trailing_distance,
+        trailing_activation_distance=trailing_activation_distance,
+        trailing_active=False,
+        atr=current_position.get("atr"),
+        stop_distance=stop_distance,
+        lot_size=get_contract_lot_size(symbol),
+        entry_analytics=analytics,
+        entry_time=now.isoformat(),
+        engine_name=context.engine.name,
+        execution_mode=context.config.execution_mode,
+        order_product=context.engine.order_product,
+        trade_identity=current_position.get("trade_identity"),
+        dynamic_atm_roll_enabled=True,
+        strike_offset=current_position.get("strike_offset", 0),
+        strike_offset_mode=current_position.get("strike_offset_mode", "ATM"),
+        entry_underlying_price=analytics.get("underlying_price"),
+        rolled_from=current_position.get("symbol"),
+        roll_count=int(current_position.get("roll_count", 0)) + 1,
+    )
+
+
+def _maybe_roll_dynamic_atm_positions(context, symbol_snapshots, now) -> bool:
+    cfg = context.config
+    if context.engine.name != "intraday_options" or not cfg.atm_option_config:
+        return False
+
+    roll_trigger_pct = float(context.runtime_config.fno.intraday_options_roll_trigger_pct or 0.0)
+    if roll_trigger_pct <= 0:
+        return False
+
+    state_changed = False
+    for symbol, position in list(context.positions.items()):
+        if not position.get("dynamic_atm_roll_enabled"):
+            continue
+        snapshot = symbol_snapshots.get(symbol)
+        analytics = (snapshot or {}).get("analytics") or position.get("entry_analytics") or {}
+        entry_underlying_price = float(position.get("entry_underlying_price") or analytics.get("underlying_price") or 0.0)
+        current_underlying_price = float(analytics.get("underlying_price") or 0.0)
+        if entry_underlying_price <= 0 or current_underlying_price <= 0:
+            continue
+        move_pct = abs(current_underlying_price - entry_underlying_price) / entry_underlying_price
+        if move_pct < (roll_trigger_pct / 100.0):
+            continue
+
+        underlying = analytics.get("underlying")
+        option_type = analytics.get("option_type")
+        expiry = analytics.get("expiry") or cfg.atm_option_config.get("expiry")
+        strike_offset = int(position.get("strike_offset", 0))
+        if not underlying or option_type not in {"CE", "PE"} or not expiry:
+            continue
+
+        new_strike = get_atm_option_strike(underlying, expiry, option_type, strike_offset=strike_offset)
+        new_symbol = resolve_option_contract(underlying, expiry, new_strike, option_type)
+        if new_symbol == symbol:
+            position["entry_underlying_price"] = current_underlying_price
+            state_changed = True
+            continue
+
+        option_data = context.fetch_data(new_symbol, period=context.engine.data_period, interval=context.engine.data_interval)
+        if option_data.empty:
+            context.log_event(f"[ROLL] Skipping roll for {symbol}: no data for {new_symbol}", "warning")
+            continue
+        new_entry_price = float(option_data.iloc[-1]["Close"])
+        new_analytics = get_option_greeks_snapshot(new_symbol)
+
+        context.log_event(
+            f"[ROLL] Rolling {symbol} -> {new_symbol} | Underlying move={move_pct * 100:.2f}% | "
+            f"{entry_underlying_price:.2f}->{current_underlying_price:.2f}"
+        )
+        closed = position_flow.close_position_symbols(
+            context.engine,
+            context.positions,
+            [symbol],
+            reason=f"Strike roll {move_pct * 100:.2f}%",
+            trade_book=context.trade_book,
+            trade_store=context.trade_store,
+            place_order=context.place_order,
+            log_order_signal_banner=lambda title, lines: log_order_signal_banner(context.log_event, title, lines),
+            fetch_data=context.fetch_data,
+            log_event=context.log_event,
+            transaction_cost_model_enabled=TRANSACTION_COST_MODEL_ENABLED,
+            slippage_pct_per_side=float(TRANSACTION_SLIPPAGE_PCT_PER_SIDE or 0.0),
+            symbol_snapshots=symbol_snapshots,
+            exit_time=now,
+        )
+        if not closed:
+            continue
+
+        requested_qty = int(position_quantity(position))
+        order_type = _resolve_entry_order_type(context)
+        limit_price = None
+        if order_type == "LIMIT":
+            limit_price = _resolve_limit_price(
+                new_entry_price,
+                "BUY",
+                context.runtime_config.orders.entry_limit_price_buffer_pct,
+            )
+        order_result = context.place_order(
+            "BUY",
+            requested_qty,
+            new_symbol,
+            note=f"Strike roll from {symbol}",
+            product=context.engine.order_product,
+            entry_price=new_entry_price,
+            order_type=order_type,
+            price=limit_price,
+            enforce_spread_check=True,
+            enforce_margin_check=True,
+        )
+        if order_result is None or int(order_result.filled_quantity or 0) <= 0:
+            context.log_event(f"[ROLL] Roll entry for {new_symbol} did not fill", "warning")
+            state_changed = True
+            continue
+
+        qty = int(order_result.filled_quantity)
+        actual_entry_price = float(order_result.average_price or new_entry_price)
+        context.positions[new_symbol] = _build_intraday_option_position_from_roll(
+            context,
+            position,
+            new_symbol,
+            qty,
+            actual_entry_price,
+            new_analytics,
+            now,
+        )
+        state_changed = True
+    return state_changed
 
 
 def run_trading_session(context):
@@ -129,6 +294,8 @@ def run_trading_session(context):
                 float(TRANSACTION_SLIPPAGE_PCT_PER_SIDE or 0.0),
             )
             if state_changed:
+                persist_runtime_state(context)
+            if _maybe_roll_dynamic_atm_positions(context, symbol_snapshots, now):
                 persist_runtime_state(context)
 
         deployed_capital = get_deployed_capital(context.positions)
@@ -259,6 +426,7 @@ def _execute_pair_entry(context, candidate, now, deployed_capital):
     for leg_entry in leg_entries:
         leg_symbol = leg_entry["symbol"]
         qty = max_pair_lots * leg_entry["lot_size"]
+        requested_qty = qty
         target_distance = leg_entry["stop_data"]["stop_distance"] * cfg.target_risk_reward
         trailing_distance = leg_entry["atr"] * cfg.trailing_atr_multiplier
         target_price = calculate_target_price(candidate["signal"], leg_entry["entry_price"], target_distance)
@@ -282,8 +450,36 @@ def _execute_pair_entry(context, candidate, now, deployed_capital):
                     f"Trail: {trailing_stop:.2f}",
                 ],
             )
-            order_id = context.place_order(candidate["signal"], qty, leg_symbol, note=f"Pair entry {pair_id}", product=engine.order_product)
-            context.log_event(f"[ORDER] Pair leg accepted | Symbol={leg_symbol} | OrderId={order_id}")
+            order_type = _resolve_entry_order_type(context)
+            limit_price = None
+            if order_type == "LIMIT":
+                limit_price = _resolve_limit_price(
+                    leg_entry["entry_price"],
+                    candidate["signal"],
+                    context.runtime_config.orders.entry_limit_price_buffer_pct,
+                )
+            order_result = context.place_order(
+                candidate["signal"],
+                qty,
+                leg_symbol,
+                note=f"Pair entry {pair_id}",
+                product=engine.order_product,
+                entry_price=leg_entry["entry_price"],
+                order_type=order_type,
+                price=limit_price,
+                enforce_spread_check=True,
+            )
+            if order_result is None or int(order_result.filled_quantity or 0) <= 0:
+                context.log_event(
+                    f"[ORDER] Pair leg not filled yet | Symbol={leg_symbol} | Requested={requested_qty}",
+                    "warning",
+                )
+                continue
+            qty = int(order_result.filled_quantity)
+            context.log_event(
+                f"[ORDER] Pair leg accepted | Symbol={leg_symbol} | OrderId={order_result.order_id} | "
+                f"Filled={qty}/{requested_qty}"
+            )
         except Exception:
             if entered_pair_symbols:
                 context.log_event(
@@ -310,7 +506,7 @@ def _execute_pair_entry(context, candidate, now, deployed_capital):
             symbol=leg_symbol,
             side=candidate["signal"],
             quantity=qty,
-            entry_price=leg_entry["entry_price"],
+            entry_price=float(order_result.average_price or leg_entry["entry_price"]),
             stop_loss=leg_entry["stop_data"]["stop_loss_price"],
             target=target_price,
             trailing_stop=trailing_stop,
@@ -334,10 +530,11 @@ def _execute_pair_entry(context, candidate, now, deployed_capital):
             engine_name=engine.name,
             execution_mode=context.config.execution_mode,
             order_product=engine.order_product,
+            trade_identity=pair_config["underlying"],
         )
         entered_pair_symbols.append(leg_symbol)
         context.traded_symbols_today.add(leg_symbol)
-        estimated_trade_capital += leg_entry["entry_price"] * qty
+        estimated_trade_capital += float(order_result.average_price or leg_entry["entry_price"]) * qty
 
     if trade_key:
         context.trade_counts_today[trade_key] = int(context.trade_counts_today.get(trade_key, 0)) + 1
@@ -484,13 +681,43 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
             f"OptionType: {(analytics.get('option_type') or 'N/A').upper()} | StrikeMode: {cfg.atm_option_config.get('strike_offset_mode', 'N/A') if cfg.atm_option_config else 'N/A'}"
         )
     log_order_signal_banner(context.log_event, "SINGLE ENTRY", entry_lines)
-    order_id = context.place_order(candidate["signal"], qty, symbol, note="Entry", product=engine.order_product)
-    context.log_event(f"[ORDER] Entry accepted | Symbol={symbol} | OrderId={order_id}")
+    requested_qty = qty
+    order_type = _resolve_entry_order_type(context)
+    limit_price = None
+    if order_type == "LIMIT":
+        limit_price = _resolve_limit_price(
+            entry_price,
+            candidate["signal"],
+            context.runtime_config.orders.entry_limit_price_buffer_pct,
+        )
+    order_result = context.place_order(
+        candidate["signal"],
+        qty,
+        symbol,
+        note="Entry",
+        product=engine.order_product,
+        entry_price=entry_price,
+        order_type=order_type,
+        price=limit_price,
+        enforce_spread_check=True,
+    )
+    if order_result is None or int(order_result.filled_quantity or 0) <= 0:
+        context.log_event(
+            f"[ORDER] Entry not filled yet | Symbol={symbol} | Requested={requested_qty}",
+            "warning",
+        )
+        return False
+    qty = int(order_result.filled_quantity)
+    actual_entry_price = float(order_result.average_price or entry_price)
+    estimated_trade_capital = actual_entry_price * qty
+    context.log_event(
+        f"[ORDER] Entry accepted | Symbol={symbol} | OrderId={order_result.order_id} | Filled={qty}/{requested_qty}"
+    )
     context.positions[symbol] = build_position(
         symbol=symbol,
         side=candidate["signal"],
         quantity=qty,
-        entry_price=entry_price,
+        entry_price=actual_entry_price,
         stop_loss=stop_data["stop_loss_price"],
         target=target_price,
         trailing_stop=trailing_stop,
@@ -505,6 +732,11 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
         engine_name=engine.name,
         execution_mode=context.config.execution_mode,
         order_product=engine.order_product,
+        trade_identity=trade_identity,
+        dynamic_atm_roll_enabled=bool(engine.name == "intraday_options" and cfg.atm_option_config),
+        strike_offset=candidate.get("strike_offset", 0),
+        strike_offset_mode=candidate.get("strike_offset_mode", "ATM"),
+        entry_underlying_price=(candidate.get("analytics") or {}).get("underlying_price"),
     )
     context.traded_symbols_today.add(trade_identity)
     if hasattr(engine, "get_trade_frequency_key"):
@@ -552,6 +784,9 @@ def handle_keyboard_interrupt(context):
             symbol,
             note="User-initiated emergency close-out",
             product=context.engine.order_product,
+            enforce_spread_check=False,
+            enforce_margin_check=False,
+            entry_price=exit_price,
         )
         position_flow.record_closed_trade(
             context.trade_book,

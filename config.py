@@ -359,10 +359,23 @@ class DataCacheConfig:
 class OrderValidationConfig:
     enabled: bool
     allowed_products: tuple[str, ...]
+    allowed_order_types: tuple[str, ...]
     min_quantity: int
     max_live_order_notional: float
     reconcile_attempts: int
     reconcile_delay_seconds: float
+    fill_confirmation_required: bool
+    default_entry_order_type: str
+    entry_limit_price_buffer_pct: float
+    max_spread_pct: float
+    margin_check_enabled: bool
+    margin_buffer_pct: float
+    partial_fill_retry_enabled: bool
+    partial_fill_retry_attempts: int
+    rejection_retry_enabled: bool
+    rejection_retry_attempts: int
+    rejection_retry_reduce_quantity_pct: float
+    rejection_retry_price_buffer_pct: float
 
     def validate(self) -> None:
         if self.min_quantity < 1:
@@ -373,8 +386,26 @@ class OrderValidationConfig:
             raise ValueError("orders.reconcile_attempts must be >= 1")
         if self.reconcile_delay_seconds < 0:
             raise ValueError("orders.reconcile_delay_seconds must be >= 0")
+        if self.margin_buffer_pct < 0:
+            raise ValueError("orders.margin_buffer_pct must be >= 0")
         if not self.allowed_products:
             raise ValueError("orders.allowed_products cannot be empty")
+        if not self.allowed_order_types:
+            raise ValueError("orders.allowed_order_types cannot be empty")
+        if self.default_entry_order_type not in self.allowed_order_types:
+            raise ValueError("orders.default_entry_order_type must be allowed")
+        if self.entry_limit_price_buffer_pct < 0:
+            raise ValueError("orders.entry_limit_price_buffer_pct must be >= 0")
+        if self.max_spread_pct < 0:
+            raise ValueError("orders.max_spread_pct must be >= 0")
+        if self.partial_fill_retry_attempts < 0:
+            raise ValueError("orders.partial_fill_retry_attempts must be >= 0")
+        if self.rejection_retry_attempts < 0:
+            raise ValueError("orders.rejection_retry_attempts must be >= 0")
+        if not 0 <= self.rejection_retry_reduce_quantity_pct < 1:
+            raise ValueError("orders.rejection_retry_reduce_quantity_pct must be between 0 and 1")
+        if self.rejection_retry_price_buffer_pct < 0:
+            raise ValueError("orders.rejection_retry_price_buffer_pct must be >= 0")
 
 
 @dataclass(frozen=True)
@@ -436,6 +467,9 @@ class FnoConfig:
     intraday_options_regime_sideways_range_pct: float
     intraday_options_regime_sideways_vwap_dev_pct: float
     intraday_options_regime_expansion_iv_change_pct: float
+    intraday_options_roll_trigger_pct: float
+    intraday_options_theta_exit_ratio: float
+    intraday_options_theta_exit_min_minutes: int
 
     def validate(self) -> None:
         if not self.underlying_details:
@@ -458,6 +492,12 @@ class FnoConfig:
             raise ValueError("fno.intraday_options_min_signal_score must be >= 0")
         if self.intraday_options_max_hold_minutes < 0:
             raise ValueError("fno.intraday_options_max_hold_minutes must be >= 0")
+        if self.intraday_options_roll_trigger_pct < 0:
+            raise ValueError("fno.intraday_options_roll_trigger_pct must be >= 0")
+        if self.intraday_options_theta_exit_ratio < 0:
+            raise ValueError("fno.intraday_options_theta_exit_ratio must be >= 0")
+        if self.intraday_options_theta_exit_min_minutes < 0:
+            raise ValueError("fno.intraday_options_theta_exit_min_minutes must be >= 0")
 
 
 @dataclass(frozen=True)
@@ -553,6 +593,7 @@ def _default_runtime_config_map() -> dict[str, Any]:
                 default=True,
             ),
             "allowed_products": ("MIS", "CNC", "NRML"),
+            "allowed_order_types": ("MARKET", "LIMIT", "SL", "SL-M"),
             "min_quantity": int(os.getenv("ORDER_MIN_QUANTITY", "1")),
             "max_live_order_notional": float(
                 os.getenv("ORDER_MAX_LIVE_ORDER_NOTIONAL", "0")
@@ -560,6 +601,42 @@ def _default_runtime_config_map() -> dict[str, Any]:
             "reconcile_attempts": int(os.getenv("ORDER_RECONCILE_ATTEMPTS", "3")),
             "reconcile_delay_seconds": float(
                 os.getenv("ORDER_RECONCILE_DELAY_SECONDS", "1.5")
+            ),
+            "fill_confirmation_required": _parse_bool(
+                os.getenv("ORDER_FILL_CONFIRMATION_REQUIRED", "1"),
+                default=True,
+            ),
+            "default_entry_order_type": os.getenv(
+                "ORDER_DEFAULT_ENTRY_ORDER_TYPE", "MARKET"
+            ).upper(),
+            "entry_limit_price_buffer_pct": float(
+                os.getenv("ORDER_ENTRY_LIMIT_PRICE_BUFFER_PCT", "0")
+            ),
+            "max_spread_pct": float(os.getenv("ORDER_MAX_SPREAD_PCT", "0.05")),
+            "margin_check_enabled": _parse_bool(
+                os.getenv("ORDER_MARGIN_CHECK_ENABLED", "1"),
+                default=True,
+            ),
+            "margin_buffer_pct": float(os.getenv("ORDER_MARGIN_BUFFER_PCT", "0.05")),
+            "partial_fill_retry_enabled": _parse_bool(
+                os.getenv("ORDER_PARTIAL_FILL_RETRY_ENABLED", "1"),
+                default=True,
+            ),
+            "partial_fill_retry_attempts": int(
+                os.getenv("ORDER_PARTIAL_FILL_RETRY_ATTEMPTS", "1")
+            ),
+            "rejection_retry_enabled": _parse_bool(
+                os.getenv("ORDER_REJECTION_RETRY_ENABLED", "1"),
+                default=True,
+            ),
+            "rejection_retry_attempts": int(
+                os.getenv("ORDER_REJECTION_RETRY_ATTEMPTS", "2")
+            ),
+            "rejection_retry_reduce_quantity_pct": float(
+                os.getenv("ORDER_REJECTION_RETRY_REDUCE_QUANTITY_PCT", "0.25")
+            ),
+            "rejection_retry_price_buffer_pct": float(
+                os.getenv("ORDER_REJECTION_RETRY_PRICE_BUFFER_PCT", "0.002")
             ),
         },
         "trade_store": {
@@ -720,6 +797,15 @@ def _default_runtime_config_map() -> dict[str, Any]:
             "intraday_options_regime_expansion_iv_change_pct": float(
                 os.getenv("INTRADAY_OPTIONS_REGIME_EXPANSION_IV_CHANGE_PCT", "2.0")
             ),
+            "intraday_options_roll_trigger_pct": float(
+                os.getenv("INTRADAY_OPTIONS_ROLL_TRIGGER_PCT", "2.0")
+            ),
+            "intraday_options_theta_exit_ratio": float(
+                os.getenv("INTRADAY_OPTIONS_THETA_EXIT_RATIO", "0.08")
+            ),
+            "intraday_options_theta_exit_min_minutes": int(
+                os.getenv("INTRADAY_OPTIONS_THETA_EXIT_MIN_MINUTES", "10")
+            ),
         },
     }
 
@@ -733,11 +819,42 @@ def _build_runtime_config() -> RuntimeConfig:
         data_cache=DataCacheConfig(**merged["data_cache"]),
         orders=OrderValidationConfig(
             allowed_products=tuple(merged["orders"]["allowed_products"]),
+            allowed_order_types=tuple(merged["orders"]["allowed_order_types"]),
             enabled=bool(merged["orders"]["enabled"]),
             min_quantity=int(merged["orders"]["min_quantity"]),
             max_live_order_notional=float(merged["orders"]["max_live_order_notional"]),
             reconcile_attempts=int(merged["orders"]["reconcile_attempts"]),
             reconcile_delay_seconds=float(merged["orders"]["reconcile_delay_seconds"]),
+            fill_confirmation_required=bool(
+                merged["orders"]["fill_confirmation_required"]
+            ),
+            default_entry_order_type=str(
+                merged["orders"]["default_entry_order_type"]
+            ).upper(),
+            entry_limit_price_buffer_pct=float(
+                merged["orders"]["entry_limit_price_buffer_pct"]
+            ),
+            max_spread_pct=float(merged["orders"]["max_spread_pct"]),
+            margin_check_enabled=bool(merged["orders"]["margin_check_enabled"]),
+            margin_buffer_pct=float(merged["orders"]["margin_buffer_pct"]),
+            partial_fill_retry_enabled=bool(
+                merged["orders"]["partial_fill_retry_enabled"]
+            ),
+            partial_fill_retry_attempts=int(
+                merged["orders"]["partial_fill_retry_attempts"]
+            ),
+            rejection_retry_enabled=bool(
+                merged["orders"]["rejection_retry_enabled"]
+            ),
+            rejection_retry_attempts=int(
+                merged["orders"]["rejection_retry_attempts"]
+            ),
+            rejection_retry_reduce_quantity_pct=float(
+                merged["orders"]["rejection_retry_reduce_quantity_pct"]
+            ),
+            rejection_retry_price_buffer_pct=float(
+                merged["orders"]["rejection_retry_price_buffer_pct"]
+            ),
         ),
         trade_store=TradeStoreConfig(**merged["trade_store"]),
         logging=LoggingConfig(**merged["logging"]),
@@ -843,4 +960,13 @@ INTRADAY_OPTIONS_REGIME_SIDEWAYS_VWAP_DEV_PCT = (
 )
 INTRADAY_OPTIONS_REGIME_EXPANSION_IV_CHANGE_PCT = (
     RUNTIME_CONFIG.fno.intraday_options_regime_expansion_iv_change_pct
+)
+INTRADAY_OPTIONS_ROLL_TRIGGER_PCT = (
+    RUNTIME_CONFIG.fno.intraday_options_roll_trigger_pct
+)
+INTRADAY_OPTIONS_THETA_EXIT_RATIO = (
+    RUNTIME_CONFIG.fno.intraday_options_theta_exit_ratio
+)
+INTRADAY_OPTIONS_THETA_EXIT_MIN_MINUTES = (
+    RUNTIME_CONFIG.fno.intraday_options_theta_exit_min_minutes
 )
