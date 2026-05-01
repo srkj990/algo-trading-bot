@@ -314,11 +314,18 @@ class IntradayOptionsEngineTests(unittest.TestCase):
         self.assertEqual(self.engine.get_entry_profile("ATM_VWAP_REVERSION"), "MEAN_REVERSION")
         self.assertEqual(self.engine.get_entry_profile("ATM_IV_EXPANSION"), "VOLATILITY")
 
+    def test_build_volatility_regime_context_classifies_expansion(self) -> None:
+        regime = self.engine.build_volatility_regime_context(
+            self._volatility_session_df(),
+            {"iv_change_15m_pct": 4.0},
+        )
+        self.assertEqual(regime["label"], "EXPANSION")
+
     def test_validate_momentum_entry_arms_setup_on_breakout_candle(self) -> None:
         passed, reason = self.engine.validate_momentum_entry(
             "BUY",
             self._option_session_df(),
-            {"underlying_bias": "BULLISH"},
+            {"underlying_bias": "BULLISH", "volatility_regime": "NORMAL"},
             latest_close=105.8,
             option_vwap=103.0,
             strategy_name="ATM_MOMENTUM",
@@ -335,7 +342,7 @@ class IntradayOptionsEngineTests(unittest.TestCase):
         self.engine.validate_momentum_entry(
             "BUY",
             breakout_df,
-            {"underlying_bias": "BULLISH"},
+            {"underlying_bias": "BULLISH", "volatility_regime": "NORMAL"},
             latest_close=105.8,
             option_vwap=103.0,
             strategy_name="ATM_MOMENTUM",
@@ -351,7 +358,7 @@ class IntradayOptionsEngineTests(unittest.TestCase):
         passed, reason = self.engine.validate_momentum_entry(
             "BUY",
             confirmation_df,
-            {"underlying_bias": "BULLISH"},
+            {"underlying_bias": "BULLISH", "volatility_regime": "NORMAL"},
             latest_close=106.55,
             option_vwap=103.8,
             strategy_name="ATM_MOMENTUM",
@@ -368,7 +375,7 @@ class IntradayOptionsEngineTests(unittest.TestCase):
         self.engine.validate_momentum_entry(
             "BUY",
             breakout_df,
-            {"underlying_bias": "BULLISH"},
+            {"underlying_bias": "BULLISH", "volatility_regime": "NORMAL"},
             latest_close=105.8,
             option_vwap=103.0,
             strategy_name="ATM_MOMENTUM",
@@ -384,7 +391,7 @@ class IntradayOptionsEngineTests(unittest.TestCase):
         self.engine.validate_momentum_entry(
             "BUY",
             confirmation_df,
-            {"underlying_bias": "BULLISH"},
+            {"underlying_bias": "BULLISH", "volatility_regime": "NORMAL"},
             latest_close=106.55,
             option_vwap=103.8,
             strategy_name="ATM_MOMENTUM",
@@ -400,7 +407,7 @@ class IntradayOptionsEngineTests(unittest.TestCase):
         passed, reason = self.engine.validate_momentum_entry(
             "BUY",
             pullback_df,
-            {"underlying_bias": "BULLISH"},
+            {"underlying_bias": "BULLISH", "volatility_regime": "NORMAL"},
             latest_close=105.7,
             option_vwap=105.1,
             strategy_name="ATM_MOMENTUM",
@@ -415,7 +422,7 @@ class IntradayOptionsEngineTests(unittest.TestCase):
         passed, reason = self.engine.validate_momentum_entry(
             "BUY",
             df,
-            {"underlying_bias": "BULLISH"},
+            {"underlying_bias": "BULLISH", "volatility_regime": "NORMAL"},
             latest_close=105.8,
             option_vwap=103.0,
             strategy_name="ATM_MOMENTUM",
@@ -427,7 +434,7 @@ class IntradayOptionsEngineTests(unittest.TestCase):
         passed, reason = self.engine.validate_momentum_entry(
             "BUY",
             self._option_session_df(),
-            {"underlying_bias": "BEARISH"},
+            {"underlying_bias": "BEARISH", "volatility_regime": "NORMAL"},
             latest_close=105.8,
             option_vwap=103.0,
             strategy_name="ATM_MOMENTUM",
@@ -435,16 +442,39 @@ class IntradayOptionsEngineTests(unittest.TestCase):
         self.assertFalse(passed)
         self.assertIn("trend alignment failed", reason)
 
+    def test_validate_momentum_entry_blocks_in_sideways_regime(self) -> None:
+        passed, reason = self.engine.validate_momentum_entry(
+            "BUY",
+            self._option_session_df(),
+            {"underlying_bias": "BULLISH", "volatility_regime": "SIDEWAYS"},
+            latest_close=105.8,
+            option_vwap=103.0,
+            strategy_name="ATM_MOMENTUM",
+        )
+        self.assertFalse(passed)
+        self.assertIn("SIDEWAYS", reason)
+
     def test_validate_mean_reversion_entry_passes_for_vwap_retest(self) -> None:
         passed, reason = self.engine.validate_mean_reversion_entry(
             "BUY",
             self._mean_reversion_session_df(),
-            {"underlying_bias": "BULLISH"},
+            {"underlying_bias": "BULLISH", "volatility_regime": "NORMAL"},
             latest_close=102.9,
             option_vwap=102.4,
         )
         self.assertTrue(passed)
         self.assertIn("passed", reason)
+
+    def test_validate_mean_reversion_entry_blocks_in_expansion_regime(self) -> None:
+        passed, reason = self.engine.validate_mean_reversion_entry(
+            "BUY",
+            self._mean_reversion_session_df(),
+            {"underlying_bias": "BULLISH", "volatility_regime": "EXPANSION"},
+            latest_close=102.9,
+            option_vwap=102.4,
+        )
+        self.assertFalse(passed)
+        self.assertIn("EXPANSION", reason)
 
     def test_validate_mean_reversion_entry_blocks_when_price_misses_vwap_retest(self) -> None:
         passed, reason = self.engine.validate_mean_reversion_entry(
@@ -465,6 +495,7 @@ class IntradayOptionsEngineTests(unittest.TestCase):
                 "underlying_bias": "BULLISH",
                 "iv_percentile": 35.0,
                 "iv_change_15m_pct": 4.0,
+                "volatility_regime": "EXPANSION",
             },
             latest_close=103.8,
             option_vwap=102.6,
@@ -480,12 +511,29 @@ class IntradayOptionsEngineTests(unittest.TestCase):
                 "underlying_bias": "BULLISH",
                 "iv_percentile": 35.0,
                 "iv_change_15m_pct": -1.0,
+                "volatility_regime": "EXPANSION",
             },
             latest_close=103.8,
             option_vwap=102.6,
         )
         self.assertFalse(passed)
         self.assertIn("IV percentile unavailable or short-term IV change is not supportive", reason)
+
+    def test_validate_volatility_entry_blocks_in_sideways_regime(self) -> None:
+        passed, reason = self.engine.validate_volatility_entry(
+            "BUY",
+            self._volatility_session_df(),
+            {
+                "underlying_bias": "BULLISH",
+                "iv_percentile": 35.0,
+                "iv_change_15m_pct": 4.0,
+                "volatility_regime": "SIDEWAYS",
+            },
+            latest_close=103.8,
+            option_vwap=102.6,
+        )
+        self.assertFalse(passed)
+        self.assertIn("SIDEWAYS", reason)
 
     def test_apply_signal_filters_blocks_momentum_profile_when_validator_fails(self) -> None:
         evaluation = {
@@ -601,6 +649,68 @@ class IntradayOptionsEngineTests(unittest.TestCase):
             )
         self.assertEqual(filtered["signal"], "HOLD")
         self.assertEqual(filtered["options_filter_note"], "Volatility validator blocked")
+
+    def test_apply_signal_filters_routes_atm_multi_to_momentum_validator(self) -> None:
+        evaluation = {
+            "signal": "BUY",
+            "agreement_count": 1,
+            "score": 1.5,
+            "strategy": "ATM_MULTI",
+            "selected_profile": "MOMENTUM",
+            "details": {"ATM_MULTI": {"selected_profile": "MOMENTUM"}},
+        }
+        analytics = {
+            "underlying": "NIFTY",
+            "underlying_bias": "BULLISH",
+            "option_type": "CE",
+            "option_price": 120.0,
+            "delta": 0.35,
+            "iv": 0.2,
+            "iv_percentile": 40.0,
+            "days_to_expiry": 3,
+        }
+        with patch.object(self.engine, "get_underlying_bias", return_value={"bias": "BULLISH", "ema": 100.0, "vwap": 99.0, "close": 101.0}), \
+             patch.object(self.engine, "validate_momentum_entry", return_value=(False, "Momentum validator blocked")) as momentum_validator, \
+             patch.object(self.engine, "validate_mean_reversion_entry") as mean_reversion_validator:
+            filtered = self.engine.apply_signal_filters(
+                evaluation,
+                self._option_session_df(),
+                analytics=analytics,
+            )
+        momentum_validator.assert_called_once()
+        mean_reversion_validator.assert_not_called()
+        self.assertEqual(filtered["options_filter_note"], "Momentum validator blocked")
+
+    def test_apply_signal_filters_routes_atm_multi_to_mean_reversion_validator(self) -> None:
+        evaluation = {
+            "signal": "BUY",
+            "agreement_count": 1,
+            "score": 1.5,
+            "strategy": "ATM_MULTI",
+            "selected_profile": "MEAN_REVERSION",
+            "details": {"ATM_MULTI": {"selected_profile": "MEAN_REVERSION"}},
+        }
+        analytics = {
+            "underlying": "NIFTY",
+            "underlying_bias": "BULLISH",
+            "option_type": "CE",
+            "option_price": 120.0,
+            "delta": 0.35,
+            "iv": 0.2,
+            "iv_percentile": 40.0,
+            "days_to_expiry": 3,
+        }
+        with patch.object(self.engine, "get_underlying_bias", return_value={"bias": "BULLISH", "ema": 100.0, "vwap": 99.0, "close": 101.0}), \
+             patch.object(self.engine, "validate_momentum_entry") as momentum_validator, \
+             patch.object(self.engine, "validate_mean_reversion_entry", return_value=(False, "Mean reversion validator blocked")) as mean_reversion_validator:
+            filtered = self.engine.apply_signal_filters(
+                evaluation,
+                self._mean_reversion_session_df(),
+                analytics=analytics,
+            )
+        momentum_validator.assert_not_called()
+        mean_reversion_validator.assert_called_once()
+        self.assertEqual(filtered["options_filter_note"], "Mean reversion validator blocked")
 
 
 if __name__ == "__main__":

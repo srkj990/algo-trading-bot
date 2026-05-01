@@ -20,6 +20,7 @@ Recent UX/runtime improvements now also include:
 
 Recent architecture improvements now also include:
 
+- structured runtime config sections with validation plus optional `config.runtime.yaml` overrides
 - typed `Position` foundation with validation, exit evaluation, and trailing-stop logic
 - `TradingEngine` and `BrokerClient` abstract base layers
 - broker client factory for `KITE` and `UPSTOX`
@@ -29,6 +30,9 @@ Recent architecture improvements now also include:
 - extracted `orchestration/session.py` and `orchestration/signal_workflow.py` for runtime supervision and scan logic
 - provider-based `data_providers/` plugins behind a shared market-data service
 - dependency-wired trading context for engine, broker, data, logger, and persisted runtime state
+- market-data caching at both the shared provider layer and the per-cycle trading-context layer
+- structured trade and order-audit persistence under `state/trade_store/`
+- live-order pre-flight validation plus broker order-status reconciliation
 - quality-tooling config for `mypy`, `ruff`, and `pre-commit`
 - lazy engine package loading so foundational tests do not require broker SDK imports
 
@@ -111,6 +115,40 @@ Recent architecture improvements now also include:
 - configurable max open positions and deployment caps
 - one-trade-per-symbol-per-day control
 - persisted positions, traded symbols, trade-day tracking, and regime cache
+- persistent trade-book and order-audit JSONL records under `state/trade_store/`
+
+## Runtime Config
+
+Runtime defaults now live behind a structured `RuntimeConfig` in [config.py](./config.py). Existing constant aliases still work, but the main source of truth is now grouped into validated sections such as:
+
+- `strategy`
+- `execution_safety`
+- `transaction_costs`
+- `data_cache`
+- `orders`
+- `trade_store`
+- `logging`
+- `universe`
+- `fno`
+
+Optional file-based overrides can be supplied with [config.runtime.yaml.example](./config.runtime.yaml.example) copied to `config.runtime.yaml`.
+
+Current behavior:
+
+- startup validates the runtime config before the session begins
+- invalid values such as negative cache TTLs or zero min quantities fail fast
+- YAML overrides are merged on top of the built-in defaults
+- the old constant imports remain available for compatibility while newer code reads structured sections
+
+## Caching And Audit Safety
+
+The runtime now includes a couple of operational safety upgrades that matter during live or frequent intraday scans:
+
+- repeated candle requests are cached inside `MarketDataService` for a short TTL
+- the trading context also keeps a per-cycle cache so repeated fetches for the same symbol and timeframe are reused inside one scan loop
+- live orders run through a pre-flight validation step before broker submission
+- every order can emit structured audit records for pre-flight, submission, paper skip, and reconciliation stages
+- closed trades are persisted as structured records instead of existing only in in-memory session summaries
 
 ### Intraday Equity Default Safety Bias
 
@@ -578,8 +616,13 @@ Current intraday options engine capabilities:
 - profile-based entry validation after the raw strategy signal:
   - `MOMENTUM`: trend alignment, breakout arming, follow-through confirmation, and pullback-entry gating
   - `MEAN_REVERSION`: VWAP retest plus controlled candle/range checks
-  - `VOLATILITY`: trend alignment, range expansion, and supportive IV behavior
-  - `ATM_MULTI` currently stays hybrid and is not forced into one shared entry validator
+  - `VOLATILITY`: trend alignment, range expansion, supportive IV behavior, and volatility-regime support
+  - `ATM_MULTI` now routes dynamically into `MOMENTUM` or `MEAN_REVERSION` validation based on the profile it selected at signal time
+- a substitute volatility-regime context is computed from realized session range, recent VWAP deviation, and 15-minute IV change
+- advanced confirmation rules use that regime context:
+  - momentum entries are blocked in sideways conditions
+  - mean-reversion entries are blocked during expansion conditions
+  - volatility entries require a non-sideways regime in addition to IV/range checks
 - momentum entry setups are persisted in engine runtime state so armed/confirmed setups survive normal state saves during the session
 - per-underlying trade cap, cooldown, max-hold time exit, and intraday cutoff / square-off window
 - bounded two-leg short range pair support
@@ -625,10 +668,11 @@ Support status for the requested strategy ideas:
 
 - Status: `YES`
 - Already covered by:
-  - `ATM_MULTI` explicitly prefers reversion only in sideways ATR conditions
+  - `ATM_MULTI` explicitly prefers reversion only in sideways ATR conditions and now routes that choice into the mean-reversion validator
   - `INTRADAY_OPTIONS_MIN_RANGE_PCT` blocks low-volatility sessions
   - VWAP-band filter and underlying bias filter reduce entries in noisy, directionless conditions
   - a dedicated sideways blocker now rejects entries when recent prices stay trapped in a narrow VWAP band for multiple candles
+  - the substitute volatility-regime classifier adds a session-level expansion/normal/sideways tag used by profile validators
 - Current note:
   - current sideways filter is good, but not yet a dedicated “no trade when price is trapped in a narrow VWAP band for N candles” rule
 - Feasibility with Kite: `HIGH`
@@ -929,15 +973,11 @@ Current behavior:
 - add strike auto-refresh and auto-rollover for weekly expiry transitions
 - add multi-leg strategy templates such as debit spreads, credit spreads, and straddles
 - add a small dashboard or TUI view for live P&L, Greeks drift, and square-off countdown
-- add order-status polling, rejection summaries, and broker-side execution reconciliation after every live order
 - add open-interest, put-call ratio, and event-volatility filters for options
 - deepen F&O backtesting with true option-premium candles, decay, rollover, and richer lot/margin modeling
 
 ## Suggested Next Refactoring Steps
 
-- add order validation and richer execution-state handling before more live-trading complexity
-- move more runtime constants into structured config objects with validation
-- add repeated-fetch caching inside a session cycle
 - continue migrating remaining dict-heavy position flows to typed helpers first, then to direct model usage
 
 ## Verification
@@ -945,6 +985,6 @@ Current behavior:
 The latest refactoring changes were checked with:
 
 ```powershell
-venv\Scripts\python.exe -m unittest discover -s tests -v
-venv\Scripts\python.exe -m py_compile main.py backtesting.py executor.py state_store.py data_fetcher.py cli\configuration.py orchestration\context.py orchestration\signal_workflow.py orchestration\session.py
+venv\Scripts\python.exe -m unittest discover -s tests\unit -p "test_*.py"
+venv\Scripts\python.exe -m py_compile main.py backtesting.py executor.py state_store.py trade_store.py data_fetcher.py cli\configuration.py orchestration\context.py orchestration\signal_workflow.py orchestration\session.py config.py
 ```

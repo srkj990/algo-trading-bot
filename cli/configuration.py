@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from config import get_broker_ip_mode, get_upstox_static_ip
+from config import get_broker_ip_mode, get_runtime_config, get_upstox_static_ip
 from data_fetcher import set_data_provider
 from engines.base import TradingEngine
 from engines import (
@@ -111,6 +111,35 @@ class SessionConfig:
     strategy_name: str | None
     strategies: list[str] | None
     min_confirmations: int | None
+
+
+def validate_session_config(config: SessionConfig) -> SessionConfig:
+    runtime_config = get_runtime_config()
+    if config.capital <= 0:
+        raise ValueError("Capital must be greater than 0")
+    if config.max_open_positions < 1:
+        raise ValueError("Max open positions must be at least 1")
+    if config.max_capital_per_trade <= 0:
+        raise ValueError("Max capital per trade must be greater than 0")
+    if config.max_capital_per_trade > config.max_capital_deployed:
+        raise ValueError("Max capital per trade cannot exceed max capital deployed")
+    if config.max_capital_deployed > config.capital:
+        raise ValueError("Max capital deployed cannot exceed total capital")
+    if config.entry_selection_mode == "TOPN" and (
+        config.top_n_count < 1 or config.top_n_count > config.max_open_positions
+    ):
+        raise ValueError("TOP N count must be between 1 and max open positions")
+    if config.mode == "1" and not config.strategy_name:
+        raise ValueError("Single-strategy mode requires a strategy name")
+    if config.mode == "2":
+        if not config.strategies:
+            raise ValueError("Multi-strategy mode requires at least one strategy")
+        if not config.min_confirmations or config.min_confirmations < 1:
+            raise ValueError("Multi-strategy mode requires a valid confirmation count")
+    if config.execution_mode == "LIVE" and runtime_config.orders.enabled:
+        if config.execution_provider not in {"KITE", "UPSTOX"}:
+            raise ValueError("Live execution provider must be KITE or UPSTOX")
+    return config
 
 
 def log_help(message: str) -> None:
@@ -741,7 +770,8 @@ def collect_session_configuration() -> SessionConfig:
         f"[MAIN] Scan configuration | Engine={engine.name} | Data provider={data_provider} | Execution provider={execution_provider} | Symbol mode={symbol_mode} | Symbols={len(selected_symbols)} | Data={engine.data_period}/{engine.data_interval} | Mode={mode} | Max positions={max_open_positions} | Max/trade={max_capital_per_trade:.2f} | Max deployed={max_capital_deployed:.2f} | One trade/day={one_trade_per_symbol_per_day} | Selection={entry_selection_mode} | Top N={top_n_count}"
     )
 
-    return SessionConfig(
+    return validate_session_config(
+        SessionConfig(
         engine_choice=engine_choice,
         engine=engine,
         execution_mode=execution_mode,
@@ -770,4 +800,5 @@ def collect_session_configuration() -> SessionConfig:
         strategy_name=strategy_name,
         strategies=strategies,
         min_confirmations=min_confirmations,
+        )
     )

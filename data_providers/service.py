@@ -3,8 +3,9 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from config import get_default_data_provider
+from config import get_default_data_provider, get_runtime_config
 from logger import get_logger
+
 
 class MarketDataService:
     def __init__(
@@ -18,7 +19,20 @@ class MarketDataService:
             for name, provider in providers.items()
         }
         self.logger = logger or get_logger()
-        self.active_provider = (active_provider or get_default_data_provider() or "YFINANCE").upper()
+        self.active_provider = (
+            active_provider or get_default_data_provider() or "YFINANCE"
+        ).upper()
+        self.runtime_config = get_runtime_config()
+        self._cache: dict[tuple[str, str, str, str], tuple[float, Any]] = {}
+
+    @staticmethod
+    def _clone_data(data: Any) -> Any:
+        if hasattr(data, "copy"):
+            try:
+                return data.copy(deep=True)
+            except TypeError:
+                return data.copy()
+        return data
 
     def set_active_provider(self, provider: str) -> None:
         self.active_provider = (provider or "YFINANCE").upper()
@@ -39,9 +53,26 @@ class MarketDataService:
         period: str = "1d",
         interval: str = "1m",
         provider: str | None = None,
+        use_cache: bool = True,
     ) -> Any:
         provider_instance = self.get_provider(provider)
         active_provider = provider_instance.name
+        cache_key = (active_provider, symbol, period, interval)
+        cache_settings = self.runtime_config.data_cache
+        if cache_settings.enabled and use_cache:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                cached_at, cached_data = cached
+                if (time.time() - cached_at) <= cache_settings.ttl_seconds:
+                    self.logger.info(
+                        "[DATA CACHE] Hit | Provider=%s | Symbol=%s | period=%s | interval=%s",
+                        active_provider,
+                        symbol,
+                        period,
+                        interval,
+                    )
+                    return self._clone_data(cached_data)
+
         self.logger.info(
             "[DATA] Provider=%s | Symbol=%s | period=%s | interval=%s",
             active_provider,
@@ -87,7 +118,19 @@ class MarketDataService:
                 interval,
             )
 
-        return data
+        if cache_settings.enabled and use_cache:
+            if len(self._cache) >= cache_settings.max_entries:
+                oldest_key = min(
+                    self._cache,
+                    key=lambda item: self._cache[item][0],
+                )
+                self._cache.pop(oldest_key, None)
+            self._cache[cache_key] = (time.time(), self._clone_data(data))
+
+        return self._clone_data(data)
+
+    def clear_cache(self) -> None:
+        self._cache.clear()
 
 
 def build_default_market_data_service() -> MarketDataService:

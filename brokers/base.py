@@ -66,3 +66,7 @@ class BrokerClient(ABC):
     @abstractmethod
     def get_nfo_positions(self) -> list[dict]:
         """Return current F&O positions in the legacy executor shape."""
+
+    def get_order_status(self, order_id: str) -> OrderResult | None:
+        """Return the broker order status when supported."""
+        raise NotImplementedError("Order-status lookup is not implemented for this broker.")

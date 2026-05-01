@@ -71,6 +71,25 @@ class KiteBrokerClient(BrokerClient):
         )
         return OrderResult(order_id=str(order_id), status=OrderStatus.PENDING)
 
+    def get_order_status(self, order_id: str) -> OrderResult | None:
+        for item in reversed(self._get_client().orders()):
+            if str(item.get("order_id") or "") != str(order_id):
+                continue
+            status_text = str(item.get("status") or "").upper()
+            status = OrderStatus.PENDING
+            if status_text in {"COMPLETE", "FILLED"}:
+                status = OrderStatus.FILLED
+            elif status_text in {"REJECTED"}:
+                status = OrderStatus.REJECTED
+            elif status_text in {"CANCELLED", "CANCELED"}:
+                status = OrderStatus.CANCELLED
+            return OrderResult(
+                order_id=str(order_id),
+                status=status,
+                message=item.get("status_message"),
+            )
+        return None
+
     def get_positions(self) -> list[PositionSnapshot]:
         response = self._get_client().positions()
         snapshots = []
@@ -277,6 +296,30 @@ class UpstoxBrokerClient(BrokerClient):
         return OrderResult(
             order_id=str(response.json().get("data", {}).get("order_id")),
             status=OrderStatus.PENDING,
+        )
+
+    def get_order_status(self, order_id: str) -> OrderResult | None:
+        response = broker_request(
+            "GET",
+            f"https://api.upstox.com/v2/order/details?order_id={order_id}",
+            headers=self._headers(),
+            timeout=30,
+            ip_mode=get_broker_ip_mode(),
+        )
+        response.raise_for_status()
+        payload = response.json().get("data") or {}
+        status_text = str(payload.get("status") or "").upper()
+        status = OrderStatus.PENDING
+        if status_text in {"COMPLETE", "FILLED"}:
+            status = OrderStatus.FILLED
+        elif status_text == "REJECTED":
+            status = OrderStatus.REJECTED
+        elif status_text in {"CANCELLED", "CANCELED"}:
+            status = OrderStatus.CANCELLED
+        return OrderResult(
+            order_id=str(order_id),
+            status=status,
+            message=payload.get("status_message") or payload.get("message"),
         )
 
     def get_positions(self) -> list[PositionSnapshot]:

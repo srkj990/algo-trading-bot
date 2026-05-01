@@ -7,6 +7,10 @@ from config import (
     INTRADAY_OPTIONS_MAX_HOLD_MINUTES,
     INTRADAY_OPTIONS_MIN_RANGE_PCT,
     INTRADAY_OPTIONS_MIN_SIGNAL_SCORE,
+    INTRADAY_OPTIONS_REGIME_EXPANSION_IV_CHANGE_PCT,
+    INTRADAY_OPTIONS_REGIME_EXPANSION_RANGE_PCT,
+    INTRADAY_OPTIONS_REGIME_SIDEWAYS_RANGE_PCT,
+    INTRADAY_OPTIONS_REGIME_SIDEWAYS_VWAP_DEV_PCT,
     INTRADAY_OPTIONS_SIDEWAYS_LOOKBACK_CANDLES,
     INTRADAY_OPTIONS_SIDEWAYS_VWAP_BAND_PCT,
     INTRADAY_OPTIONS_TIME_EXIT_CUTOFF,
@@ -81,6 +85,10 @@ class IntradayOptionsEngine(OptionsEquityEngine):
     volatility_min_body_ratio = 0.45
     volatility_range_multiplier = 1.2
     volatility_quality_lookback = 20
+    volatility_regime_expansion_range_pct = INTRADAY_OPTIONS_REGIME_EXPANSION_RANGE_PCT
+    volatility_regime_sideways_range_pct = INTRADAY_OPTIONS_REGIME_SIDEWAYS_RANGE_PCT
+    volatility_regime_sideways_vwap_dev_pct = INTRADAY_OPTIONS_REGIME_SIDEWAYS_VWAP_DEV_PCT
+    volatility_regime_expansion_iv_change_pct = INTRADAY_OPTIONS_REGIME_EXPANSION_IV_CHANGE_PCT
     time_exit_cutoff = datetime.strptime(
         INTRADAY_OPTIONS_TIME_EXIT_CUTOFF, "%H:%M"
     ).time()
@@ -200,6 +208,12 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             else 0.0
         )
         filtered["range_pct"] = range_pct
+        regime = self.build_volatility_regime_context(session_df, analytics)
+        filtered["volatility_regime"] = regime["label"]
+        filtered["selected_profile"] = evaluation.get("selected_profile")
+        filtered["components"] = evaluation.get("components")
+        analytics["volatility_regime"] = regime["label"]
+        analytics["volatility_regime_context"] = regime
 
         if range_pct < self.min_underlying_range_pct:
             filtered["signal"] = "HOLD"
@@ -359,7 +373,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                 f"Expiry warning: {analytics['days_to_expiry']} day(s) left"
             )
 
-        entry_profile = self.get_entry_profile(filtered.get("strategy"))
+        entry_profile = self.resolve_entry_profile(filtered, analytics=analytics)
         if filtered["signal"] in {"BUY", "SELL"}:
             profile_reason = None
             passed = True
@@ -398,6 +412,12 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             if profile_reason:
                 notes.append(profile_reason)
 
+        if regime["label"] != "UNKNOWN":
+            notes.append(
+                f"Volatility regime {regime['label']} | SessionRange={regime['session_range_pct']:.2f}% "
+                f"| RecentRange={regime['recent_range_pct']:.2f}% | VWAPDev={regime['recent_vwap_deviation']:.4f}"
+            )
+
         filtered["score"] += abs_delta * 0.2
         if iv_percentile is not None:
             filtered["score"] += (iv_percentile / 100.0) * 0.05
@@ -416,6 +436,89 @@ class IntradayOptionsEngine(OptionsEquityEngine):
 
     def get_entry_profile(self, strategy_name):
         return self.entry_profiles.get(strategy_name)
+
+    def resolve_entry_profile(self, evaluation, analytics=None):
+        strategy_name = (evaluation or {}).get("strategy")
+        if strategy_name == "ATM_MULTI":
+            details = (evaluation or {}).get("details") or {}
+            selected_profile = (
+                (evaluation or {}).get("selected_profile")
+                or details.get("ATM_MULTI", {}).get("selected_profile")
+            )
+            if selected_profile in {"MOMENTUM", "MEAN_REVERSION", "VOLATILITY"}:
+                return selected_profile
+        return self.get_entry_profile(strategy_name)
+
+    def build_volatility_regime_context(self, intraday_df, analytics=None):
+        if intraday_df is None or intraday_df.empty:
+            return {
+                "label": "UNKNOWN",
+                "session_range_pct": 0.0,
+                "recent_range_pct": 0.0,
+                "recent_vwap_deviation": 0.0,
+                "iv_change_15m_pct": None,
+            }
+
+        session_df = intraday_df.loc[
+            intraday_df.index.date == intraday_df.index[-1].date()
+        ]
+        session_open = float(session_df.iloc[0]["Open"]) if not session_df.empty else 0.0
+        session_high = float(session_df["High"].max()) if not session_df.empty else 0.0
+        session_low = float(session_df["Low"].min()) if not session_df.empty else 0.0
+        session_range_pct = (
+            ((session_high - session_low) / session_open) * 100.0
+            if session_open > 0
+            else 0.0
+        )
+
+        recent_window = session_df.tail(max(3, int(self.sideways_lookback_candles)))
+        if recent_window.empty:
+            recent_range_pct = 0.0
+            recent_vwap_deviation = 0.0
+        else:
+            recent_vwap = compute_vwap(recent_window)
+            recent_vwap_deviation = float(
+                (
+                    (recent_window["Close"] - recent_vwap).abs()
+                    / recent_vwap.replace(0, 1)
+                ).fillna(0.0).max()
+            )
+            recent_range_pct = (
+                (
+                    (
+                        float(recent_window["High"].max())
+                        - float(recent_window["Low"].min())
+                    )
+                    / max(session_open, 1.0)
+                )
+                * 100.0
+            )
+
+        iv_change_15m_pct = (analytics or {}).get("iv_change_15m_pct")
+        label = "NORMAL"
+        if (
+            session_range_pct >= float(self.volatility_regime_expansion_range_pct)
+            or (
+                iv_change_15m_pct is not None
+                and iv_change_15m_pct
+                >= float(self.volatility_regime_expansion_iv_change_pct)
+            )
+        ):
+            label = "EXPANSION"
+        elif (
+            session_range_pct <= float(self.volatility_regime_sideways_range_pct)
+            and recent_vwap_deviation
+            <= float(self.volatility_regime_sideways_vwap_dev_pct)
+        ):
+            label = "SIDEWAYS"
+
+        return {
+            "label": label,
+            "session_range_pct": session_range_pct,
+            "recent_range_pct": recent_range_pct,
+            "recent_vwap_deviation": recent_vwap_deviation,
+            "iv_change_15m_pct": iv_change_15m_pct,
+        }
 
     def hydrate_runtime_state(self, saved_state):
         runtime_state = dict(saved_state.get("engine_runtime_state") or {})
@@ -568,6 +671,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         )
         if snapshot is None:
             return False, error
+        volatility_regime = str((analytics or {}).get("volatility_regime") or "UNKNOWN")
 
         setup_key = self._get_momentum_setup_key(strategy_name, analytics, signal)
         setup = self.momentum_entry_setups.get(setup_key)
@@ -580,6 +684,12 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             return False, (
                 "Momentum entry validator blocked trade: "
                 f"trend alignment failed ({snapshot['bias'] or 'UNKNOWN'})"
+            )
+        if volatility_regime == "SIDEWAYS":
+            self._clear_momentum_setup(setup_key)
+            return False, (
+                "Momentum entry validator blocked trade: "
+                "volatility regime is SIDEWAYS, so breakout confirmation is not trusted"
             )
 
         if setup and setup.get("state") == "awaiting_pullback":
@@ -726,6 +836,13 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         no_momentum_spike = candle_range <= (
             avg_range * float(self.mean_reversion_spike_multiplier)
         )
+        volatility_regime = str((analytics or {}).get("volatility_regime") or "UNKNOWN")
+
+        if volatility_regime == "EXPANSION":
+            return False, (
+                "Mean-reversion entry validator blocked trade: "
+                "volatility regime is EXPANSION, so fading price is disabled"
+            )
 
         if not near_vwap:
             return False, (
@@ -798,9 +915,15 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         iv_supportive = iv_percentile is not None and (
             iv_change_15m_pct is None or iv_change_15m_pct >= 0.0
         )
+        volatility_regime = str((analytics or {}).get("volatility_regime") or "UNKNOWN")
 
         if not trend_aligned:
             return False, f"Volatility entry validator blocked trade: trend alignment failed ({bias or 'UNKNOWN'})"
+        if volatility_regime not in {"EXPANSION", "NORMAL"}:
+            return False, (
+                "Volatility entry validator blocked trade: "
+                f"volatility regime {volatility_regime} is not supportive"
+            )
         if not iv_supportive:
             return False, (
                 "Volatility entry validator blocked trade: "
@@ -821,7 +944,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         return True, (
             "Volatility entry validator passed: "
             f"body_ratio={body_ratio:.2f}, range={candle_range:.2f}, "
-            f"avg_range={avg_range:.2f}, iv_percentile={iv_percentile:.1f}, bias={bias}"
+            f"avg_range={avg_range:.2f}, iv_percentile={iv_percentile:.1f}, bias={bias}, regime={volatility_regime}"
         )
 
     def get_underlying_bias(self, underlying):

@@ -392,6 +392,7 @@ def strategy_multi(df, sideways_atr_threshold=0.0035):
                     f"{actionable[1]['reason']}"
                 ),
                 strategy_name=strategy_name,
+                selected_profile="MOMENTUM",
                 components={
                     "momentum": momentum,
                     "orb": orb,
@@ -423,6 +424,7 @@ def strategy_multi(df, sideways_atr_threshold=0.0035):
                 f"using VWAP reversion: {vwap_reversion['reason']}"
             ),
             strategy_name=strategy_name,
+            selected_profile="MEAN_REVERSION",
             components={
                 "momentum": momentum,
                 "orb": orb,
@@ -436,6 +438,7 @@ def strategy_multi(df, sideways_atr_threshold=0.0035):
             f"sideways ATR ratio is {atr_ratio:.4f}"
         ),
         strategy_name,
+        selected_profile="HYBRID",
         components={
             "momentum": momentum,
             "orb": orb,

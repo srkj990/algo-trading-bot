@@ -1,0 +1,51 @@
+# Copy to config.runtime.yaml to override runtime defaults.
+# Supported format is a simple nested YAML mapping of scalars and lists.
+
+execution_safety:
+  min_ranked_candidate_score: 0.008
+  intraday_equity_auto_normal_min_confirmations: 2
+  reversal_exit_confirmation_candles: 2
+  trailing_activation_stop_distance_multiplier: 0.5
+  intraday_equity_entry_cutoff_minutes_before_squareoff: 30
+
+transaction_costs:
+  enabled: true
+  slippage_pct_per_side: 0.0002
+  expected_edge_score_multiplier: 1.0
+  min_edge_to_cost_ratio: 1.2
+  cost_edge_buffer_rupees: 5.0
+
+data_cache:
+  enabled: true
+  ttl_seconds: 20
+  max_entries: 512
+  per_cycle_enabled: true
+
+orders:
+  enabled: true
+  allowed_products: ["MIS", "CNC", "NRML"]
+  min_quantity: 1
+  max_live_order_notional: 0
+  reconcile_attempts: 3
+  reconcile_delay_seconds: 1.5
+
+trade_store:
+  enabled: true
+  base_dir: "state/trade_store"
+  include_paper_trades: true
+
+fno:
+  intraday_options_max_trades_per_underlying: 4
+  intraday_options_expiry_warning_days: 2
+  intraday_options_vega_crush_block_percent: 20
+  intraday_options_min_range_pct: 0.35
+  intraday_options_min_signal_score: 0.03
+  intraday_options_max_hold_minutes: 60
+  intraday_options_time_exit_cutoff: "14:45"
+  intraday_options_iv_expansion_max_iv_percentile: 20
+  intraday_options_sideways_vwap_band_pct: 0.0015
+  intraday_options_sideways_lookback_candles: 8
+  intraday_options_regime_expansion_range_pct: 1.1
+  intraday_options_regime_sideways_range_pct: 0.55
+  intraday_options_regime_sideways_vwap_dev_pct: 0.0025
+  intraday_options_regime_expansion_iv_change_pct: 2.0

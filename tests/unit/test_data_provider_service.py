@@ -16,8 +16,10 @@ class DummyFrame:
 class DummyProvider:
     def __init__(self, name):
         self.name = name
+        self.calls = 0
 
     def fetch(self, symbol, period="1d", interval="1m"):
+        self.calls += 1
         return DummyFrame()
 
 
@@ -38,6 +40,13 @@ class MarketDataServiceTests(unittest.TestCase):
         service = MarketDataService(providers={"YFINANCE": DummyProvider("YFINANCE")})
         with self.assertRaises(ValueError):
             service.get_provider("MISSING")
+
+    def test_service_reuses_cache_for_same_request(self):
+        provider = DummyProvider("KITE")
+        service = MarketDataService(providers={"KITE": provider}, active_provider="KITE")
+        service.get_data("SBIN.NS")
+        service.get_data("SBIN.NS")
+        self.assertEqual(provider.calls, 1)
 
 
 if __name__ == "__main__":

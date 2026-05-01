@@ -26,10 +26,12 @@ def get_data(
     period: str = "1d",
     interval: str = "1m",
     provider: str | None = None,
+    use_cache: bool = True,
 ) -> Any:
     return _market_data_service.get_data(
         symbol,
         period=period,
         interval=interval,
         provider=provider,
+        use_cache=use_cache,
     )

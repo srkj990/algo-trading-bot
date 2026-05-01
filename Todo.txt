@@ -97,18 +97,18 @@ Delivered in this pass:
 - [x] Reduce `main.py` to thin entry point
 
 ### Configuration
-- [ ] Move runtime config out of scattered constants into structured config objects
-- [ ] Consider YAML-backed config for engines/risk/strategies
-- [ ] Add config validation
+- [x] Move runtime config out of scattered constants into structured config objects
+- [x] Consider YAML-backed config for engines/risk/strategies
+- [x] Add config validation
 
 ### Performance
-- [ ] Add candle/data caching to reduce repeated fetches
-- [ ] Reduce repeated fetches inside the main scan loop
+- [x] Add candle/data caching to reduce repeated fetches
+- [x] Reduce repeated fetches inside the main scan loop
 
 ### Risk & Safety
-- [ ] Add pre-flight order validation before live orders
-- [ ] Add structured trade/audit model and persistent trade store
-- [ ] Add better live-order reconciliation and status handling
+- [x] Add pre-flight order validation before live orders
+- [x] Add structured trade/audit model and persistent trade store
+- [x] Add better live-order reconciliation and status handling
 
 ### Intraday Options Entry Profiles
 - [x] Add profile mapping for momentum, mean-reversion, volatility, and hybrid option strategies
@@ -119,8 +119,8 @@ Delivered in this pass:
 - [x] Add stateful breakout confirmation / follow-through workflow for momentum profiles
 - [x] Add pullback-entry orchestration after confirmation instead of same-candle acceptance
 - [x] Persist intraday-options momentum setup state across runtime saves
-- [ ] Decide whether `ATM_MULTI` should route into dynamic profile-specific validators
-- [ ] Add India VIX or a substitute volatility-regime input for advanced confirmation rules
+- [x] Route `ATM_MULTI` into dynamic profile-specific validators based on the selected signal profile
+- [x] Add a substitute volatility-regime input for advanced confirmation rules
 
 ## F&O Feature Status
 
@@ -154,7 +154,7 @@ Delivered in this pass:
 
 ## Best Next Steps
 
-1. Add order validation and structured trade/audit persistence before more live-trading complexity.
-2. Move more runtime constants into structured config objects with validation.
-3. Add data caching so repeated fetches inside a cycle are reduced.
-4. Start migrating more dict-heavy runtime payloads to typed domain objects and typed dictionaries.
+1. Expand the YAML-backed runtime config into richer engine/risk presets when the CLI setup flow is ready for it.
+2. Start migrating more dict-heavy runtime payloads to typed domain objects and typed dictionaries.
+3. Add margin/notional previews to the interactive `LIVE` confirmation flow.
+4. Persist and surface richer broker reconciliation diagnostics for partial fills and rejected exits.

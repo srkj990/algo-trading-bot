@@ -82,12 +82,16 @@ def evaluate_symbol_signal(
                     "reason": signal_payload.get("reason"),
                     "option_signal": signal_payload.get("option_signal"),
                     "strength": signal_payload.get("strength", 0.0),
+                    "selected_profile": signal_payload.get("selected_profile"),
+                    "components": signal_payload.get("components"),
                 }
             },
             "reason": signal_payload.get("reason"),
             "option_signal": signal_payload.get("option_signal"),
             "option_type": signal_payload.get("option_type"),
             "strength": signal_payload.get("strength", 0.0),
+            "selected_profile": signal_payload.get("selected_profile"),
+            "components": signal_payload.get("components"),
         }
 
     details = {}
@@ -104,6 +108,8 @@ def evaluate_symbol_signal(
             "reason": signal_payload.get("reason"),
             "option_signal": signal_payload.get("option_signal"),
             "strength": signal_payload.get("strength", 0.0),
+            "selected_profile": signal_payload.get("selected_profile"),
+            "components": signal_payload.get("components"),
         }
         if strat_signal == "BUY":
             buy_count += 1
@@ -136,6 +142,8 @@ def evaluate_symbol_signal(
         "option_signal": None,
         "option_type": None,
         "strength": 0.0,
+        "selected_profile": None,
+        "components": None,
     }
 
 

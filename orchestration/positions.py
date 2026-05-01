@@ -12,6 +12,8 @@ from models.position_adapter import (
     position_side,
 )
 from reporting import summarize_by_exit_reason
+from models.trade_record import TradeRecord
+from trade_store import TradeStore
 from transaction_costs import estimate_intraday_equity_round_trip_cost
 
 
@@ -69,6 +71,7 @@ def get_latest_exit_price(
 
 def record_closed_trade(
     trade_book: list[dict[str, Any]],
+    trade_store: TradeStore | None,
     symbol: str,
     position: dict[str, Any],
     exit_price: float,
@@ -76,7 +79,7 @@ def record_closed_trade(
     exit_time: Any,
     transaction_cost_model_enabled: bool,
     slippage_pct_per_side: float,
-) -> None:
+) -> dict[str, Any]:
     quantity = position_quantity(position)
     entry_price = position_entry_price(position)
     side = position_side(position)
@@ -100,23 +103,28 @@ def record_closed_trade(
         estimated_charges = float(breakdown.total)
         net_pnl = pnl - estimated_charges
 
-    trade_book.append(
-        {
-            "symbol": symbol,
-            "side": side,
-            "quantity": quantity,
-            "entry_time": position.get("entry_time"),
-            "exit_time": exit_time.isoformat() if hasattr(exit_time, "isoformat") else str(exit_time),
-            "entry_price": entry_price,
-            "exit_price": float(exit_price),
-            "pnl": pnl,
-            "estimated_charges": estimated_charges,
-            "net_pnl": net_pnl,
-            "pnl_pct": pnl_pct,
-            "exit_reason": exit_reason,
-            "pair_id": position.get("pair_id"),
-        }
+    trade = TradeRecord(
+        symbol=symbol,
+        side=side,
+        quantity=quantity,
+        entry_time=position.get("entry_time"),
+        exit_time=exit_time.isoformat() if hasattr(exit_time, "isoformat") else str(exit_time),
+        entry_price=entry_price,
+        exit_price=float(exit_price),
+        pnl=pnl,
+        estimated_charges=estimated_charges,
+        net_pnl=net_pnl,
+        pnl_pct=pnl_pct,
+        exit_reason=exit_reason,
+        engine_name=position.get("engine_name"),
+        execution_mode=position.get("execution_mode"),
+        pair_id=position.get("pair_id"),
     )
+    payload = trade.to_dict()
+    trade_book.append(payload)
+    if trade_store is not None:
+        trade_store.record_trade(trade)
+    return payload
 
 
 def build_exit_position_lines(position: dict[str, Any], exit_price: float, reason: str) -> list[str]:
@@ -206,6 +214,7 @@ def close_position_symbols(
     symbols: list[str],
     reason: str,
     trade_book: list[dict[str, Any]],
+    trade_store: TradeStore | None,
     place_order: Callable[..., Any],
     log_order_signal_banner: Callable[..., Any],
     fetch_data: Callable[..., Any],
@@ -226,6 +235,7 @@ def close_position_symbols(
         place_order(opposite_side(position), position_quantity(position), symbol, note=reason, product=engine.order_product)
         record_closed_trade(
             trade_book,
+            trade_store,
             symbol,
             position,
             exit_price,
@@ -476,6 +486,7 @@ def force_square_off_positions(
     engine,
     positions,
     trade_book,
+    trade_store,
     place_order,
     log_order_signal_banner,
     fetch_data,
@@ -501,6 +512,7 @@ def force_square_off_positions(
         )
         record_closed_trade(
             trade_book,
+            trade_store,
             symbol,
             position,
             exit_price,
@@ -520,6 +532,7 @@ def manage_open_positions(
     symbol_snapshots,
     now,
     trade_book,
+    trade_store,
     place_order,
     log_order_signal_banner,
     fetch_data,
@@ -545,6 +558,7 @@ def manage_open_positions(
                     pair_symbols,
                     reason=f"Pair sync guard for {pair_id}",
                     trade_book=trade_book,
+                    trade_store=trade_store,
                     place_order=place_order,
                     log_order_signal_banner=log_order_signal_banner,
                     fetch_data=fetch_data,
@@ -585,6 +599,7 @@ def manage_open_positions(
                     pair_symbols,
                     reason=f"Pair range break {underlying_price:.2f}",
                     trade_book=trade_book,
+                    trade_store=trade_store,
                     place_order=place_order,
                     log_order_signal_banner=log_order_signal_banner,
                     fetch_data=fetch_data,
@@ -624,6 +639,7 @@ def manage_open_positions(
                     pair_symbols,
                     reason=f"Pair exit via {symbol} {exit_reason}",
                     trade_book=trade_book,
+                    trade_store=trade_store,
                     place_order=place_order,
                     log_order_signal_banner=log_order_signal_banner,
                     fetch_data=fetch_data,
@@ -652,6 +668,7 @@ def manage_open_positions(
             )
             record_closed_trade(
                 trade_book,
+                trade_store,
                 symbol,
                 position,
                 exit_price,
@@ -681,6 +698,7 @@ def manage_open_positions(
             )
             record_closed_trade(
                 trade_book,
+                trade_store,
                 symbol,
                 position,
                 exit_price,

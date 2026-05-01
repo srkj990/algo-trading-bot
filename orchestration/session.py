@@ -47,6 +47,7 @@ def run_trading_session(context):
     engine = context.engine
 
     while True:
+        context.cycle_data_cache.clear()
         now = datetime.now()
         if context.previous_cycle_started_at is not None:
             gap_seconds = (now - context.previous_cycle_started_at).total_seconds()
@@ -81,6 +82,7 @@ def run_trading_session(context):
                 engine,
                 context.positions,
                 context.trade_book,
+                context.trade_store,
                 context.place_order,
                 lambda title, lines: log_order_signal_banner(context.log_event, title, lines),
                 context.fetch_data,
@@ -118,6 +120,7 @@ def run_trading_session(context):
                 symbol_snapshots,
                 now,
                 context.trade_book,
+                context.trade_store,
                 context.place_order,
                 lambda title, lines: log_order_signal_banner(context.log_event, title, lines),
                 context.fetch_data,
@@ -293,6 +296,7 @@ def _execute_pair_entry(context, candidate, now, deployed_capital):
                     entered_pair_symbols,
                     reason=f"Pair sync unwind {pair_id}",
                     trade_book=context.trade_book,
+                    trade_store=context.trade_store,
                     place_order=context.place_order,
                     log_order_signal_banner=lambda title, lines: log_order_signal_banner(context.log_event, title, lines),
                     fetch_data=context.fetch_data,
@@ -328,6 +332,7 @@ def _execute_pair_entry(context, candidate, now, deployed_capital):
             pair_target_price=pair_target_price,
             entry_time=now.isoformat(),
             engine_name=engine.name,
+            execution_mode=context.config.execution_mode,
             order_product=engine.order_product,
         )
         entered_pair_symbols.append(leg_symbol)
@@ -498,6 +503,7 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
         entry_analytics=candidate.get("analytics"),
         entry_time=now.isoformat(),
         engine_name=engine.name,
+        execution_mode=context.config.execution_mode,
         order_product=engine.order_product,
     )
     context.traded_symbols_today.add(trade_identity)
@@ -549,6 +555,7 @@ def handle_keyboard_interrupt(context):
         )
         position_flow.record_closed_trade(
             context.trade_book,
+            context.trade_store,
             symbol,
             position,
             exit_price,
