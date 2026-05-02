@@ -4,10 +4,12 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import yfinance as yf
 
+from data_fetcher import get_data
 from config import (
     INTRADAY_EQUITY_AUTO_NORMAL_MIN_CONFIRMATIONS,
     MANUAL_SYMBOL_TABLE,
@@ -25,7 +27,16 @@ from engines import (
     OptionsEquityEngine,
 )
 from engines.common import build_position, evaluate_exit, update_trailing_stop
-from fno_data_fetcher import get_available_expiries, get_available_option_strikes, get_fno_display_name
+from executor import calculate_cost_aware_targets
+from fno_data_fetcher import (
+    get_available_expiries,
+    get_available_option_strikes,
+    get_contract_lot_size,
+    get_fno_display_name,
+    get_fno_spot_quote_symbol,
+    get_options_data,
+    resolve_option_contract,
+)
 from models.position_adapter import (
     calculate_position_pnl,
     position_entry_price,
@@ -133,6 +144,7 @@ class BacktestConfig:
     atr_stop_multiplier: float
     trailing_atr_multiplier: float
     target_risk_reward: float
+    risk_style_name: str
     top_n: int
     max_positions: int
     max_capital_per_trade: float
@@ -140,6 +152,7 @@ class BacktestConfig:
     universe: tuple[str, ...]
     one_trade_per_symbol_per_day: bool = True
     summary_lines: list[str] = field(default_factory=list)
+    option_backtest_settings: dict[str, Any] | None = None
 
 
 class BacktestEngine:
@@ -171,6 +184,9 @@ class BacktestEngine:
         return None
 
     def fetch_history(self):
+        if self.config.engine_name == "intraday_options":
+            return self._fetch_intraday_options_history()
+
         history = {}
         for symbol in self.config.universe:
             data = yf.download(
@@ -185,6 +201,109 @@ class BacktestEngine:
             if not data.empty:
                 history[symbol] = data.sort_index()
         return history
+
+    def _fetch_intraday_options_history(self):
+        settings = dict(self.config.option_backtest_settings or {})
+        if settings.get("structure_mode") != "SINGLE":
+            raise RuntimeError(
+                "Intraday options premium backtest currently supports only ATM SINGLE OPTION structure."
+            )
+
+        base_symbol = str(settings["base_symbol"])
+        expiry = str(settings["expiry"])
+        underlying_symbol = str(
+            settings.get("underlying_symbol") or get_fno_spot_quote_symbol(base_symbol)
+        )
+        underlying_data = get_data(
+            underlying_symbol,
+            period=self.config.period,
+            interval=self.config.interval,
+            provider="KITE",
+            use_cache=False,
+        )
+        if hasattr(underlying_data.columns, "levels"):
+            underlying_data.columns = [col[0] for col in underlying_data.columns]
+        if underlying_data.empty:
+            raise RuntimeError(
+                f"No underlying historical data fetched for {base_symbol} ({underlying_symbol})."
+            )
+
+        underlying_data = underlying_data.sort_index()
+        strikes = get_available_option_strikes(base_symbol, expiry)
+        if not strikes:
+            raise RuntimeError(
+                f"No option strikes available for {get_fno_display_name(base_symbol)} expiry {expiry}."
+            )
+
+        strike_step = self._infer_strike_step(strikes)
+        offset_steps = {
+            "ATM": 0,
+            "ATM_PLUS_1": 1,
+            "ATM_MINUS_1": -1,
+        }.get(str(settings.get("strike_mode") or "ATM").upper(), 0)
+        spot_low = float(underlying_data["Low"].min())
+        spot_high = float(underlying_data["High"].max())
+        strike_padding = max(2, abs(offset_steps) + 1) * strike_step
+        strike_min = spot_low - strike_padding
+        strike_max = spot_high + strike_padding
+        selected_strikes = [
+            strike
+            for strike in strikes
+            if strike_min <= float(strike) <= strike_max
+        ]
+        if not selected_strikes:
+            selected_strikes = strikes
+
+        history = {underlying_symbol: underlying_data}
+        contracts: dict[tuple[int, str], str] = {}
+        for strike in selected_strikes:
+            for option_type in ("CE", "PE"):
+                try:
+                    contract_symbol = resolve_option_contract(
+                        base_symbol,
+                        expiry,
+                        strike,
+                        option_type,
+                    )
+                except Exception:
+                    continue
+                option_data = get_options_data(
+                    contract_symbol,
+                    period=self.config.period,
+                    interval=self.config.interval,
+                    provider="KITE",
+                )
+                if hasattr(option_data.columns, "levels"):
+                    option_data.columns = [col[0] for col in option_data.columns]
+                if option_data.empty:
+                    continue
+                history[contract_symbol] = option_data.sort_index()
+                contracts[(int(strike), option_type)] = contract_symbol
+
+        if not contracts:
+            raise RuntimeError(
+                f"No option premium history fetched for {get_fno_display_name(base_symbol)} expiry {expiry}."
+            )
+
+        settings["underlying_symbol"] = underlying_symbol
+        settings["available_strikes"] = [int(strike) for strike in strikes]
+        settings["contracts"] = contracts
+        settings["strike_step"] = strike_step
+        settings["signal_symbols"] = (underlying_symbol,)
+        self.config.option_backtest_settings = settings
+        return history
+
+    @staticmethod
+    def _infer_strike_step(strikes):
+        ordered = sorted({int(float(strike)) for strike in strikes})
+        if len(ordered) < 2:
+            return 50
+        step_candidates = [
+            ordered[index + 1] - ordered[index]
+            for index in range(len(ordered) - 1)
+            if (ordered[index + 1] - ordered[index]) > 0
+        ]
+        return min(step_candidates) if step_candidates else 50
 
     def run(self):
         history = self.fetch_history()
@@ -201,6 +320,7 @@ class BacktestEngine:
     def _process_timestamp(self, history, timestamp):
         latest_prices = {}
         candidates = []
+        signal_symbols = self._signal_symbols()
 
         for symbol, df in history.items():
             current_slice = df.loc[:timestamp]
@@ -214,17 +334,40 @@ class BacktestEngine:
                 continue
 
             if symbol in self.positions:
-                position = self.positions[symbol]
-                update_trailing_stop(position, latest_prices[symbol], 0)
-                exit_reason = evaluate_exit(position, latest_candle, include_target=True)
-                if exit_reason:
-                    self._exit_position(symbol, latest_prices[symbol], timestamp, exit_reason)
+                if self.config.engine_name == "intraday_options":
+                    self._manage_intraday_options_position(
+                        symbol=symbol,
+                        latest_candle=latest_candle,
+                        latest_close=latest_prices[symbol],
+                        timestamp=timestamp,
+                    )
+                else:
+                    position = self.positions[symbol]
+                    update_trailing_stop(position, latest_prices[symbol], 0)
+                    exit_reason = evaluate_exit(position, latest_candle, include_target=True)
+                    if exit_reason:
+                        self._exit_position(symbol, latest_prices[symbol], timestamp, exit_reason)
+                continue
+
+            if symbol not in signal_symbols:
                 continue
 
             if not self._can_enter_symbol(symbol, timestamp):
                 continue
 
             evaluation = self._evaluate_signal(symbol, current_slice)
+            if self.config.engine_name == "intraday_options":
+                candidate = self._build_intraday_options_candidate(
+                    signal_symbol=symbol,
+                    signal_slice=current_slice,
+                    timestamp=timestamp,
+                    evaluation=evaluation,
+                    history=history,
+                )
+                if candidate is not None:
+                    candidates.append(candidate)
+                continue
+
             if evaluation["signal"] not in {"BUY", "SELL"}:
                 continue
 
@@ -260,6 +403,75 @@ class BacktestEngine:
 
         trade_day = pd.Timestamp(timestamp).date()
         return symbol not in self.traded_symbols_by_day[trade_day]
+
+    def _signal_symbols(self):
+        settings = self.config.option_backtest_settings or {}
+        if self.config.engine_name == "intraday_options":
+            return tuple(settings.get("signal_symbols") or self.config.universe)
+        return self.config.universe
+
+    def _build_intraday_options_candidate(
+        self,
+        *,
+        signal_symbol,
+        signal_slice,
+        timestamp,
+        evaluation,
+        history,
+    ):
+        option_signal = str(evaluation.get("option_signal") or "")
+        option_type = str(evaluation.get("option_type") or "")
+        if option_signal not in {"BUY_CE", "BUY_PE"}:
+            return None
+        if option_signal.endswith("CE"):
+            option_type = "CE"
+        elif option_signal.endswith("PE"):
+            option_type = "PE"
+
+        settings = self.config.option_backtest_settings or {}
+        strikes = [int(strike) for strike in settings.get("available_strikes") or []]
+        contracts = settings.get("contracts") or {}
+        if not strikes or not contracts:
+            return None
+
+        underlying_close = float(signal_slice.iloc[-1]["Close"])
+        atm_strike = min(strikes, key=lambda strike: abs(float(strike) - underlying_close))
+        atm_index = strikes.index(atm_strike)
+        strike_mode = str(settings.get("strike_mode") or "ATM").upper()
+        offset_steps = {"ATM": 0, "ATM_PLUS_1": 1, "ATM_MINUS_1": -1}.get(strike_mode, 0)
+        target_index = max(0, min(len(strikes) - 1, atm_index + offset_steps))
+        strike = int(strikes[target_index])
+        contract_symbol = contracts.get((strike, option_type))
+        if not contract_symbol:
+            return None
+
+        option_history = history.get(contract_symbol)
+        if option_history is None:
+            return None
+        option_slice = option_history.loc[:timestamp]
+        if option_slice.empty or option_slice.index[-1] != timestamp:
+            return None
+
+        latest_close = float(option_slice.iloc[-1]["Close"])
+        atr_value = get_atr_value(option_slice)
+        if latest_close <= 0 or atr_value <= 0:
+            return None
+
+        return {
+            "symbol": contract_symbol,
+            "signal": "BUY",
+            "agreement_count": evaluation["agreement_count"],
+            "score": evaluation["score"],
+            "latest_close": latest_close,
+            "atr": atr_value,
+            "strategy": evaluation.get("strategy"),
+            "option_signal": option_signal,
+            "reason": evaluation.get("reason"),
+            "trade_identity": str(settings.get("base_symbol") or signal_symbol),
+            "underlying_symbol": signal_symbol,
+            "strike": strike,
+            "option_type": option_type,
+        }
 
     def _evaluate_signal(self, symbol, current_slice):
         if self.config.strategy_mode == "AUTO_ADAPTIVE":
@@ -336,6 +548,14 @@ class BacktestEngine:
             if candidate["atr"] <= 0:
                 continue
 
+            trade_day = pd.Timestamp(timestamp).date()
+            trade_identity = str(candidate.get("trade_identity") or candidate["symbol"])
+            if (
+                self.config.one_trade_per_symbol_per_day
+                and trade_identity in self.traded_symbols_by_day[trade_day]
+            ):
+                continue
+
             current_equity = self._current_equity({})
             deployed_capital = current_equity - self.cash
             remaining_deployable = max(0.0, self.config.max_capital_deployed - deployed_capital)
@@ -352,6 +572,14 @@ class BacktestEngine:
             qty = sizing["quantity"]
             qty = min(qty, int(self.config.max_capital_per_trade / candidate["latest_close"]))
             qty = min(qty, int(remaining_deployable / candidate["latest_close"]))
+            if self.config.engine_name == "intraday_options":
+                qty = self.engine_helper.apply_entry_allocation_limit(
+                    candidate["symbol"],
+                    qty,
+                    candidate["latest_close"],
+                    self.positions,
+                    current_equity,
+                )
             if qty <= 0:
                 continue
 
@@ -373,27 +601,73 @@ class BacktestEngine:
                 if candidate["signal"] == "BUY"
                 else entry_price + trailing_distance
             )
-
-            self.positions[candidate["symbol"]] = build_position(
-                symbol=candidate["symbol"],
-                side=candidate["signal"],
-                quantity=qty,
-                entry_price=entry_price,
-                stop_loss=stop_data["stop_loss_price"],
-                target=target_price,
-                trailing_stop=trailing_stop,
-                trailing_distance=trailing_distance,
-                atr=candidate["atr"],
-                stop_distance=stop_data["stop_distance"],
-            )
+            if self.config.engine_name == "intraday_options":
+                targets = calculate_cost_aware_targets(
+                    entry_price=entry_price,
+                    quantity=qty,
+                    asset_class="INTRADAY_OPTIONS",
+                    risk_profile=self.config.risk_style_name,
+                    signal_strength=float(candidate.get("score") or 0.5),
+                    side=candidate["signal"],
+                )
+                self.positions[candidate["symbol"]] = self.engine_helper.build_trend_adaptive_position(
+                    symbol=candidate["symbol"],
+                    side=candidate["signal"],
+                    quantity=qty,
+                    entry_price=entry_price,
+                    atr=float(candidate["atr"] or 0.0),
+                    signal_score=float(candidate.get("score") or 0.0),
+                    analytics={},
+                    lot_size=get_contract_lot_size(candidate["symbol"]) if ":" in candidate["symbol"] else 1,
+                    now=pd.Timestamp(timestamp).to_pydatetime(),
+                    entry_analytics={},
+                    engine_name=self.config.engine_name,
+                    execution_mode="PAPER",
+                    order_product=self.engine_helper.order_product,
+                    extra_fields={
+                        "trade_identity": trade_identity,
+                        "cost_to_profit_ratio": targets["cost_to_profit_ratio"],
+                        "expected_costs": targets["expected_costs"],
+                        "expected_net_profit": targets["expected_net_profit"],
+                        "partial_exit_events": [],
+                        "realized_pnl_parts": 0.0,
+                        "realized_charges_parts": 0.0,
+                    },
+                )
+                self.positions[candidate["symbol"]]["stop_loss"] = float(targets["stop_loss"])
+                self.positions[candidate["symbol"]]["target"] = float(targets["target"])
+                self.positions[candidate["symbol"]]["trailing_stop"] = float(targets["trailing_stop"])
+                self.positions[candidate["symbol"]]["stop_distance"] = abs(
+                    float(entry_price) - float(targets["stop_loss"])
+                )
+                self.positions[candidate["symbol"]]["min_breakeven_price"] = float(targets["min_breakeven_price"])
+                if targets["multi_level_targets"]:
+                    if len(targets["multi_level_targets"]) >= 1:
+                        self.positions[candidate["symbol"]]["runner_level1_target"] = float(targets["multi_level_targets"][0])
+                    if len(targets["multi_level_targets"]) >= 2:
+                        self.positions[candidate["symbol"]]["runner_level2_target"] = float(targets["multi_level_targets"][1])
+                    if len(targets["multi_level_targets"]) >= 3:
+                        self.positions[candidate["symbol"]]["runner_level3_target"] = float(targets["multi_level_targets"][2])
+            else:
+                self.positions[candidate["symbol"]] = build_position(
+                    symbol=candidate["symbol"],
+                    side=candidate["signal"],
+                    quantity=qty,
+                    entry_price=entry_price,
+                    stop_loss=stop_data["stop_loss_price"],
+                    target=target_price,
+                    trailing_stop=trailing_stop,
+                    trailing_distance=trailing_distance,
+                    atr=candidate["atr"],
+                    stop_distance=stop_data["stop_distance"],
+                )
 
             if candidate["signal"] == "BUY":
                 self.cash -= entry_price * qty
             else:
                 self.cash += entry_price * qty
 
-            trade_day = pd.Timestamp(timestamp).date()
-            self.traded_symbols_by_day[trade_day].add(candidate["symbol"])
+            self.traded_symbols_by_day[trade_day].add(trade_identity)
             self.trades.append(
                 {
                     "symbol": candidate["symbol"],
@@ -405,9 +679,102 @@ class BacktestEngine:
                     "atr": candidate["atr"],
                     "strategy": candidate.get("strategy"),
                     "option_signal": candidate.get("option_signal"),
+                    "trade_identity": trade_identity,
+                    "underlying_symbol": candidate.get("underlying_symbol"),
+                    "strike": candidate.get("strike"),
+                    "option_type": candidate.get("option_type"),
                     "entry_reason": candidate.get("reason"),
                 }
             )
+
+    def _manage_intraday_options_position(self, *, symbol, latest_candle, latest_close, timestamp):
+        position = self.positions.get(symbol)
+        if not position:
+            return
+
+        snapshot = {
+            "latest_close": float(latest_close),
+            "latest_candle": {
+                "High": float(latest_candle["High"]),
+                "Low": float(latest_candle["Low"]),
+            },
+        }
+
+        update_trailing_stop(position, float(latest_close), 0)
+
+        if hasattr(self.engine_helper, "get_runner_partial_exit"):
+            for _ in range(3):
+                action = self.engine_helper.get_runner_partial_exit(
+                    position,
+                    snapshot,
+                    pd.Timestamp(timestamp).to_pydatetime(),
+                )
+                if not action:
+                    break
+                self._partial_exit_position(
+                    symbol=symbol,
+                    exit_price=float(latest_close),
+                    timestamp=timestamp,
+                    action=action,
+                    snapshot=snapshot,
+                )
+                if symbol not in self.positions:
+                    return
+
+        time_exit_reason = None
+        if hasattr(self.engine_helper, "get_time_exit_reason"):
+            time_exit_reason = self.engine_helper.get_time_exit_reason(
+                position,
+                pd.Timestamp(timestamp).to_pydatetime(),
+            )
+        exit_reason = time_exit_reason or evaluate_exit(position, latest_candle, include_target=True)
+        if exit_reason:
+            self._exit_position(symbol, float(latest_close), timestamp, str(exit_reason))
+
+    def _partial_exit_position(self, *, symbol, exit_price, timestamp, action, snapshot):
+        position = self.positions.get(symbol)
+        if not position:
+            return
+
+        exit_qty = min(int(action["quantity"]), int(position_quantity(position)))
+        if exit_qty <= 0:
+            return
+
+        entry_price = position_entry_price(position)
+        side = position_side(position)
+        if side == "BUY":
+            pnl = (float(exit_price) - float(entry_price)) * exit_qty
+            self.cash += float(exit_price) * exit_qty
+        else:
+            pnl = (float(entry_price) - float(exit_price)) * exit_qty
+            self.cash -= float(exit_price) * exit_qty
+
+        estimated_charges = self._estimate_transaction_charges(
+            symbol=symbol,
+            side=side,
+            entry_price=float(entry_price),
+            exit_price=float(exit_price),
+            quantity=int(exit_qty),
+        )
+        position["realized_pnl_parts"] = float(position.get("realized_pnl_parts") or 0.0) + float(pnl)
+        position["realized_charges_parts"] = float(position.get("realized_charges_parts") or 0.0) + float(estimated_charges)
+        partial_events = list(position.get("partial_exit_events") or [])
+        partial_events.append(
+            {
+                "time": str(timestamp),
+                "reason": str(action["reason"]),
+                "quantity": int(exit_qty),
+                "exit_price": float(exit_price),
+                "pnl": float(pnl),
+                "estimated_charges": float(estimated_charges),
+            }
+        )
+        position["partial_exit_events"] = partial_events
+        position["quantity"] = int(position_quantity(position)) - int(exit_qty)
+        if hasattr(self.engine_helper, "apply_runner_partial_exit"):
+            self.engine_helper.apply_runner_partial_exit(position, action, float(exit_price), snapshot)
+        if int(position["quantity"]) <= 0:
+            self._exit_position(symbol, float(exit_price), timestamp, str(action["reason"]))
 
     def _exit_position(self, symbol, exit_price, timestamp, reason):
         position = self.positions.pop(symbol)
@@ -424,6 +791,11 @@ class BacktestEngine:
             quantity=quantity,
         )
         net_pnl = pnl - estimated_charges
+        realized_pnl_parts = float(position.get("realized_pnl_parts") or 0.0)
+        realized_charges_parts = float(position.get("realized_charges_parts") or 0.0)
+        total_pnl = float(pnl) + realized_pnl_parts
+        total_estimated_charges = float(estimated_charges) + realized_charges_parts
+        total_net_pnl = total_pnl - total_estimated_charges
 
         if side == "BUY":
             self.cash += exit_price * quantity
@@ -435,9 +807,11 @@ class BacktestEngine:
                 trade["exit_time"] = timestamp
                 trade["exit_price"] = exit_price
                 trade["exit_reason"] = reason
-                trade["pnl"] = pnl
-                trade["estimated_charges"] = estimated_charges
-                trade["net_pnl"] = net_pnl
+                trade["pnl"] = total_pnl
+                trade["estimated_charges"] = total_estimated_charges
+                trade["net_pnl"] = total_net_pnl
+                trade["partial_exit_count"] = len(position.get("partial_exit_events") or [])
+                trade["partial_exit_events"] = position.get("partial_exit_events") or []
                 break
 
     def _estimate_transaction_charges(
@@ -750,15 +1124,21 @@ def build_fno_backtest_universe(engine_name, base_symbol):
 def prompt_fno_contract_selection(engine_name):
     selection = prompt_fno_base_symbol(engine_name)
     summary_lines = []
+    contract_settings = None
 
     if selection == "BOTH":
         summary_lines.append("F&O futures universe: NIFTY 50 + SENSEX")
-        return build_fno_backtest_universe(engine_name, selection), summary_lines
+        return build_fno_backtest_universe(engine_name, selection), summary_lines, contract_settings
 
     expiry = prompt_fno_expiry(selection, "OPT" if "options" in engine_name else "FUT")
-    summary_lines.append(
-        f"{get_fno_display_name(selection)} | Expiry={expiry} | Backtest proxy={BACKTEST_FNO_SYMBOLS[selection]}"
-    )
+    if engine_name == "intraday_options":
+        summary_lines.append(
+            f"{get_fno_display_name(selection)} | Expiry={expiry} | Underlying signal source={get_fno_spot_quote_symbol(selection)}"
+        )
+    else:
+        summary_lines.append(
+            f"{get_fno_display_name(selection)} | Expiry={expiry} | Backtest proxy={BACKTEST_FNO_SYMBOLS[selection]}"
+        )
 
     if engine_name == "intraday_options":
         print_prompt_help(
@@ -790,11 +1170,26 @@ def prompt_fno_contract_selection(engine_name):
             summary_lines.append(
                 f"ATM dynamic structure | Underlying={selection} | Expiry={expiry} | Strike mode={strike_mode.replace('_', ' ')}"
             )
+            contract_settings = {
+                "base_symbol": selection,
+                "expiry": expiry,
+                "structure_mode": "SINGLE",
+                "strike_mode": strike_mode,
+                "underlying_symbol": get_fno_spot_quote_symbol(selection),
+            }
         else:
             lower_strike, upper_strike = prompt_option_pair_strikes(selection, expiry)
             summary_lines.append(
                 f"Two-leg range pair | Underlying={selection} | Expiry={expiry} | Range={lower_strike}-{upper_strike}"
             )
+            contract_settings = {
+                "base_symbol": selection,
+                "expiry": expiry,
+                "structure_mode": "PAIR",
+                "lower_strike": lower_strike,
+                "upper_strike": upper_strike,
+                "underlying_symbol": get_fno_spot_quote_symbol(selection),
+            }
 
         print("[SETUP] Selected F&O contract summary:")
         for line in summary_lines:
@@ -807,7 +1202,7 @@ def prompt_fno_contract_selection(engine_name):
         if confirm != "YES":
             raise SystemExit("F&O backtest selection cancelled.")
 
-    return build_fno_backtest_universe(engine_name, selection), summary_lines
+    return build_fno_backtest_universe(engine_name, selection), summary_lines, contract_settings
 
 
 def prompt_multi_strategy_selection(strategy_options):
@@ -944,10 +1339,11 @@ def prompt_backtest_config():
     capital = prompt_float("Enter capital for backtest: ", default=100000, minimum=1)
 
     if "futures" in engine_class.name or "options" in engine_class.name:
-        universe, summary_lines = prompt_fno_contract_selection(engine_class.name)
+        universe, summary_lines, option_backtest_settings = prompt_fno_contract_selection(engine_class.name)
     else:
         universe, summary_label = prompt_symbol_selection()
         summary_lines = [summary_label]
+        option_backtest_settings = None
 
     print_prompt_help(
         "Choose the risk style that controls ATR stop, trailing stop, and capital risk.",
@@ -1049,9 +1445,14 @@ def prompt_backtest_config():
     )
 
     if engine_class.name == "intraday_options":
-        summary_lines.append(
-            "Note: intraday options backtest uses the underlying spot index as a signal proxy. Expiry/structure inputs are captured for setup parity and reporting."
-        )
+        if (option_backtest_settings or {}).get("structure_mode") == "SINGLE":
+            summary_lines.append(
+                "Note: intraday options backtest now resolves real option contracts and uses option premium candles for entry, exit, and sizing."
+            )
+        else:
+            summary_lines.append(
+                "Note: intraday options premium backtest currently supports only ATM SINGLE OPTION structure."
+            )
 
     return BacktestConfig(
         engine_name=engine_class.name,
@@ -1066,6 +1467,7 @@ def prompt_backtest_config():
         atr_stop_multiplier=risk_style["atr_stop_multiplier"],
         trailing_atr_multiplier=risk_style["trailing_atr_multiplier"],
         target_risk_reward=risk_style["target_risk_reward"],
+        risk_style_name=risk_style["name"],
         top_n=max(1, top_n),
         max_positions=max_positions,
         max_capital_per_trade=max_capital_per_trade,
@@ -1073,6 +1475,7 @@ def prompt_backtest_config():
         universe=universe,
         one_trade_per_symbol_per_day=one_trade_per_symbol_per_day,
         summary_lines=summary_lines,
+        option_backtest_settings=option_backtest_settings,
     )
 
 

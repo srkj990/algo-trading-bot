@@ -904,9 +904,9 @@ There is now a basic F&O backtesting entry flow, but it is still simplified.
 
 Current behavior:
 
-- `intraday_options` backtesting uses the underlying spot/index as the signal proxy
-- expiry, structure, and strike-mode inputs are captured for setup parity and reporting
-- this is not yet a true contract-premium backtest with expiry decay and live strike rollover modeling
+- `intraday_options` backtesting in `ATM SINGLE OPTION` mode now uses the underlying only for signal generation, then resolves a real option contract and uses option premium candles for entry, exit, and sizing
+- `intraday_options` `TWO-LEG RANGE PAIR` premium backtesting is not implemented yet
+- this is still not a full options simulator with expiry decay modeling, historical Greeks, or dynamic strike-roll behavior matching live execution
 
 ### End-of-Run Trade Report
 

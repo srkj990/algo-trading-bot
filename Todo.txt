@@ -12,6 +12,7 @@ This file tracks the refactoring roadmap from `trading_bot_review.md` plus the c
 - [x] Add unit coverage for cost-aware target math and trade-entry gating
 - [x] Update `README.md` with the new asset-class-aware risk and cost-filter behavior
 - [x] Widen `INTRADAY_OPTIONS` stop-loss, target, trailing-stop, breakeven, and staged target presets to match current premium-volatility expectations
+- [x] Upgrade `intraday_options` backtesting single-option flow to use actual option contracts, premium candles, and lot-sized quantities instead of underlying-price trade rows
 
 ### Phase 1 Foundations
 - [x] Create `Position` data model with type hints and validation
