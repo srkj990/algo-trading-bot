@@ -309,6 +309,51 @@ class IntradayOptionsEngineTests(unittest.TestCase):
     def test_get_max_trades_per_day_returns_configured_value(self) -> None:
         self.assertEqual(self.engine.get_max_trades_per_day(), self.engine.max_trades_per_underlying_per_day)
 
+    def test_build_trend_adaptive_position_creates_runner_levels(self) -> None:
+        position = self.engine.build_trend_adaptive_position(
+            symbol="NFO:NIFTYTESTCE",
+            side="BUY",
+            quantity=100,
+            entry_price=100.0,
+            atr=4.0,
+            signal_score=0.8,
+            analytics={"volatility_regime": "EXPANSION"},
+            lot_size=50,
+            now=datetime(2026, 4, 29, 10, 0, 0),
+            entry_analytics={"underlying": "NIFTY"},
+            engine_name=self.engine.name,
+            execution_mode="PAPER",
+            order_product="MIS",
+            extra_fields={},
+        )
+        self.assertTrue(position["runner_enabled"])
+        self.assertGreater(position["runner_level3_target"], position["runner_level2_target"])
+        self.assertEqual(position["runner_exit_quantities"], [50, 0, 50])
+
+    def test_get_runner_partial_exit_triggers_level_one(self) -> None:
+        position = self.engine.build_trend_adaptive_position(
+            symbol="NFO:NIFTYTESTCE",
+            side="BUY",
+            quantity=150,
+            entry_price=100.0,
+            atr=4.0,
+            signal_score=0.8,
+            analytics={"volatility_regime": "NORMAL"},
+            lot_size=50,
+            now=datetime(2026, 4, 29, 10, 0, 0),
+            entry_analytics={"underlying": "NIFTY"},
+            engine_name=self.engine.name,
+            execution_mode="PAPER",
+            order_product="MIS",
+            extra_fields={},
+        )
+        action = self.engine.get_runner_partial_exit(
+            position,
+            {"latest_candle": {"High": position["runner_level1_target"] + 0.1}},
+            datetime(2026, 4, 29, 10, 5, 0),
+        )
+        self.assertEqual(action["reason"], "RUNNER_L1_TARGET")
+
     def test_get_entry_profile_returns_expected_profile(self) -> None:
         self.assertEqual(self.engine.get_entry_profile("ATM_MOMENTUM"), "MOMENTUM")
         self.assertEqual(self.engine.get_entry_profile("ATM_VWAP_REVERSION"), "MEAN_REVERSION")

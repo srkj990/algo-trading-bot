@@ -30,6 +30,34 @@ class ExecutorTests(unittest.TestCase):
         executor._broker_clients.clear()
         executor.set_execution_provider("KITE")
 
+    def test_calculate_cost_aware_targets_for_intraday_options_returns_profitable_levels(self) -> None:
+        targets = executor.calculate_cost_aware_targets(
+            entry_price=100.0,
+            quantity=75,
+            asset_class="INTRADAY_OPTIONS",
+            risk_profile="BALANCED",
+            signal_strength=0.85,
+            side="BUY",
+        )
+        self.assertLess(targets["stop_loss"], 100.0)
+        self.assertGreater(targets["target"], 104.0)
+        self.assertEqual(len(targets["multi_level_targets"]), 3)
+        self.assertGreater(targets["expected_costs"], 0.0)
+        self.assertTrue(targets["is_profitable"])
+
+    def test_calculate_cost_aware_targets_supports_short_side(self) -> None:
+        targets = executor.calculate_cost_aware_targets(
+            entry_price=100.0,
+            quantity=50,
+            asset_class="INTRADAY_EQUITY",
+            risk_profile="CONSERVATIVE",
+            signal_strength=0.6,
+            side="SELL",
+        )
+        self.assertGreater(targets["stop_loss"], 100.0)
+        self.assertLess(targets["target"], 100.0)
+        self.assertLess(targets["trailing_stop"], targets["stop_loss"])
+
     def test_place_order_in_paper_mode_returns_none(self) -> None:
         executor.set_execution_mode("PAPER")
         with patch.object(executor, "_get_broker_client") as get_client:

@@ -1077,7 +1077,7 @@ def prompt_backtest_config():
 
 
 def export_backtest_results(summary):
-    RESULTS_DIR.mkdir(exist_ok=True)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     config = summary["config"]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     prefix = f"backtest_{config.engine_name}_{timestamp}"

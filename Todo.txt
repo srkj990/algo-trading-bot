@@ -4,6 +4,15 @@ This file tracks the refactoring roadmap from `trading_bot_review.md` plus the c
 
 ## Implemented Today
 
+### Asset-Class Risking
+- [x] Add shared asset-class risk profile map in `config.py`
+- [x] Add cost-aware SL/target calculator in `executor.py`
+- [x] Gate single-entry trades on projected net profitability in `orchestration/signal_workflow.py`
+- [x] Apply cost-aware stop/target/trailing levels during single-entry position creation in `orchestration/session.py`
+- [x] Add unit coverage for cost-aware target math and trade-entry gating
+- [x] Update `README.md` with the new asset-class-aware risk and cost-filter behavior
+- [x] Widen `INTRADAY_OPTIONS` stop-loss, target, trailing-stop, breakeven, and staged target presets to match current premium-volatility expectations
+
 ### Phase 1 Foundations
 - [x] Create `Position` data model with type hints and validation
 - [x] Create `TradingEngine` base abstract class

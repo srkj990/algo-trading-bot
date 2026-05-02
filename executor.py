@@ -8,7 +8,9 @@ from brokers.base import BrokerClient, OrderRequest, OrderResult, OrderStatus
 from brokers.clients import UpstoxBrokerClient
 from brokers.factory import create_broker_client
 from config import (
+    ASSET_CLASS_RISK_PROFILES,
     RuntimeConfig,
+    TRANSACTION_SLIPPAGE_PCT_PER_SIDE,
     get_broker_ip_mode,
     get_default_execution_provider,
     get_runtime_config,
@@ -16,11 +18,133 @@ from config import (
 from logger import log_event
 from models.trade_record import OrderAuditRecord
 from trade_store import TradeStore
+from transaction_costs import (
+    estimate_delivery_equity_round_trip_cost,
+    estimate_futures_round_trip_cost,
+    estimate_intraday_equity_round_trip_cost,
+    estimate_options_round_trip_cost,
+)
 
 
 EXECUTION_MODE = "PAPER"
 EXECUTION_PROVIDER = get_default_execution_provider()
 _broker_clients: dict[str, BrokerClient] = {}
+
+
+def _resolve_cost_model(asset_class: str) -> Any:
+    normalized_asset_class = str(asset_class or "").upper()
+    if normalized_asset_class == "INTRADAY_OPTIONS":
+        return estimate_options_round_trip_cost
+    if normalized_asset_class == "OPTIONS_EQUITY":
+        return estimate_options_round_trip_cost
+    if normalized_asset_class == "DELIVERY_EQUITY":
+        return estimate_delivery_equity_round_trip_cost
+    if normalized_asset_class in {"FUTURES_EQUITY", "INTRADAY_FUTURES"}:
+        return estimate_futures_round_trip_cost
+    return estimate_intraday_equity_round_trip_cost
+
+
+def calculate_cost_aware_targets(
+    entry_price: float,
+    quantity: int,
+    asset_class: str,
+    risk_profile: str,
+    signal_strength: float = 1.0,
+    side: str = "BUY",
+    slippage_pct_per_side: float | None = None,
+) -> dict[str, Any]:
+    config = ASSET_CLASS_RISK_PROFILES[str(asset_class).upper()][str(risk_profile).upper()]
+    normalized_side = str(side or "BUY").upper()
+    clamped_strength = min(1.0, max(0.0, float(signal_strength or 0.0)))
+    sl_pct = float(config["sl_percent"])
+    target_pct = float(config["target_percent"])
+    trailing_pct = float(config["trailing_percent"])
+    min_breakeven_move = float(config.get("min_breakeven_move", 0.0))
+    target_levels = [float(level) for level in config.get("multi_level_targets", [])]
+    cost_model = _resolve_cost_model(asset_class)
+    effective_slippage = (
+        float(TRANSACTION_SLIPPAGE_PCT_PER_SIDE)
+        if slippage_pct_per_side is None
+        else float(slippage_pct_per_side)
+    )
+
+    direction = 1.0 if normalized_side == "BUY" else -1.0
+    stop_loss = float(entry_price) * (1.0 - (direction * sl_pct / 100.0))
+    initial_target = float(entry_price) * (1.0 + (direction * target_pct / 100.0))
+    initial_costs = cost_model(
+        entry_side=normalized_side,
+        entry_price=float(entry_price),
+        exit_price=float(initial_target),
+        quantity=int(quantity),
+        slippage_pct_per_side=effective_slippage,
+    )
+
+    gross_profit_per_unit = abs(float(initial_target) - float(entry_price))
+    gross_profit_total = gross_profit_per_unit * int(quantity)
+    net_profit = gross_profit_total - float(initial_costs.total)
+
+    adjusted_target_pct = target_pct
+    if net_profit < 0:
+        breakeven_pct = max(
+            min_breakeven_move,
+            ((float(initial_costs.total) / max(int(quantity), 1)) / float(entry_price)) * 100.0,
+        )
+        adjusted_target_pct = max(target_pct, breakeven_pct * 1.5)
+
+    strength_multiplier = 1.0
+    if clamped_strength < 0.5:
+        strength_multiplier = 0.8
+    elif clamped_strength > 0.8:
+        strength_multiplier = 1.2
+    adjusted_target_pct *= strength_multiplier
+    adjusted_target = float(entry_price) * (1.0 + (direction * adjusted_target_pct / 100.0))
+
+    actual_costs = cost_model(
+        entry_side=normalized_side,
+        entry_price=float(entry_price),
+        exit_price=float(adjusted_target),
+        quantity=int(quantity),
+        slippage_pct_per_side=effective_slippage,
+    )
+
+    expected_profit = abs(float(adjusted_target) - float(entry_price)) * int(quantity)
+    net_profit_actual = expected_profit - float(actual_costs.total)
+    trailing_stop = float(entry_price) * (1.0 - (direction * trailing_pct / 100.0))
+    min_breakeven_price = float(entry_price) * (1.0 + (direction * min_breakeven_move / 100.0))
+
+    multi_level_target_prices = [
+        float(entry_price) * (1.0 + (direction * level_pct / 100.0))
+        for level_pct in target_levels
+    ]
+
+    return {
+        "entry_price": float(entry_price),
+        "side": normalized_side,
+        "asset_class": str(asset_class).upper(),
+        "risk_profile": str(risk_profile).upper(),
+        "signal_strength": clamped_strength,
+        "stop_loss": stop_loss,
+        "target": adjusted_target,
+        "trailing_stop": trailing_stop,
+        "min_breakeven_price": min_breakeven_price,
+        "expected_gross_profit": expected_profit,
+        "expected_costs": float(actual_costs.total),
+        "expected_net_profit": net_profit_actual,
+        "cost_to_profit_ratio": (
+            float(actual_costs.total) / expected_profit if expected_profit > 0 else 0.0
+        ),
+        "is_profitable": net_profit_actual > 0,
+        "multi_level_targets": multi_level_target_prices,
+        "cost_breakdown": {
+            "brokerage": float(actual_costs.brokerage),
+            "stt": float(actual_costs.stt),
+            "exchange": float(actual_costs.exchange_txn),
+            "sebi": float(actual_costs.sebi),
+            "stamp": float(actual_costs.stamp),
+            "gst": float(actual_costs.gst),
+            "slippage": float(actual_costs.slippage),
+        },
+    }
 
 
 def set_execution_mode(mode: str) -> None:

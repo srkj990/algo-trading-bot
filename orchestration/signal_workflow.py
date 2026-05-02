@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
+from config import resolve_asset_class
+from executor import calculate_cost_aware_targets
 from fno_data_fetcher import get_atm_option_strike, get_option_greeks_snapshot, resolve_option_contract
 from signal_scoring import evaluate_symbol_signal, get_atr_value, rank_candidates
 
@@ -15,6 +17,51 @@ from . import positions as position_flow
 class SignalScanResult:
     symbol_snapshots: dict[str, dict[str, Any]]
     ranked_candidates: list[dict[str, Any]]
+
+
+def should_enter_trade(
+    signal: dict[str, Any],
+    context: Any,
+    *,
+    entry_price: float | None = None,
+    quantity: int | None = None,
+) -> bool:
+    resolved_entry_price = float(entry_price if entry_price is not None else signal["latest_close"])
+    resolved_quantity = int(quantity if quantity is not None else signal["quantity"])
+    asset_class = resolve_asset_class(context.engine.name)
+    risk_profile = context.config.risk_style_name
+    signal_strength = float(signal.get("score", signal.get("strength", 0.5)) or 0.5)
+    targets = calculate_cost_aware_targets(
+        entry_price=resolved_entry_price,
+        quantity=resolved_quantity,
+        asset_class=asset_class,
+        risk_profile=risk_profile,
+        signal_strength=signal_strength,
+        side=str(signal.get("signal") or "BUY"),
+    )
+
+    signal["asset_class"] = asset_class
+    signal["cost_aware_targets"] = targets
+    signal["stop_loss"] = targets["stop_loss"]
+    signal["target"] = targets["target"]
+    signal["trailing_stop"] = targets["trailing_stop"]
+
+    if not targets["is_profitable"]:
+        context.log_event(
+            f"[SKIP] Trade not profitable after costs: Entry={resolved_entry_price:.2f}, "
+            f"Target={targets['target']:.2f}, Gross={targets['expected_gross_profit']:.2f}, "
+            f"Costs={targets['expected_costs']:.2f}, Net={targets['expected_net_profit']:.2f}"
+        )
+        return False
+
+    if targets["cost_to_profit_ratio"] > 0.35:
+        context.log_event(
+            f"[SKIP] Costs too high ({targets['cost_to_profit_ratio'] * 100:.1f}% of profit) "
+            f"for {signal['symbol']}"
+        )
+        return False
+
+    return True
 
 
 def log_market_context(

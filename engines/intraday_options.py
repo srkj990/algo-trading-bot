@@ -22,6 +22,7 @@ from fno_data_fetcher import get_contract_lot_size, get_fno_spot_quote_symbol
 from data_fetcher import get_data
 from indicators import compute_vwap
 from logger import log_event
+from risk_manager import calculate_target_price
 
 from .options_equity import OptionsEquityEngine
 
@@ -92,11 +93,208 @@ class IntradayOptionsEngine(OptionsEquityEngine):
     time_exit_cutoff = datetime.strptime(
         INTRADAY_OPTIONS_TIME_EXIT_CUTOFF, "%H:%M"
     ).time()
+    runner_level_exit_fractions = (0.3, 0.4, 0.3)
 
     def __init__(self, sl_percent, target_percent, trailing_percent):
         super().__init__(sl_percent, target_percent, trailing_percent)
         self.momentum_entry_setups = {}
         self.runtime_state_dirty = False
+
+    @staticmethod
+    def _runner_regime_label(analytics):
+        label = str((analytics or {}).get("volatility_regime") or "NORMAL").upper()
+        return label if label in {"SIDEWAYS", "NORMAL", "EXPANSION"} else "NORMAL"
+
+    def _build_runner_lot_plan(self, quantity, lot_size):
+        total_lots = max(1, int(quantity) // max(1, int(lot_size or 1)))
+        if total_lots < 2:
+            return [0, 0, int(quantity)]
+
+        level1_lots = max(1, int(round(total_lots * self.runner_level_exit_fractions[0])))
+        remaining_after_level1 = max(1, total_lots - level1_lots)
+        level2_lots = 0
+        if remaining_after_level1 >= 2:
+            level2_lots = max(1, int(round(total_lots * self.runner_level_exit_fractions[1])))
+            level2_lots = min(level2_lots, remaining_after_level1 - 1)
+        runner_lots = max(1, total_lots - level1_lots - level2_lots)
+        if (level1_lots + level2_lots + runner_lots) != total_lots:
+            runner_lots = total_lots - level1_lots - level2_lots
+        return [
+            level1_lots * int(lot_size),
+            level2_lots * int(lot_size),
+            runner_lots * int(lot_size),
+        ]
+
+    def get_trend_adaptive_level_spec(
+        self,
+        *,
+        entry_price,
+        side,
+        atr,
+        signal_score,
+        analytics,
+    ):
+        regime = self._runner_regime_label(analytics)
+        base_atr = max(float(atr or 0.0), float(entry_price) * 0.015)
+        normalized_score = min(1.0, max(0.0, float(signal_score or 0.0)))
+        conviction = 1.0 + normalized_score
+
+        stop_multiplier = {
+            "SIDEWAYS": 2.0,
+            "NORMAL": 1.7,
+            "EXPANSION": 1.35,
+        }[regime]
+        target_multiplier = {
+            "SIDEWAYS": 1.1,
+            "NORMAL": 1.7,
+            "EXPANSION": 2.3,
+        }[regime]
+        trailing_multiplier = {
+            "SIDEWAYS": 1.0,
+            "NORMAL": 0.9,
+            "EXPANSION": 0.75,
+        }[regime]
+
+        stop_distance = max(float(entry_price) * 0.05, base_atr * stop_multiplier)
+        target_distance = max(float(entry_price) * 0.08, base_atr * target_multiplier * conviction)
+        trailing_distance = max(float(entry_price) * 0.035, base_atr * trailing_multiplier)
+        level1_distance = target_distance * 0.5
+        level2_distance = target_distance
+        level3_distance = target_distance * 1.6
+        stop_loss_price = (
+            float(entry_price) - stop_distance
+            if side == "BUY"
+            else float(entry_price) + stop_distance
+        )
+        return {
+            "runner_regime": regime,
+            "runner_signal_score": normalized_score,
+            "stop_distance": stop_distance,
+            "stop_loss_price": stop_loss_price,
+            "trailing_distance": trailing_distance,
+            "level1_target": calculate_target_price(side, float(entry_price), level1_distance),
+            "level2_target": calculate_target_price(side, float(entry_price), level2_distance),
+            "level3_target": calculate_target_price(side, float(entry_price), level3_distance),
+            "trailing_activation_distance": max(float(trailing_distance), float(level1_distance) * 0.8),
+        }
+
+    def build_trend_adaptive_position(
+        self,
+        *,
+        symbol,
+        side,
+        quantity,
+        entry_price,
+        atr,
+        signal_score,
+        analytics,
+        lot_size,
+        now,
+        entry_analytics,
+        engine_name,
+        execution_mode,
+        order_product,
+        extra_fields=None,
+    ):
+        level_spec = self.get_trend_adaptive_level_spec(
+            entry_price=entry_price,
+            side=side,
+            atr=atr,
+            signal_score=signal_score,
+            analytics=analytics,
+        )
+        trailing_stop = float(level_spec["stop_loss_price"])
+        exit_quantities = self._build_runner_lot_plan(quantity, lot_size)
+
+        payload = {
+            "symbol": symbol,
+            "side": side,
+            "quantity": quantity,
+            "entry_price": float(entry_price),
+            "stop_loss": level_spec["stop_loss_price"],
+            "target": level_spec["level3_target"],
+            "trailing_stop": trailing_stop,
+            "trailing_distance": level_spec["trailing_distance"],
+            "trailing_activation_distance": level_spec["trailing_activation_distance"],
+            "trailing_active": False,
+            "atr": atr,
+            "stop_distance": level_spec["stop_distance"],
+            "lot_size": lot_size,
+            "entry_analytics": entry_analytics,
+            "entry_time": now.isoformat(),
+            "engine_name": engine_name,
+            "execution_mode": execution_mode,
+            "order_product": order_product,
+            "runner_enabled": True,
+            "runner_regime": level_spec["runner_regime"],
+            "runner_signal_score": level_spec["runner_signal_score"],
+            "runner_level1_target": level_spec["level1_target"],
+            "runner_level2_target": level_spec["level2_target"],
+            "runner_level3_target": level_spec["level3_target"],
+            "runner_exit_quantities": exit_quantities,
+            "runner_exits_completed": [False, False, False],
+            "runner_last_level_hit": None,
+            "runner_stop_distance": level_spec["stop_distance"],
+        }
+        if extra_fields:
+            payload.update(extra_fields)
+        return build_position(**payload)
+
+    def get_runner_partial_exit(self, position, snapshot, now):
+        del now
+        if not position.get("runner_enabled"):
+            return None
+        if str(position.get("pair_id") or "").strip():
+            return None
+        if position.get("side") != "BUY":
+            return None
+
+        latest_high = float(snapshot["latest_candle"]["High"])
+        exit_quantities = list(position.get("runner_exit_quantities") or [])
+        completed = list(position.get("runner_exits_completed") or [False, False, False])
+        level_targets = [
+            position.get("runner_level1_target"),
+            position.get("runner_level2_target"),
+        ]
+        for index, target in enumerate(level_targets):
+            if completed[index]:
+                continue
+            planned_qty = int(exit_quantities[index] or 0)
+            if planned_qty <= 0:
+                completed[index] = True
+                position["runner_exits_completed"] = completed
+                continue
+            if latest_high >= float(target):
+                return {
+                    "level_index": index,
+                    "reason": f"RUNNER_L{index + 1}_TARGET",
+                    "quantity": min(planned_qty, int(position.get("quantity") or 0)),
+                    "target_price": float(target),
+                }
+        return None
+
+    def apply_runner_partial_exit(self, position, action, exit_price, snapshot):
+        del snapshot
+        completed = list(position.get("runner_exits_completed") or [False, False, False])
+        index = int(action["level_index"])
+        completed[index] = True
+        position["runner_exits_completed"] = completed
+        position["runner_last_level_hit"] = index + 1
+        entry_price = float(position["entry_price"])
+        exit_price = float(exit_price)
+        if position["side"] == "BUY":
+            if index == 0:
+                position["stop_loss"] = max(float(position["stop_loss"]), entry_price)
+                position["trailing_stop"] = max(float(position["trailing_stop"]), entry_price)
+            elif index == 1:
+                protected_level = max(
+                    float(position["runner_level1_target"]),
+                    exit_price - max(float(position.get("trailing_distance") or 0.0), 0.01),
+                )
+                position["stop_loss"] = max(float(position["stop_loss"]), protected_level)
+                position["trailing_stop"] = max(float(position["trailing_stop"]), protected_level)
+                position["target"] = float(position["runner_level3_target"])
+                position["trailing_active"] = True
 
     def get_cycle_state(self, now):
         if now.weekday() >= 5:

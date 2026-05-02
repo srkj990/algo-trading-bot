@@ -9,6 +9,8 @@ This repository is an interactive algo-trading bot for Indian markets with suppo
 - intraday index futures
 - intraday index options
 
+If you want an operator guide instead of an architecture walkthrough, read [HOW_TO_USE.md](./HOW_TO_USE.md).
+
 The bot runs from `main.py`, persists runtime state under `state/`, writes session logs under `logs/`, and can place real orders through supported brokers when `LIVE` mode is enabled.
 
 Recent UX/runtime improvements now also include:
@@ -17,6 +19,9 @@ Recent UX/runtime improvements now also include:
 - `[HELP]` guidance lines before interactive CLI inputs in both `main.py` and `backtesting.py`
 - engine-aware setup prompts that skip irrelevant questions where the choice is fixed
 - interactive backtesting exports under `Results/BackTest/`
+- asset-class aware stop-loss, target, and trailing-stop presets keyed off the selected engine and risk style
+- cost-aware pre-trade filtering that can skip setups whose net edge is too small after estimated charges
+- widened `INTRADAY_OPTIONS` presets so option stops, trails, and targets better reflect premium volatility and multi-stage exits
 
 Recent architecture improvements now also include:
 
@@ -964,6 +969,12 @@ Current behavior:
 - intraday options supervision now runs every `15` seconds while signal entries still wait for closed `1m` candles
 - order logs now print clearer entry and exit banners so live actions stand out in both console and log file
 - bracket-order entry support is now exposed as a synthetic execution helper; it records stop-loss and target intent even though current Kite docs expose `regular` and `co` varieties rather than native `BO`
+- single-leg entries now compute stop, target, trailing stop, breakeven, and expected net profit from asset-class-specific risk profiles plus estimated round-trip costs
+- cost-aware entry gating rejects trades when estimated costs make the setup net-unprofitable or consume more than `35%` of projected profit
+- `INTRADAY_OPTIONS` now uses wider risk presets:
+  - `CONSERVATIVE`: `8%` SL, `12%` target, `4%` trail, `[6%, 12%, 18%]` staged targets
+  - `BALANCED`: `10%` SL, `15%` target, `4.8%` trail, `[8%, 15%, 22%]` staged targets
+  - `AGGRESSIVE`: `12%` SL, `20%` target, `6%` trail, `[10%, 18%, 28%]` staged targets
 - `ATM_BREAKOUT_EXPANSION` looks for compression, breakout, volume spike, and ATR expansion on the underlying before buying the ATM option
 - `ATM_IV_EXPANSION` looks for low-IV percentile plus a momentum candle at a key level before buying the ATM option
 - `ATM_TRAP_REVERSAL` looks for failed support/resistance breaks and reversal recovery before buying the ATM option

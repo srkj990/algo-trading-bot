@@ -13,6 +13,7 @@ from orchestration.signal_workflow import (
     get_stable_signal_data,
     log_market_context,
     resolve_atm_option_contract_snapshot,
+    should_enter_trade,
 )
 
 
@@ -59,6 +60,50 @@ class ContextTests(unittest.TestCase):
 
 
 class SignalWorkflowHelperTests(unittest.TestCase):
+    def test_should_enter_trade_enriches_signal_with_cost_aware_levels(self) -> None:
+        signal = {
+            "symbol": "SBIN.NS",
+            "signal": "BUY",
+            "latest_close": 100.0,
+            "score": 0.7,
+        }
+        context = SimpleNamespace(
+            engine=SimpleNamespace(name="intraday_equity"),
+            config=SimpleNamespace(risk_style_name="BALANCED"),
+            log_event=Mock(),
+        )
+        allowed = should_enter_trade(signal, context, quantity=100)
+        self.assertTrue(allowed)
+        self.assertIn("cost_aware_targets", signal)
+        self.assertLess(signal["stop_loss"], signal["latest_close"])
+        self.assertGreater(signal["target"], signal["latest_close"])
+
+    def test_should_enter_trade_rejects_unprofitable_trade(self) -> None:
+        signal = {
+            "symbol": "NFO:TESTCE",
+            "signal": "BUY",
+            "latest_close": 10.0,
+            "score": 0.2,
+        }
+        context = SimpleNamespace(
+            engine=SimpleNamespace(name="intraday_options"),
+            config=SimpleNamespace(risk_style_name="CONSERVATIVE"),
+            log_event=Mock(),
+        )
+        with patch("orchestration.signal_workflow.calculate_cost_aware_targets", return_value={
+            "stop_loss": 9.5,
+            "target": 10.2,
+            "trailing_stop": 9.8,
+            "expected_gross_profit": 20.0,
+            "expected_costs": 30.0,
+            "expected_net_profit": -10.0,
+            "cost_to_profit_ratio": 1.5,
+            "is_profitable": False,
+        }):
+            allowed = should_enter_trade(signal, context, quantity=50)
+        self.assertFalse(allowed)
+        context.log_event.assert_called()
+
     def test_get_cached_regime_context_returns_matching_day(self) -> None:
         regime_cache = {"SBIN.NS": {"trade_day": "2026-04-29", "context": {"mode": "trend"}}}
         self.assertEqual(

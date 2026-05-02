@@ -733,6 +733,7 @@ def _default_runtime_config_map() -> dict[str, Any]:
                 "11": "RPOWER.NS",
                 "12": "JPPOWER.NS",
                 "13": "IRB.NS",
+                "14": "SIEMENS.NS",
             },
             "only_manage_configured_symbols": True,
         },
@@ -870,6 +871,150 @@ RUNTIME_CONFIG = _build_runtime_config()
 
 def get_runtime_config() -> RuntimeConfig:
     return RUNTIME_CONFIG
+
+
+ENGINE_TO_ASSET_CLASS = {
+    "intraday_equity": "INTRADAY_EQUITY",
+    "delivery_equity": "DELIVERY_EQUITY",
+    "futures_equity": "FUTURES_EQUITY",
+    "options_equity": "OPTIONS_EQUITY",
+    "intraday_futures": "INTRADAY_FUTURES",
+    "intraday_options": "INTRADAY_OPTIONS",
+}
+
+ASSET_CLASS_RISK_PROFILES = {
+    "INTRADAY_EQUITY": {
+        "CONSERVATIVE": {
+            "sl_percent": 0.7,
+            "target_percent": 1.2,
+            "trailing_percent": 0.35,
+            "min_breakeven_move": 0.3,
+        },
+        "BALANCED": {
+            "sl_percent": 1.0,
+            "target_percent": 1.8,
+            "trailing_percent": 0.5,
+            "min_breakeven_move": 0.4,
+        },
+        "AGGRESSIVE": {
+            "sl_percent": 1.2,
+            "target_percent": 2.5,
+            "trailing_percent": 0.7,
+            "min_breakeven_move": 0.6,
+        },
+    },
+    "INTRADAY_OPTIONS": {
+        "CONSERVATIVE": {
+            "sl_percent": 8.0,
+            "target_percent": 12.0,
+            "trailing_percent": 4.0,
+            "min_breakeven_move": 1.0,
+            "multi_level_targets": [6.0, 12.0, 18.0],
+        },
+        "BALANCED": {
+            "sl_percent": 10.0,
+            "target_percent": 15.0,
+            "trailing_percent": 4.8,
+            "min_breakeven_move": 1.0,
+            "multi_level_targets": [8.0, 15.0, 22.0],
+        },
+        "AGGRESSIVE": {
+            "sl_percent": 12.0,
+            "target_percent": 20.0,
+            "trailing_percent": 6.0,
+            "min_breakeven_move": 1.0,
+            "multi_level_targets": [10.0, 18.0, 28.0],
+        },
+    },
+    "DELIVERY_EQUITY": {
+        "CONSERVATIVE": {
+            "sl_percent": 1.5,
+            "target_percent": 2.0,
+            "trailing_percent": 0.5,
+            "min_breakeven_move": 0.15,
+        },
+        "BALANCED": {
+            "sl_percent": 2.0,
+            "target_percent": 3.0,
+            "trailing_percent": 0.75,
+            "min_breakeven_move": 0.15,
+        },
+        "AGGRESSIVE": {
+            "sl_percent": 2.8,
+            "target_percent": 4.5,
+            "trailing_percent": 1.0,
+            "min_breakeven_move": 0.15,
+        },
+    },
+    "FUTURES_EQUITY": {
+        "CONSERVATIVE": {
+            "sl_percent": 0.8,
+            "target_percent": 1.4,
+            "trailing_percent": 0.4,
+            "min_breakeven_move": 0.12,
+        },
+        "BALANCED": {
+            "sl_percent": 1.1,
+            "target_percent": 1.8,
+            "trailing_percent": 0.55,
+            "min_breakeven_move": 0.12,
+        },
+        "AGGRESSIVE": {
+            "sl_percent": 1.5,
+            "target_percent": 2.4,
+            "trailing_percent": 0.7,
+            "min_breakeven_move": 0.12,
+        },
+    },
+    "OPTIONS_EQUITY": {
+        "CONSERVATIVE": {
+            "sl_percent": 3.0,
+            "target_percent": 5.0,
+            "trailing_percent": 1.25,
+            "min_breakeven_move": 0.3,
+            "multi_level_targets": [2.5, 5.0, 9.0],
+        },
+        "BALANCED": {
+            "sl_percent": 4.0,
+            "target_percent": 7.0,
+            "trailing_percent": 1.5,
+            "min_breakeven_move": 0.3,
+            "multi_level_targets": [3.0, 7.0, 12.0],
+        },
+        "AGGRESSIVE": {
+            "sl_percent": 5.0,
+            "target_percent": 9.0,
+            "trailing_percent": 2.0,
+            "min_breakeven_move": 0.3,
+            "multi_level_targets": [4.0, 9.0, 15.0],
+        },
+    },
+    "INTRADAY_FUTURES": {
+        "CONSERVATIVE": {
+            "sl_percent": 0.6,
+            "target_percent": 1.0,
+            "trailing_percent": 0.3,
+            "min_breakeven_move": 0.1,
+        },
+        "BALANCED": {
+            "sl_percent": 0.9,
+            "target_percent": 1.5,
+            "trailing_percent": 0.4,
+            "min_breakeven_move": 0.1,
+        },
+        "AGGRESSIVE": {
+            "sl_percent": 1.2,
+            "target_percent": 2.0,
+            "trailing_percent": 0.55,
+            "min_breakeven_move": 0.1,
+        },
+    },
+}
+
+
+def resolve_asset_class(engine_name: str) -> str:
+    normalized_engine_name = str(engine_name or "").strip().lower()
+    return ENGINE_TO_ASSET_CLASS.get(normalized_engine_name, "INTRADAY_EQUITY")
 
 
 API_KEY = _get_first_env_value(get_broker_env_names("KITE", "API_KEY"))

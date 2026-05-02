@@ -11,6 +11,7 @@ from config import (
     TRANSACTION_COST_MODEL_ENABLED,
     TRANSACTION_SLIPPAGE_PCT_PER_SIDE,
 )
+from executor import calculate_cost_aware_targets
 from engines.common import (
     apply_capital_limits_to_quantity,
     build_position,
@@ -35,7 +36,7 @@ from transaction_costs import estimate_intraday_equity_round_trip_cost
 
 from . import positions as position_flow
 from .context import persist_runtime_state
-from .signal_workflow import scan_symbols
+from .signal_workflow import scan_symbols, should_enter_trade
 
 
 def log_order_signal_banner(log_event, title, lines):
@@ -60,6 +61,32 @@ def _resolve_limit_price(entry_price: float, side: str, buffer_pct: float) -> fl
 
 
 def _build_intraday_option_position_from_roll(context, current_position, symbol, qty, entry_price, analytics, now):
+    extra_fields = {
+        "trade_identity": current_position.get("trade_identity"),
+        "dynamic_atm_roll_enabled": True,
+        "strike_offset": current_position.get("strike_offset", 0),
+        "strike_offset_mode": current_position.get("strike_offset_mode", "ATM"),
+        "entry_underlying_price": analytics.get("underlying_price"),
+        "rolled_from": current_position.get("symbol"),
+        "roll_count": int(current_position.get("roll_count", 0)) + 1,
+    }
+    if hasattr(context.engine, "build_trend_adaptive_position"):
+        return context.engine.build_trend_adaptive_position(
+            symbol=symbol,
+            side="BUY",
+            quantity=qty,
+            entry_price=float(entry_price),
+            atr=float(current_position.get("atr") or 0.0),
+            signal_score=float(current_position.get("runner_signal_score") or 0.0),
+            analytics=analytics,
+            lot_size=get_contract_lot_size(symbol),
+            now=now,
+            entry_analytics=analytics,
+            engine_name=context.engine.name,
+            execution_mode=context.config.execution_mode,
+            order_product=context.engine.order_product,
+            extra_fields=extra_fields,
+        )
     stop_distance = float(entry_price) * 0.10
     stop_loss_price = float(entry_price) - stop_distance
     target_distance = float(entry_price) * 0.20
@@ -89,13 +116,7 @@ def _build_intraday_option_position_from_roll(context, current_position, symbol,
         engine_name=context.engine.name,
         execution_mode=context.config.execution_mode,
         order_product=context.engine.order_product,
-        trade_identity=current_position.get("trade_identity"),
-        dynamic_atm_roll_enabled=True,
-        strike_offset=current_position.get("strike_offset", 0),
-        strike_offset_mode=current_position.get("strike_offset_mode", "ATM"),
-        entry_underlying_price=analytics.get("underlying_price"),
-        rolled_from=current_position.get("symbol"),
-        roll_count=int(current_position.get("roll_count", 0)) + 1,
+        **extra_fields,
     )
 
 
@@ -584,8 +605,19 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
     entry_price = candidate["latest_close"]
     atr_value = candidate.get("atr", 0.0)
     if engine.name == "intraday_options" and cfg.atm_option_config:
-        stop_distance = entry_price * 0.10
-        stop_loss_price = entry_price - stop_distance if candidate["signal"] == "BUY" else entry_price + stop_distance
+        if hasattr(engine, "get_trend_adaptive_level_spec"):
+            level_spec = engine.get_trend_adaptive_level_spec(
+                entry_price=entry_price,
+                side=candidate["signal"],
+                atr=atr_value,
+                signal_score=float(candidate.get("score") or 0.0),
+                analytics=candidate.get("analytics") or {},
+            )
+            stop_distance = float(level_spec["stop_distance"])
+            stop_loss_price = float(level_spec["stop_loss_price"])
+        else:
+            stop_distance = entry_price * 0.10
+            stop_loss_price = entry_price - stop_distance if candidate["signal"] == "BUY" else entry_price + stop_distance
         stop_data = {
             "atr": atr_value,
             "stop_distance": stop_distance,
@@ -624,19 +656,46 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
         context.log_event(f"[RISK] Quantity is 0 for {symbol} after applying risk and capital limits, skipping", "warning")
         return False
 
+    if not should_enter_trade(
+        candidate,
+        context,
+        entry_price=float(entry_price),
+        quantity=int(qty),
+    ):
+        return False
+
     estimated_trade_capital = entry_price * qty
     if engine.name == "intraday_options" and cfg.atm_option_config:
-        target_distance = entry_price * 0.20
-        trailing_distance = entry_price * 0.075
+        if hasattr(engine, "get_trend_adaptive_level_spec"):
+            level_spec = engine.get_trend_adaptive_level_spec(
+                entry_price=entry_price,
+                side=candidate["signal"],
+                atr=atr_value,
+                signal_score=float(candidate.get("score") or 0.0),
+                analytics=candidate.get("analytics") or {},
+            )
+            target_price = float(level_spec["level3_target"])
+            trailing_distance = float(level_spec["trailing_distance"])
+            trailing_stop = float(level_spec["stop_loss_price"])
+            trailing_activation_distance = float(level_spec["trailing_activation_distance"])
+        else:
+            target_distance = entry_price * 0.20
+            trailing_distance = entry_price * 0.075
+            target_price = calculate_target_price(candidate["signal"], entry_price, target_distance)
+            trailing_stop = float(stop_data["stop_loss_price"])
+            trailing_activation_distance = max(
+                float(trailing_distance or 0.0),
+                float(stop_data.get("stop_distance") or 0.0) * float(TRAILING_ACTIVATION_STOP_DISTANCE_MULTIPLIER or 0.0),
+            )
     else:
         target_distance = stop_data["stop_distance"] * cfg.target_risk_reward
         trailing_distance = atr_value * cfg.trailing_atr_multiplier
-    target_price = calculate_target_price(candidate["signal"], entry_price, target_distance)
-    trailing_stop = float(stop_data["stop_loss_price"])
-    trailing_activation_distance = max(
-        float(trailing_distance or 0.0),
-        float(stop_data.get("stop_distance") or 0.0) * float(TRAILING_ACTIVATION_STOP_DISTANCE_MULTIPLIER or 0.0),
-    )
+        target_price = calculate_target_price(candidate["signal"], entry_price, target_distance)
+        trailing_stop = float(stop_data["stop_loss_price"])
+        trailing_activation_distance = max(
+            float(trailing_distance or 0.0),
+            float(stop_data.get("stop_distance") or 0.0) * float(TRAILING_ACTIVATION_STOP_DISTANCE_MULTIPLIER or 0.0),
+        )
 
     if (
         TRANSACTION_COST_MODEL_ENABLED
@@ -662,16 +721,18 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
             return False
 
     context.log_event(
-        f"[ENTRY] Executing trade on {symbol} | Signal={candidate['signal']} | Agree={candidate['agreement_count']} | Score={candidate['score']:.4f} | ATR={atr_value:.2f} | Stop={stop_data['stop_loss_price']:.2f} | Qty={qty}"
+        f"[ENTRY] Executing trade on {symbol} | Signal={candidate['signal']} | Agree={candidate['agreement_count']} | "
+        f"Score={candidate['score']:.4f} | ATR={atr_value:.2f} | "
+        f"Stop={float(candidate.get('stop_loss', stop_data['stop_loss_price'])):.2f} | Qty={qty}"
     )
     entry_lines = [
         f"Symbol: {symbol}",
         f"Side: {candidate['signal']}",
         f"Qty: {qty}",
         f"Entry: {entry_price:.2f}",
-        f"Stop: {stop_data['stop_loss_price']:.2f}",
-        f"Target: {target_price:.2f}",
-        f"Trail: {trailing_stop:.2f}",
+        f"Stop: {float(candidate.get('stop_loss', stop_data['stop_loss_price'])):.2f}",
+        f"Target: {float(candidate.get('target', target_price)):.2f}",
+        f"Trail: {float(candidate.get('trailing_stop', trailing_stop)):.2f}",
         f"Score: {candidate['score']:.4f}",
     ]
     if candidate.get("analytics"):
@@ -710,34 +771,83 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
     qty = int(order_result.filled_quantity)
     actual_entry_price = float(order_result.average_price or entry_price)
     estimated_trade_capital = actual_entry_price * qty
+    actual_targets = calculate_cost_aware_targets(
+        entry_price=actual_entry_price,
+        quantity=qty,
+        asset_class=str(candidate.get("asset_class") or "INTRADAY_EQUITY"),
+        risk_profile=cfg.risk_style_name,
+        signal_strength=float(candidate.get("score") or 0.5),
+        side=candidate["signal"],
+    )
     context.log_event(
         f"[ORDER] Entry accepted | Symbol={symbol} | OrderId={order_result.order_id} | Filled={qty}/{requested_qty}"
     )
-    context.positions[symbol] = build_position(
-        symbol=symbol,
-        side=candidate["signal"],
-        quantity=qty,
-        entry_price=actual_entry_price,
-        stop_loss=stop_data["stop_loss_price"],
-        target=target_price,
-        trailing_stop=trailing_stop,
-        trailing_distance=trailing_distance,
-        trailing_activation_distance=trailing_activation_distance,
-        trailing_active=False,
-        atr=atr_value,
-        stop_distance=stop_data["stop_distance"],
-        lot_size=get_contract_lot_size(symbol) if ":" in symbol else 1,
-        entry_analytics=candidate.get("analytics"),
-        entry_time=now.isoformat(),
-        engine_name=engine.name,
-        execution_mode=context.config.execution_mode,
-        order_product=engine.order_product,
-        trade_identity=trade_identity,
-        dynamic_atm_roll_enabled=bool(engine.name == "intraday_options" and cfg.atm_option_config),
-        strike_offset=candidate.get("strike_offset", 0),
-        strike_offset_mode=candidate.get("strike_offset_mode", "ATM"),
-        entry_underlying_price=(candidate.get("analytics") or {}).get("underlying_price"),
-    )
+    position_extra_fields = {
+        "trade_identity": trade_identity,
+        "dynamic_atm_roll_enabled": bool(engine.name == "intraday_options" and cfg.atm_option_config),
+        "strike_offset": candidate.get("strike_offset", 0),
+        "strike_offset_mode": candidate.get("strike_offset_mode", "ATM"),
+        "entry_underlying_price": (candidate.get("analytics") or {}).get("underlying_price"),
+        "asset_class": actual_targets["asset_class"],
+        "risk_profile": actual_targets["risk_profile"],
+        "min_breakeven_price": actual_targets["min_breakeven_price"],
+        "expected_costs": actual_targets["expected_costs"],
+        "expected_net_profit": actual_targets["expected_net_profit"],
+        "cost_to_profit_ratio": actual_targets["cost_to_profit_ratio"],
+        "cost_breakdown": actual_targets["cost_breakdown"],
+    }
+    if engine.name == "intraday_options" and cfg.atm_option_config and hasattr(engine, "build_trend_adaptive_position"):
+        context.positions[symbol] = engine.build_trend_adaptive_position(
+            symbol=symbol,
+            side=candidate["signal"],
+            quantity=qty,
+            entry_price=actual_entry_price,
+            atr=float(atr_value or 0.0),
+            signal_score=float(candidate.get("score") or 0.0),
+            analytics=candidate.get("analytics") or {},
+            lot_size=get_contract_lot_size(symbol) if ":" in symbol else 1,
+            now=now,
+            entry_analytics=candidate.get("analytics"),
+            engine_name=engine.name,
+            execution_mode=context.config.execution_mode,
+            order_product=engine.order_product,
+            extra_fields=position_extra_fields,
+        )
+        context.positions[symbol]["stop_loss"] = float(actual_targets["stop_loss"])
+        context.positions[symbol]["target"] = float(actual_targets["target"])
+        context.positions[symbol]["trailing_stop"] = float(actual_targets["trailing_stop"])
+        context.positions[symbol]["stop_distance"] = abs(
+            float(actual_entry_price) - float(actual_targets["stop_loss"])
+        )
+        if actual_targets["multi_level_targets"]:
+            if len(actual_targets["multi_level_targets"]) >= 1:
+                context.positions[symbol]["runner_level1_target"] = float(actual_targets["multi_level_targets"][0])
+            if len(actual_targets["multi_level_targets"]) >= 2:
+                context.positions[symbol]["runner_level2_target"] = float(actual_targets["multi_level_targets"][1])
+            if len(actual_targets["multi_level_targets"]) >= 3:
+                context.positions[symbol]["runner_level3_target"] = float(actual_targets["multi_level_targets"][2])
+    else:
+        context.positions[symbol] = build_position(
+            symbol=symbol,
+            side=candidate["signal"],
+            quantity=qty,
+            entry_price=actual_entry_price,
+            stop_loss=actual_targets["stop_loss"],
+            target=actual_targets["target"],
+            trailing_stop=actual_targets["trailing_stop"],
+            trailing_distance=trailing_distance,
+            trailing_activation_distance=trailing_activation_distance,
+            trailing_active=False,
+            atr=atr_value,
+            stop_distance=abs(float(actual_entry_price) - float(actual_targets["stop_loss"])),
+            lot_size=get_contract_lot_size(symbol) if ":" in symbol else 1,
+            entry_analytics=candidate.get("analytics"),
+            entry_time=now.isoformat(),
+            engine_name=engine.name,
+            execution_mode=context.config.execution_mode,
+            order_product=engine.order_product,
+            **position_extra_fields,
+        )
     context.traded_symbols_today.add(trade_identity)
     if hasattr(engine, "get_trade_frequency_key"):
         trade_key = engine.get_trade_frequency_key(symbol, candidate.get("analytics"))

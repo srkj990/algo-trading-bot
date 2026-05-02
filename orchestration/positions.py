@@ -194,6 +194,52 @@ def get_theta_exit_reason(
     return None
 
 
+def execute_partial_position_exit(
+    engine: Any,
+    position: dict[str, Any],
+    exit_quantity: int,
+    reason: str,
+    exit_price: float,
+    now: datetime,
+    trade_book: list[dict[str, Any]],
+    trade_store: TradeStore | None,
+    place_order: Callable[..., Any],
+    transaction_cost_model_enabled: bool,
+    slippage_pct_per_side: float,
+) -> float:
+    exit_qty = max(0, min(int(exit_quantity), position_quantity(position)))
+    if exit_qty <= 0:
+        return float(exit_price)
+    order_result = place_order(
+        opposite_side(position),
+        exit_qty,
+        position["symbol"],
+        note=reason,
+        product=engine.order_product,
+        enforce_spread_check=False,
+        enforce_margin_check=False,
+        entry_price=float(exit_price),
+    )
+    if order_result is not None and order_result.average_price is not None:
+        exit_price = float(order_result.average_price)
+
+    closed_slice = dict(position)
+    closed_slice["quantity"] = exit_qty
+    record_closed_trade(
+        trade_book,
+        trade_store,
+        position["symbol"],
+        closed_slice,
+        float(exit_price),
+        reason,
+        now,
+        transaction_cost_model_enabled,
+        slippage_pct_per_side,
+    )
+    position["quantity"] = max(0, int(position.get("quantity") or 0) - exit_qty)
+    return float(exit_price)
+
+
 def log_trade_book_summary(
     capital: float,
     trade_book: list[dict[str, Any]],
@@ -676,6 +722,38 @@ def manage_open_positions(
                 f"(best_price={position['best_price']:.2f})"
             )
             state_changed = True
+
+        if hasattr(engine, "get_runner_partial_exit"):
+            for _ in range(3):
+                action = engine.get_runner_partial_exit(position, snapshot, now)
+                if not action:
+                    break
+                exit_price = float(snapshot["latest_close"])
+                log_event(
+                    f"[RUNNER] {symbol} {action['reason']} triggered at {exit_price:.2f} | "
+                    f"Qty={action['quantity']} | Entry={position_entry_price(position):.2f}"
+                )
+                execute_partial_position_exit(
+                    engine,
+                    position,
+                    int(action["quantity"]),
+                    str(action["reason"]),
+                    exit_price,
+                    now,
+                    trade_book,
+                    trade_store,
+                    place_order,
+                    transaction_cost_model_enabled,
+                    slippage_pct_per_side,
+                )
+                if hasattr(engine, "apply_runner_partial_exit"):
+                    engine.apply_runner_partial_exit(position, action, exit_price, snapshot)
+                state_changed = True
+                if int(position.get("quantity") or 0) <= 0:
+                    del positions[symbol]
+                    break
+            if symbol not in positions:
+                continue
 
         exit_reason = engine.evaluate_position_exit(position, snapshot["latest_candle"])
         if not exit_reason and hasattr(engine, "get_time_exit_reason"):
