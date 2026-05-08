@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from functools import lru_cache
 
 from kiteconnect import KiteConnect
 
@@ -14,7 +15,11 @@ from config import (
 )
 from data_fetcher import get_data
 from indicators import compute_vwap
-from network_utils import configure_kite_client_network
+from network_utils import (
+    configure_kite_client_network,
+    get_cached_kite_instruments,
+    kite_rate_limited_call,
+)
 from option_analytics import calculate_greeks, implied_volatility, years_to_expiry
 
 
@@ -25,6 +30,16 @@ def _get_kite_client():
     )
     kite.set_access_token(get_access_token())
     return kite
+
+
+@lru_cache(maxsize=8)
+def _get_kite_instruments_for_exchange(exchange):
+    kite = _get_kite_client()
+    instruments = get_cached_kite_instruments(
+        exchange,
+        lambda: kite.instruments(exchange),
+    )
+    return tuple(instruments)
 
 
 def _get_fno_metadata(base_symbol):
@@ -55,8 +70,7 @@ def get_fno_spot_quote_symbol(base_symbol):
 
 def _get_kite_instruments_for_base(base_symbol):
     normalized, metadata = _get_fno_metadata(base_symbol)
-    kite = _get_kite_client()
-    instruments = kite.instruments(metadata["derivatives_exchange"])
+    instruments = _get_kite_instruments_for_exchange(metadata["derivatives_exchange"])
     filtered = []
     for item in instruments:
         tradingsymbol = (item.get("tradingsymbol") or "").upper()
@@ -75,8 +89,7 @@ def _parse_symbol_exchange(symbol):
 
 def get_contract_metadata(symbol):
     exchange, tradingsymbol = _parse_symbol_exchange(symbol)
-    kite = _get_kite_client()
-    for item in kite.instruments(exchange):
+    for item in _get_kite_instruments_for_exchange(exchange):
         if (item.get("tradingsymbol") or "").upper() != tradingsymbol.upper():
             continue
         return {
@@ -112,7 +125,10 @@ def get_contract_lot_size(symbol):
 
 
 def get_contract_last_price(symbol):
-    quote = _get_kite_client().ltp([symbol]).get(symbol, {})
+    quote = kite_rate_limited_call(
+        "quote",
+        lambda: _get_kite_client().ltp([symbol]),
+    ).get(symbol, {})
     return float(quote.get("last_price") or 0.0)
 
 
@@ -180,7 +196,10 @@ def get_available_option_strikes(base_symbol, expiry, option_type=None):
 
 def get_underlying_spot_price(base_symbol):
     quote_symbol = get_fno_spot_quote_symbol(base_symbol)
-    quote = _get_kite_client().ltp([quote_symbol]).get(quote_symbol, {})
+    quote = kite_rate_limited_call(
+        "quote",
+        lambda: _get_kite_client().ltp([quote_symbol]),
+    ).get(quote_symbol, {})
     last_price = float(quote.get("last_price") or 0)
     if last_price <= 0:
         raise RuntimeError(
@@ -256,6 +275,11 @@ def get_option_greeks_snapshot(
     symbol,
     risk_free_rate=None,
     iv_history_period=None,
+    option_intraday=None,
+    underlying_intraday=None,
+    option_history=None,
+    option_price=None,
+    underlying_price=None,
 ):
     metadata = get_contract_metadata(symbol)
     option_type = metadata["instrument_type"]
@@ -263,8 +287,18 @@ def get_option_greeks_snapshot(
         raise ValueError(f"Greeks are supported only for option contracts, got {symbol}")
 
     underlying = get_contract_underlying_base(symbol)
-    option_price = get_contract_last_price(symbol)
-    underlying_price = get_underlying_spot_price(underlying)
+    resolved_option_intraday = option_intraday
+    resolved_underlying_intraday = underlying_intraday
+    if option_price is None:
+        if resolved_option_intraday is not None and not resolved_option_intraday.empty:
+            option_price = float(resolved_option_intraday.iloc[-1]["Close"] or 0.0)
+        else:
+            option_price = get_contract_last_price(symbol)
+    if underlying_price is None:
+        if resolved_underlying_intraday is not None and not resolved_underlying_intraday.empty:
+            underlying_price = float(resolved_underlying_intraday.iloc[-1]["Close"] or 0.0)
+        else:
+            underlying_price = get_underlying_spot_price(underlying)
     time_to_expiry = years_to_expiry(metadata["expiry"])
     active_risk_free_rate = (
         float(risk_free_rate)
@@ -293,12 +327,14 @@ def get_option_greeks_snapshot(
     iv_rank = None
     iv_percentile = None
     try:
-        history = get_options_data(
-            symbol,
-            period=history_period,
-            interval="1d",
-            provider="KITE",
-        )
+        history = option_history
+        if history is None:
+            history = get_options_data(
+                symbol,
+                period=history_period,
+                interval="1d",
+                provider="KITE",
+            )
         iv_history = []
         for _, row in history.tail(60).iterrows():
             close_price = float(row["Close"] or 0.0)
@@ -341,21 +377,23 @@ def get_option_greeks_snapshot(
     }
 
     try:
-        option_intraday = get_options_data(
-            symbol,
-            period="2d",
-            interval="1m",
-            provider="KITE",
-        )
-        underlying_intraday = get_data(
-            get_fno_spot_quote_symbol(underlying),
-            period="2d",
-            interval="1m",
-            provider="KITE",
-        )
-        if len(option_intraday) >= 16 and len(underlying_intraday) >= 16:
-            option_prev_close = float(option_intraday["Close"].iloc[-16])
-            underlying_prev_close = float(underlying_intraday["Close"].iloc[-16])
+        if resolved_option_intraday is None:
+            resolved_option_intraday = get_options_data(
+                symbol,
+                period="2d",
+                interval="1m",
+                provider="KITE",
+            )
+        if resolved_underlying_intraday is None:
+            resolved_underlying_intraday = get_data(
+                get_fno_spot_quote_symbol(underlying),
+                period="2d",
+                interval="1m",
+                provider="KITE",
+            )
+        if len(resolved_option_intraday) >= 16 and len(resolved_underlying_intraday) >= 16:
+            option_prev_close = float(resolved_option_intraday["Close"].iloc[-16])
+            underlying_prev_close = float(resolved_underlying_intraday["Close"].iloc[-16])
             previous_iv = implied_volatility(
                 option_price=option_prev_close,
                 spot=underlying_prev_close,
@@ -369,8 +407,8 @@ def get_option_greeks_snapshot(
                 snapshot["iv_change_15m_pct"] = (
                     (implied_vol - previous_iv) / previous_iv
                 ) * 100.0
-        if not option_intraday.empty:
-            snapshot["option_vwap"] = float(compute_vwap(option_intraday).iloc[-1])
+        if not resolved_option_intraday.empty:
+            snapshot["option_vwap"] = float(compute_vwap(resolved_option_intraday).iloc[-1])
     except Exception:
         pass
 

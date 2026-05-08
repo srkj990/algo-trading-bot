@@ -6,7 +6,11 @@ import pandas as pd
 from kiteconnect import KiteConnect
 
 from config import get_access_token, get_api_key, get_broker_ip_mode
-from network_utils import configure_kite_client_network
+from network_utils import (
+    configure_kite_client_network,
+    get_cached_kite_instruments,
+    kite_rate_limited_call,
+)
 
 from .base import DataProvider
 
@@ -21,7 +25,9 @@ class KiteDataProvider(DataProvider):
     def fetch(self, symbol: str, period: str = "1d", interval: str = "1m"):
         instrument_token = self._get_instrument_token(symbol)
         from_date, to_date = self._resolve_date_window(period)
-        candles = self._get_client().historical_data(
+        candles = kite_rate_limited_call(
+            "historical_data",
+            self._get_client().historical_data,
             instrument_token,
             from_date,
             to_date,
@@ -58,7 +64,10 @@ class KiteDataProvider(DataProvider):
         exchange, tradingsymbol = self._parse_symbol_exchange(symbol)
         cache_key = f"{exchange}:{tradingsymbol}"
         if cache_key not in self._instrument_cache:
-            instruments = self._get_client().instruments(exchange)
+            instruments = get_cached_kite_instruments(
+                exchange,
+                lambda: self._get_client().instruments(exchange),
+            )
             for item in instruments:
                 key = f"{item['exchange']}:{item['tradingsymbol']}"
                 self._instrument_cache[key] = item["instrument_token"]

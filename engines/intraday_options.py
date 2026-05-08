@@ -29,7 +29,7 @@ from .options_equity import OptionsEquityEngine
 
 class IntradayOptionsEngine(OptionsEquityEngine):
     name = "intraday_options"
-    data_period = "10d"
+    data_period = "1d"
     data_interval = "1m"
     order_product = "MIS"
     supported_strategies = {
@@ -313,7 +313,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                 "allow_entries": False,
                 "force_square_off": False,
                 "allow_scan": False,
-                "reason": "Waiting for options market open at 09:15",
+                "reason": "Waiting for options market open at 09:20",
             }
 
         if current_time >= self.market_close:
@@ -376,6 +376,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         intraday_history_df=None,
         min_confirmations=1,
         analytics=None,
+        prefetched_underlying_df=None,
     ):
         del intraday_history_df, min_confirmations
         filtered = dict(evaluation)
@@ -450,7 +451,10 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             return filtered
 
         if analytics and not analytics.get("skip_underlying_bias"):
-            bias = self.get_underlying_bias(analytics["underlying"])
+            bias = self.get_underlying_bias(
+                analytics["underlying"],
+                underlying_df=prefetched_underlying_df,
+            )
             filtered["underlying_bias"] = bias["bias"]
             analytics["underlying_bias"] = bias["bias"]
             notes.append(
@@ -1145,13 +1149,14 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             f"avg_range={avg_range:.2f}, iv_percentile={iv_percentile:.1f}, bias={bias}, regime={volatility_regime}"
         )
 
-    def get_underlying_bias(self, underlying):
-        underlying_df = get_data(
-            get_fno_spot_quote_symbol(underlying),
-            period="2d",
-            interval="1m",
-            provider="KITE",
-        )
+    def get_underlying_bias(self, underlying, underlying_df=None):
+        if underlying_df is None:
+            underlying_df = get_data(
+                get_fno_spot_quote_symbol(underlying),
+                period="2d",
+                interval="1m",
+                provider="KITE",
+            )
         if underlying_df.empty:
             raise RuntimeError(f"No underlying data for {underlying}")
 

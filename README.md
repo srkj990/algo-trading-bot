@@ -178,6 +178,186 @@ These defaults are meant to reduce overtrading, cut down on whipsaw exits, and m
 
 ## Strategies
 
+## Formula References (Signals, Filters, Risk)
+
+This section documents the key formulas used across the signal-scoring, options analytics, and sizing/exits logic.
+
+### 1) ATR (Average True Range)
+Used via `compute_atr(df, period)` in `indicators.py`.
+
+- True Range per candle:
+  - \(TR_t = \max(High_t - Low_t, |High_t - Close_{t-1}|, |Low_t - Close_{t-1}|)\)
+- ATR:
+  - \(ATR_t = \text{EMA/SMA/rolling mean of } TR_t \text{ over } period\)
+
+Implementation: `true_range.rolling(period).mean()`.
+
+### 2) RSI
+Used via `compute_rsi(series, period)` in `signal_scoring.py`.
+
+- \(\Delta_t = Close_t - Close_{t-1}\)
+- \(Gain = \text{rolling mean of } max(\Delta_t,0)\)
+- \(Loss = \text{rolling mean of } max(-\Delta_t,0)\)
+- \(RS = Gain / Loss\)
+- \(RSI = 100 - \frac{100}{1 + RS}\)
+
+### 3) VWAP (Cumulative)
+Used via `compute_vwap(df)` in `indicators.py`.
+
+- \(VWAP = \frac{\sum (Close \times Volume)}{\sum Volume}\)
+
+### 4) Strategy scoring formulas (raw score)
+Implemented in `signal_scoring.py::get_strategy_score()`.
+
+Let:
+- \(close = Close_{latest}\)
+- \(ATR = ATR_{latest}\)
+- \(normalized\_atr = \frac{ATR}{close}\) (guarded for zero/NaN)
+
+Score contributions by strategy:
+
+**ATM_***
+- \(score = strength + 0.1 \times normalized\_atr\)
+
+**MA**
+- \(score = \frac{|MA20 - MA50|}{close}\)
+
+**RSI** (BUY/SELL)
+- For BUY: \(score = \max(0, \frac{30 - RSI}{100})\)
+- For SELL: \(score = \max(0, \frac{RSI - 70}{100})\)
+
+**BREAKOUT**
+- \(prevHigh = max(High over previous 20 bars)\)
+- \(prevLow = min(Low over previous 20 bars)\)
+- For BUY: \(score = \max(0, \frac{close - prevHigh}{close})\)
+- For SELL: \(score = \max(0, \frac{prevLow - close}{close})\)
+
+**VWAP**
+- \(score = \frac{|close - VWAP|}{close}\)
+
+**ORB** (opening range breakout)
+- Consider first 15 rows `first_15`
+- \(orbHigh = max(High in first_15)\)
+- \(orbLow = min(Low in first_15)\)
+- For BUY: \(score = \max(0, \frac{close - orbHigh}{close})\)
+- For SELL: \(score = \max(0, \frac{orbLow - close}{close})\)
+
+Finally, `signal_scoring.py` adds:
+- \(score \mathrel{+}= 0.25 \times normalized\_atr\)
+
+### 5) Candidate score used for ranking
+Implemented in `signal_scoring.py::rank_candidates()`.
+
+Candidates are sorted by:
+- \(agreement\_count\) desc
+- \(score\) desc
+- \(atr\) desc
+- \(symbol\) desc
+
+A minimum-score filter may be applied using `MIN_RANKED_CANDIDATE_SCORE`.
+
+### 6) VWAP-band deviation / re-entry signals
+Implemented in `strategy.py` for `ATM_VWAP_REVERSION`.
+
+Key computed deviation:
+- \(deviation = \frac{Close - vwap}{vwap}\)
+
+Bullish/bearish re-entry rules (conceptual):
+- bullish re-entry requires negative prior deviation at least \(\ge -abs(threshold)\) and re-entry above VWAP
+- bearish re-entry requires positive prior deviation at least \(\ge abs(threshold)\) and re-entry below VWAP
+
+The exact strength uses the magnitude of min/max deviation in the lookback window.
+
+### 7) Compression range (range contraction)
+Implemented in `strategy.py` for `ATM_BREAKOUT_EXPANSION`.
+
+- Compression window high/low:
+  - \(H = max(High over compression window)\)
+  - \(L = min(Low over compression window)\)
+- Compression range pct:
+  - \(compression\_range = \frac{H - L}{max(|close|,1)}\)
+
+Compression is “OK” if:
+- \(compression\_range \le compression\_range\_pct\)
+
+### 8) Volume spike
+Implemented in `strategy.py` for breakout/expansion strategies.
+
+- \(volume\_spike = latestVolume \ge averageVolume \times volume\_spike\_multiplier\)
+
+### 9) ATR ratio / sideways detection (VWAP reversion mode)
+Implemented in `strategy.py`.
+
+- \(atr\_ratio = \frac{ATR}{close}\) (guarded)
+- Sideways regime if \(atr\_ratio \le sideways\_atr\_threshold\)
+
+### 10) Options Greeks and IV (Black-Scholes)
+Implemented in `option_analytics.py`.
+
+Core outputs stored in snapshot:
+- \(delta, gamma, theta, vega\)
+- \(iv, iv\_rank, iv\_percentile\)
+
+(Exact closed-form equations are in `option_analytics.py` and match standard Black–Scholes formulations.)
+
+### 11) IV rank / percentile approximation
+Implemented in `fno_data_fetcher.py`.
+
+Given an IV history window with min/max:
+- \(iv\_rank = \frac{IV - iv\_low}{iv\_high - iv\_low} \times 100\) (guarded)
+
+Percentile approximation:
+- \(iv\_percentile = \frac{\#(history\_IV \le IV)}{N} \times 100\)
+
+### 12) Option filter thresholds used by `intraday_options`
+Implemented in `engines/intraday_options.py`.
+
+Examples:
+- Minimum option premium floor: \(option\_price \ge min\_contract\_price\)
+- Minimum absolute delta: \(|delta| \ge min\_abs\_delta\)
+- Vega-crush blocker:
+  - block if \(iv\_change\_{15m} \le -|vega\_crush\_block\_percent|\)
+
+- Sideways blocker uses recent VWAP deviation:
+  - \(recent\_deviation = \frac{|Close - VWAP|}{VWAP}\)
+  - block if \(max(recent\_deviation) \le sideways\_vwap\_band\_pct\) AND recent range pct is below threshold.
+
+### 13) Cost-aware targets (stop/target/trailing)
+Implemented in `executor.py::calculate_cost_aware_targets()`.
+
+This computes:
+- `stop_loss`
+- `target`
+- `trailing_stop`
+- and rejects entries if expected net profit after estimated costs is not positive.
+
+(See `executor.py` for exact per-engine mapping and formulas for expected costs and ratios.)
+
+### 14) Intraday options runner exits / stop adjustments
+Implemented in `engines/intraday_options.py`.
+
+Runner partial exit logic triggers when:
+- `latest_high >= runner_level1_target` (then mark completed)
+- `latest_high >= runner_level2_target` (then mark completed)
+
+And stop protection uses:
+- `protected_level = max(runner_level1_target, exit_price - trailing_distance)`
+
+---
+
+## How To Use Intraday ATM Options
+
+Recommended use pattern:
+
+1. Start `main.py`
+2. Choose `KITE` data and execution for F&O
+3. Choose engine `INTRADAY OPTIONS`
+4. Select `ATM SINGLE OPTION`
+5. Choose underlying, expiry, and strike mode
+6. Choose one of the available intraday ATM strategies
+7. Let the bot monitor the underlying and resolve the ATM option only when the setup is valid
+
+
 The active signal framework currently uses:
 
 - `MA`

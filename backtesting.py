@@ -385,7 +385,10 @@ class BacktestEngine:
                 }
             )
 
-        ranked = rank_candidates(candidates)
+        min_rank_score = None
+        if self.config.engine_name == "intraday_options":
+            min_rank_score = 0.0
+        ranked = rank_candidates(candidates, min_score=min_rank_score)
         self._enter_ranked_candidates(ranked, timestamp)
         self._mark_equity(timestamp, latest_prices)
 

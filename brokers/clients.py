@@ -10,7 +10,7 @@ from config import (
     get_upstox_access_token,
     get_upstox_static_ip,
 )
-from network_utils import broker_request, configure_kite_client_network
+from network_utils import broker_request, configure_kite_client_network, kite_rate_limited_call
 
 UPSTOX_ORDER_URL = "https://api-hft.upstox.com/v3/order/place"
 IPV4_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
@@ -71,7 +71,9 @@ class KiteBrokerClient(BrokerClient):
         kite_exchange = exchange_map.get(exchange)
         if kite_exchange is None:
             raise ValueError(f"Unsupported Kite exchange for order placement: {exchange}")
-        order_id = kite.place_order(
+        order_id = kite_rate_limited_call(
+            "orders",
+            kite.place_order,
             variety=kite.VARIETY_REGULAR,
             exchange=kite_exchange,
             tradingsymbol=tradingsymbol,
@@ -91,7 +93,7 @@ class KiteBrokerClient(BrokerClient):
         )
 
     def get_order_status(self, order_id: str) -> OrderResult | None:
-        for item in reversed(self._get_client().orders()):
+        for item in reversed(kite_rate_limited_call("orders", self._get_client().orders)):
             if str(item.get("order_id") or "") != str(order_id):
                 continue
             status_text = str(item.get("status") or "").upper()
@@ -138,7 +140,7 @@ class KiteBrokerClient(BrokerClient):
     def get_quote(self, symbol: str) -> Quote:
         exchange, tradingsymbol = self._parse_symbol_exchange(symbol)
         quote_key = f"{exchange}:{tradingsymbol}"
-        payload = self._get_client().quote([quote_key])
+        payload = kite_rate_limited_call("quote", self._get_client().quote, [quote_key])
         data = payload.get(quote_key) or {}
         depth = data.get("depth") or {}
         buy = depth.get("buy") or []
@@ -153,7 +155,12 @@ class KiteBrokerClient(BrokerClient):
         )
 
     def cancel_order(self, order_id: str) -> bool:
-        self._get_client().cancel_order(variety="regular", order_id=order_id)
+        kite_rate_limited_call(
+            "orders",
+            self._get_client().cancel_order,
+            variety="regular",
+            order_id=order_id,
+        )
         return True
 
     def get_intraday_positions(self) -> list[dict]:

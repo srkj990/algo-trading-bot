@@ -8,6 +8,7 @@ from typing import Any
 from config import resolve_asset_class
 from executor import calculate_cost_aware_targets
 from fno_data_fetcher import get_atm_option_strike, get_option_greeks_snapshot, resolve_option_contract
+from indicators import compute_vwap
 from signal_scoring import evaluate_symbol_signal, get_atr_value, rank_candidates
 
 from . import positions as position_flow
@@ -94,6 +95,7 @@ def resolve_atm_option_contract_snapshot(
     evaluation: dict[str, Any],
     now: datetime,
     fetch_data: Any,
+    underlying_data: Any,
 ) -> dict[str, Any] | None:
     option_type = evaluation.get("option_type")
     if option_type not in {"CE", "PE"}:
@@ -120,6 +122,31 @@ def resolve_atm_option_contract_snapshot(
 
     latest_candle = stable_option_data.iloc[-1]
     latest_close = float(latest_candle["Close"])
+    underlying_price = float(underlying_data.iloc[-1]["Close"]) if underlying_data is not None and not underlying_data.empty else 0.0
+    analytics = None
+    try:
+        analytics = get_option_greeks_snapshot(
+            contract_symbol,
+            option_intraday=stable_option_data,
+            underlying_intraday=underlying_data,
+            option_price=latest_close,
+            underlying_price=underlying_price if underlying_price > 0 else None,
+        )
+    except Exception:
+        analytics = {
+            "symbol": contract_symbol,
+            "underlying": underlying,
+            "underlying_price": underlying_price,
+            "option_price": latest_close,
+            "strike": strike,
+            "option_type": option_type,
+            "expiry": expiry,
+            "days_to_expiry": 0,
+            "iv": 0.0,
+            "iv_rank": None,
+            "iv_percentile": None,
+            "option_vwap": float(compute_vwap(stable_option_data).iloc[-1]) if not stable_option_data.empty else latest_close,
+        }
     return {
         "symbol": contract_symbol,
         "strike": strike,
@@ -128,7 +155,7 @@ def resolve_atm_option_contract_snapshot(
         "latest_candle": latest_candle,
         "latest_close": latest_close,
         "atr": get_atr_value(stable_option_data),
-        "analytics": get_option_greeks_snapshot(contract_symbol),
+        "analytics": analytics,
         "trade_identity": underlying,
         "strike_offset": strike_offset,
         "strike_offset_mode": atm_option_config.get("strike_offset_mode", "ATM"),
@@ -296,6 +323,7 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
                     evaluation,
                     now,
                     context.fetch_data,
+                    signal_data,
                 )
                 candidate_symbol = contract_snapshot["symbol"]
                 candidate_latest_close = contract_snapshot["latest_close"]
@@ -315,7 +343,11 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
                 evaluation["reason"] = str(exc)
         elif "options" in engine.name:
             try:
-                option_analytics = get_option_greeks_snapshot(symbol)
+                option_analytics = get_option_greeks_snapshot(
+                    symbol,
+                    option_intraday=contract_data,
+                    option_price=candidate_latest_close,
+                )
                 if (
                     engine.name == "intraday_options"
                     and cfg.option_pair_config
@@ -326,12 +358,17 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
                 context.log_event(f"[GREEKS] Could not build options analytics for {symbol}: {exc}", "warning")
 
         if hasattr(engine, "apply_signal_filters"):
+            filter_kwargs = {
+                "intraday_history_df": intraday_history,
+                "min_confirmations": active_min_confirmations or 1,
+                "analytics": option_analytics,
+            }
+            if engine.name == "intraday_options":
+                filter_kwargs["prefetched_underlying_df"] = signal_data if dynamic_atm_scan else None
             evaluation = engine.apply_signal_filters(
                 evaluation,
                 contract_data,
-                intraday_history_df=intraday_history,
-                min_confirmations=active_min_confirmations or 1,
-                analytics=option_analytics,
+                **filter_kwargs,
             )
             if getattr(engine, "runtime_state_dirty", False):
                 from .context import persist_runtime_state

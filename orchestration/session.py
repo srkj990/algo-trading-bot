@@ -162,7 +162,12 @@ def _maybe_roll_dynamic_atm_positions(context, symbol_snapshots, now) -> bool:
             context.log_event(f"[ROLL] Skipping roll for {symbol}: no data for {new_symbol}", "warning")
             continue
         new_entry_price = float(option_data.iloc[-1]["Close"])
-        new_analytics = get_option_greeks_snapshot(new_symbol)
+        new_analytics = get_option_greeks_snapshot(
+            new_symbol,
+            option_intraday=option_data,
+            option_price=new_entry_price,
+            underlying_price=current_underlying_price if current_underlying_price > 0 else None,
+        )
 
         context.log_event(
             f"[ROLL] Rolling {symbol} -> {new_symbol} | Underlying move={move_pct * 100:.2f}% | "
