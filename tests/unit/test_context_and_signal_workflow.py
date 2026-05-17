@@ -13,6 +13,7 @@ from orchestration.signal_workflow import (
     get_stable_signal_data,
     log_market_context,
     resolve_atm_option_contract_snapshot,
+    scan_symbols,
     should_enter_trade,
 )
 
@@ -143,6 +144,10 @@ class SignalWorkflowHelperTests(unittest.TestCase):
         self.assertEqual(log_event.call_count, 2)
 
     def test_resolve_atm_option_contract_snapshot_returns_enriched_contract_snapshot(self) -> None:
+        underlying_data = pd.DataFrame(
+            [{"Open": 24000.0, "High": 24020.0, "Low": 23980.0, "Close": 24010.0, "Volume": 0}],
+            index=[pd.Timestamp("2026-04-29 09:30:00")],
+        )
         option_data = pd.DataFrame(
             [{"Open": 10.0, "High": 12.0, "Low": 9.0, "Close": 11.0, "Volume": 100}],
             index=[pd.Timestamp("2026-04-29 09:30:00")],
@@ -157,9 +162,71 @@ class SignalWorkflowHelperTests(unittest.TestCase):
                 evaluation={"option_type": "CE"},
                 now=datetime(2026, 4, 29, 9, 31, 0),
                 fetch_data=Mock(return_value=option_data),
+                underlying_data=underlying_data,
             )
         self.assertEqual(snapshot["symbol"], "NFO:TEST24500CE")
         self.assertEqual(snapshot["latest_close"], 11.0)
+
+    def test_scan_symbols_skips_greeks_for_dynamic_atm_underlying_until_contract_is_resolved(self) -> None:
+        underlying_data = pd.DataFrame(
+            [
+                {"Open": 24000.0, "High": 24020.0, "Low": 23980.0, "Close": 24010.0, "Volume": 0},
+                {"Open": 24010.0, "High": 24030.0, "Low": 24000.0, "Close": 24025.0, "Volume": 0},
+            ],
+            index=[
+                pd.Timestamp("2026-04-29 09:30:00"),
+                pd.Timestamp("2026-04-29 09:31:00"),
+            ],
+        )
+        engine = SimpleNamespace(
+            name="intraday_options",
+            data_period="1d",
+            data_interval="1m",
+            require_closed_signal_candle=False,
+            apply_signal_filters=lambda evaluation, intraday_df, **kwargs: dict(evaluation),
+            normalize_entry_signal=lambda signal: signal if signal in {"BUY", "SELL"} else None,
+        )
+        config = SimpleNamespace(
+            selected_symbols=["NSE:NIFTY 50"],
+            data_provider="KITE",
+            mode="1",
+            strategy_name="ATM_BREAKOUT_EXPANSION",
+            strategies=["ATM_BREAKOUT_EXPANSION"],
+            min_confirmations=1,
+            atm_option_config={
+                "scan_symbol": "NSE:NIFTY 50",
+                "underlying": "NIFTY",
+                "expiry": "2026-04-30",
+            },
+            option_pair_config=None,
+        )
+        context = SimpleNamespace(
+            config=config,
+            engine=engine,
+            positions={},
+            regime_cache={},
+            fetch_data=Mock(return_value=underlying_data),
+            log_event=Mock(),
+            logger=Mock(),
+        )
+
+        with patch(
+            "orchestration.signal_workflow.evaluate_symbol_signal",
+            return_value={
+                "signal": "HOLD",
+                "agreement_count": 0,
+                "score": 0.0,
+                "details": {},
+                "reason": "No setup",
+                "option_signal": None,
+                "option_type": None,
+            },
+        ), patch("orchestration.signal_workflow.get_option_greeks_snapshot") as mock_greeks:
+            result = scan_symbols(context, datetime(2026, 4, 29, 9, 32, 0))
+
+        self.assertIn("NSE:NIFTY 50", result.symbol_snapshots)
+        self.assertIsNone(result.symbol_snapshots["NSE:NIFTY 50"]["options_filter_note"])
+        mock_greeks.assert_not_called()
 
 
 if __name__ == "__main__":

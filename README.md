@@ -21,7 +21,8 @@ Recent UX/runtime improvements now also include:
 - interactive backtesting exports under `Results/BackTest/`
 - asset-class aware stop-loss, target, and trailing-stop presets keyed off the selected engine and risk style
 - cost-aware pre-trade filtering that can skip setups whose net edge is too small after estimated charges
-- widened `INTRADAY_OPTIONS` presets so option stops, trails, and targets better reflect premium volatility and multi-stage exits
+- widened `INTRADAY_OPTIONS` presets so option stops and trailing distances better reflect premium volatility
+- trailing-only intraday options runner behavior for ATM single-leg longs, so the full quantity can stay in trend until stop-loss, trailing stop, or time-based exit
 
 Recent architecture improvements now also include:
 
@@ -113,6 +114,7 @@ Recent architecture improvements now also include:
   - bounded-market two-leg short pair with linked exits on range break or leg stop
   - dynamic ATM strike rolling when the underlying moves beyond the configured threshold
   - theta-aware explicit exit guard for long single-leg intraday options
+  - trailing-only single-leg runner mode with no partial profit exits
   - lot-size aware sizing and startup sync for MIS options only
 
 ## Trading Features
@@ -932,6 +934,34 @@ Support status for the requested strategy ideas:
 - [cli](./cli): prompt helpers and runtime setup/configuration flow
 - [orchestration](./orchestration): context wiring, scan/session workflows, and position lifecycle helpers
 - [state_store.py](./state_store.py): persistent runtime state
+- [tests](./tests): automated test suite, currently focused on unit coverage under `tests/unit/`
+
+## Test Folder
+
+The main automated test suite lives under [tests/unit](./tests/unit). These tests are designed to validate the refactored runtime seams without needing a full live broker session.
+
+Current test layout:
+
+- `test_foundations.py`: core model and helper behavior such as `Position`, trailing-stop updates, and legacy mapping adapters
+- `test_engine_workflows.py`: engine-specific behavior, especially intraday options and trend/trailing workflows
+- `test_orchestration_positions.py`: position-management lifecycle, exits, partial/full close behavior, and supervision-loop handling
+- `test_context_and_signal_workflow.py`: runtime context hydration, ATM option resolution, and per-symbol scan/signal flow
+- `test_brokers_and_executor.py`: broker-facing execution abstractions and executor integration seams
+- `test_config_and_trade_store.py`: runtime config validation and persisted trade-store behavior
+- `test_data_provider_service.py`: provider-backed market-data service behavior
+- `test_state_store.py`: runtime state persistence and recovery
+
+How to run tests locally:
+
+```powershell
+venv\Scripts\python.exe -m pytest tests/unit -q
+```
+
+If you only want to rerun the intraday options changes from this branch:
+
+```powershell
+venv\Scripts\python.exe -m pytest tests/unit/test_engine_workflows.py tests/unit/test_orchestration_positions.py tests/unit/test_context_and_signal_workflow.py -q
+```
 
 ## Architecture Notes
 
@@ -955,9 +985,9 @@ Current refactoring status:
   - broader type hints were added across refactored runtime seams
   - `pyproject.toml` now configures `mypy` and `ruff`
   - `.pre-commit-config.yaml` now wires formatting, lint, and type-check hooks
-  - `requirements-dev.txt` now lists the developer tooling dependencies
-  - the unit suite now covers broker/executor seams, persistence, orchestration helpers, signal helpers, and engine workflow behavior
-  - automated coverage is now at `100` unit tests in this workspace
+- `requirements-dev.txt` now lists the developer tooling dependencies
+- the unit suite now covers broker/executor seams, persistence, orchestration helpers, signal helpers, and engine workflow behavior
+- automated coverage is now at `100` unit tests in this workspace
 
 ## Developer Quality
 
@@ -973,6 +1003,8 @@ Suggested local setup:
 venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 venv\Scripts\python.exe -m pre_commit install
 ```
+
+`requirements-dev.txt` now includes `pytest` alongside `mypy`, `ruff`, `pre-commit`, and typing stubs so the test commands in this README work directly from the project virtualenv.
 
 Configured quality gates:
 
@@ -1155,10 +1187,12 @@ Current behavior:
   - `CONSERVATIVE`: `8%` SL, `12%` target, `4%` trail, `[6%, 12%, 18%]` staged targets
   - `BALANCED`: `10%` SL, `15%` target, `4.8%` trail, `[8%, 15%, 22%]` staged targets
   - `AGGRESSIVE`: `12%` SL, `20%` target, `6%` trail, `[10%, 18%, 28%]` staged targets
+- long ATM single-leg intraday options now keep the full quantity open in runner mode and ignore fixed profit-target exits once the trailing-only path is active
 - `ATM_BREAKOUT_EXPANSION` looks for compression, breakout, volume spike, and ATR expansion on the underlying before buying the ATM option
 - `ATM_IV_EXPANSION` looks for low-IV percentile plus a momentum candle at a key level before buying the ATM option
 - `ATM_TRAP_REVERSAL` looks for failed support/resistance breaks and reversal recovery before buying the ATM option
 - the sideways blocker suppresses entries when recent price action remains stuck inside a narrow VWAP band
+- dynamic ATM underlying scans now defer Greeks lookup until a concrete option contract has actually been resolved
 
 ## Known Gaps
 
@@ -1192,6 +1226,7 @@ Current behavior:
 The latest refactoring changes were checked with:
 
 ```powershell
+venv\Scripts\python.exe -m pytest tests/unit -q
 venv\Scripts\python.exe -m unittest discover -s tests\unit -p "test_*.py"
 venv\Scripts\python.exe -m py_compile main.py backtesting.py executor.py state_store.py trade_store.py data_fetcher.py cli\configuration.py orchestration\context.py orchestration\signal_workflow.py orchestration\session.py config.py
 ```

@@ -16,7 +16,7 @@ from config import (
     INTRADAY_OPTIONS_TIME_EXIT_CUTOFF,
     INTRADAY_OPTIONS_VEGA_CRUSH_BLOCK_PERCENT,
 )
-from engines.common import build_position, merge_persisted_position_state
+from engines.common import build_position, evaluate_exit, merge_persisted_position_state
 from executor_fno import get_options_positions
 from fno_data_fetcher import get_contract_lot_size, get_fno_spot_quote_symbol
 from data_fetcher import get_data
@@ -226,6 +226,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             "execution_mode": execution_mode,
             "order_product": order_product,
             "runner_enabled": True,
+            "runner_trailing_only": True,
             "runner_regime": level_spec["runner_regime"],
             "runner_signal_score": level_spec["runner_signal_score"],
             "runner_level1_target": level_spec["level1_target"],
@@ -240,37 +241,16 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             payload.update(extra_fields)
         return build_position(**payload)
 
+    def evaluate_position_exit(self, position, latest_candle):
+        include_target = not bool(position.get("runner_trailing_only"))
+        return evaluate_exit(position, latest_candle, include_target=include_target)
+
     def get_runner_partial_exit(self, position, snapshot, now):
-        del now
+        del snapshot, now
         if not position.get("runner_enabled"):
             return None
-        if str(position.get("pair_id") or "").strip():
+        if bool(position.get("runner_trailing_only")):
             return None
-        if position.get("side") != "BUY":
-            return None
-
-        latest_high = float(snapshot["latest_candle"]["High"])
-        exit_quantities = list(position.get("runner_exit_quantities") or [])
-        completed = list(position.get("runner_exits_completed") or [False, False, False])
-        level_targets = [
-            position.get("runner_level1_target"),
-            position.get("runner_level2_target"),
-        ]
-        for index, target in enumerate(level_targets):
-            if completed[index]:
-                continue
-            planned_qty = int(exit_quantities[index] or 0)
-            if planned_qty <= 0:
-                completed[index] = True
-                position["runner_exits_completed"] = completed
-                continue
-            if latest_high >= float(target):
-                return {
-                    "level_index": index,
-                    "reason": f"RUNNER_L{index + 1}_TARGET",
-                    "quantity": min(planned_qty, int(position.get("quantity") or 0)),
-                    "target_price": float(target),
-                }
         return None
 
     def apply_runner_partial_exit(self, position, action, exit_price, snapshot):
@@ -381,6 +361,8 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         del intraday_history_df, min_confirmations
         filtered = dict(evaluation)
         if analytics is None:
+            if prefetched_underlying_df is not None:
+                return filtered
             filtered["options_filter_note"] = "Greeks unavailable"
             return filtered
 

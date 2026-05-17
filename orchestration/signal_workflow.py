@@ -341,7 +341,7 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
                 evaluation["agreement_count"] = 0
                 evaluation["score"] = 0.0
                 evaluation["reason"] = str(exc)
-        elif "options" in engine.name:
+        elif "options" in engine.name and not dynamic_atm_scan:
             try:
                 option_analytics = get_option_greeks_snapshot(
                     symbol,

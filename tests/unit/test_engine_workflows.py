@@ -327,10 +327,11 @@ class IntradayOptionsEngineTests(unittest.TestCase):
             extra_fields={},
         )
         self.assertTrue(position["runner_enabled"])
+        self.assertTrue(position["runner_trailing_only"])
         self.assertGreater(position["runner_level3_target"], position["runner_level2_target"])
         self.assertEqual(position["runner_exit_quantities"], [50, 0, 50])
 
-    def test_get_runner_partial_exit_triggers_level_one(self) -> None:
+    def test_get_runner_partial_exit_returns_none_for_trailing_only_runner(self) -> None:
         position = self.engine.build_trend_adaptive_position(
             symbol="NFO:NIFTYTESTCE",
             side="BUY",
@@ -352,7 +353,33 @@ class IntradayOptionsEngineTests(unittest.TestCase):
             {"latest_candle": {"High": position["runner_level1_target"] + 0.1}},
             datetime(2026, 4, 29, 10, 5, 0),
         )
-        self.assertEqual(action["reason"], "RUNNER_L1_TARGET")
+        self.assertIsNone(action)
+
+    def test_evaluate_position_exit_ignores_runner_target_for_trailing_only_position(self) -> None:
+        position = self.engine.build_trend_adaptive_position(
+            symbol="NFO:NIFTYTESTCE",
+            side="BUY",
+            quantity=100,
+            entry_price=100.0,
+            atr=4.0,
+            signal_score=0.8,
+            analytics={"volatility_regime": "EXPANSION"},
+            lot_size=50,
+            now=datetime(2026, 4, 29, 10, 0, 0),
+            entry_analytics={"underlying": "NIFTY"},
+            engine_name=self.engine.name,
+            execution_mode="PAPER",
+            order_product="MIS",
+            extra_fields={},
+        )
+        exit_reason = self.engine.evaluate_position_exit(
+            position,
+            {
+                "High": float(position["runner_level3_target"]) + 1.0,
+                "Low": 101.0,
+            },
+        )
+        self.assertIsNone(exit_reason)
 
     def test_get_entry_profile_returns_expected_profile(self) -> None:
         self.assertEqual(self.engine.get_entry_profile("ATM_MOMENTUM"), "MOMENTUM")

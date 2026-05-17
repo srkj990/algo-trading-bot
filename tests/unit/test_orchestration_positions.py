@@ -179,7 +179,7 @@ class PositionWorkflowHelperTests(unittest.TestCase):
         )
         self.assertTrue(str(reason).startswith("THETA_EXIT_"))
 
-    def test_manage_open_positions_executes_runner_partial_exit(self) -> None:
+    def test_manage_open_positions_keeps_full_quantity_for_trailing_only_runner(self) -> None:
         from engines.intraday_options import IntradayOptionsEngine
 
         engine = IntradayOptionsEngine(5.0, 10.0, 4.0)
@@ -227,9 +227,8 @@ class PositionWorkflowHelperTests(unittest.TestCase):
             slippage_pct_per_side=0.0,
         )
         self.assertTrue(changed)
-        self.assertEqual(positions["NFO:NIFTYTESTCE"]["quantity"], 100)
-        self.assertEqual(len(trade_book), 1)
-        self.assertEqual(trade_book[0]["exit_reason"], "RUNNER_L1_TARGET")
+        self.assertEqual(positions["NFO:NIFTYTESTCE"]["quantity"], 150)
+        self.assertEqual(len(trade_book), 0)
 
     def test_force_square_off_positions_returns_false_when_flat(self) -> None:
         changed = position_flow.force_square_off_positions(
