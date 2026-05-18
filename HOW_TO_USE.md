@@ -507,7 +507,7 @@ The bot blocks new entries 30 minutes before the MIS square-off window and autom
 
 ## 9. Engine 6 — Intraday Options
 
-**What it does:** The most feature-rich engine. Monitors the underlying index in real time using 1-minute candles (checked every 15 seconds). When the chosen strategy fires, it automatically resolves the live ATM (or near-ATM) option contract and places the trade. Includes strike rolling, theta exit, vega-crush blocking, spread filtering, and margin pre-checks.
+**What it does:** The most feature-rich engine. Monitors the underlying index in real time using 1-minute candles (checked every 15 seconds). When the chosen strategy fires, it automatically resolves the live ATM (or near-ATM) option contract and places the trade. Includes strike rolling, theta exit, vega-crush blocking, spread filtering, margin pre-checks, live staged-vs-legacy momentum entry control, and configurable one-lot vs capital-based sizing defaults.
 
 > **Requires Kite.** This engine has two distinct structures — choose based on your market view.
 
@@ -535,7 +535,7 @@ Backtest interval: 1m
 Starting capital: 200000
 ```
 
-> The backtest uses the underlying spot index as a price proxy. True contract-premium decay and roll are not modeled.
+> The backtest now resolves a real option contract and uses option premium candles for entry, exit, and sizing. ATM strike selection is taken from the historical underlying candle at that backtest timestamp. It is still not a full options simulator for decay, historical Greeks, or live-style roll behavior.
 
 **Output:** `Results/BackTest/intraday_options_NIFTY_ATM_MOMENTUM_summary.txt`
 
@@ -565,6 +565,8 @@ Choose structure: ATM SINGLE OPTION
 Choose expiry: 2025-01-30
 Choose strike mode: ATM
   → Strike confirmed: ATM (resolves live at entry time)
+Intraday options lot sizing: ONE LOT or CAPITAL BASED
+Intraday options entry mode: LIVE STAGED or LEGACY IMMEDIATE BREAKOUT
 Choose strategy: ATM_MULTI
 ```
 
@@ -756,7 +758,19 @@ INTRADAY_OPTIONS_THETA_EXIT_MIN_MINUTES=60      # Theta exit only active after 6
 INTRADAY_OPTIONS_IV_EXPANSION_MAX_IV_PERCENTILE=40  # IV Expansion: enter only below 40th percentile
 INTRADAY_OPTIONS_SIDEWAYS_VWAP_BAND_PCT=0.2    # Sideways blocker band width
 INTRADAY_OPTIONS_SIDEWAYS_LOOKBACK_CANDLES=8   # Candles to check for sideways condition
+INTRADAY_OPTIONS_LOT_MODE=CAPITAL_BASED        # ONE_LOT | CAPITAL_BASED
+INTRADAY_OPTIONS_ENTRY_MODE=LIVE_STAGED        # LIVE_STAGED | LEGACY_IMMEDIATE
 ```
+
+The same two live intraday-options defaults can also be placed in `config.runtime.yaml`:
+
+```yaml
+fno:
+  intraday_options_lot_mode: "CAPITAL_BASED"
+  intraday_options_entry_mode: "LIVE_STAGED"
+```
+
+These YAML values become the default selections shown in the live CLI prompts.
 
 ### Risk styles at a glance
 
@@ -821,7 +835,7 @@ The Kite access token expired (tokens last 24 hours). Run `run_auto_auth.bat` to
 
 ### Paper and live results look very different
 
-Check `state/trade_store/` slippage audit records. Common causes: wide bid-ask spreads on the option you chose (filter with `INTRADAY_OPTIONS_SIDEWAYS_VWAP_BAND_PCT`), low OI on the strike, or the backtest using a proxy price rather than actual option premium.
+Check `state/trade_store/` slippage audit records. Common causes: wide bid-ask spreads on the option you chose, low OI on the strike, staged breakout confirmation in live mode rejecting setups that a looser legacy mode would have taken, or the backtest still omitting some live-only effects such as decay and broker execution friction.
 
 ### Position stuck open after restart
 
@@ -837,4 +851,4 @@ All 100 tests should pass. If any fail after a code change, do not run live unti
 
 ---
 
-*Document reflects the codebase as of the commit: "Add resilient live order handling and intraday options roll/theta controls."*
+*Document reflects the codebase as of the current working tree, including intraday-options premium backtest and runtime-config updates.*

@@ -111,6 +111,8 @@ class SessionConfig:
     strategy_name: str | None
     strategies: list[str] | None
     min_confirmations: int | None
+    intraday_options_lot_mode: str | None
+    intraday_options_entry_mode: str | None
 
 
 def validate_session_config(config: SessionConfig) -> SessionConfig:
@@ -139,6 +141,12 @@ def validate_session_config(config: SessionConfig) -> SessionConfig:
     if config.execution_mode == "LIVE" and runtime_config.orders.enabled:
         if config.execution_provider not in {"KITE", "UPSTOX"}:
             raise ValueError("Live execution provider must be KITE or UPSTOX")
+    if config.intraday_options_lot_mode not in {None, "ONE_LOT", "CAPITAL_BASED"}:
+        raise ValueError("Intraday options lot mode must be ONE_LOT or CAPITAL_BASED")
+    if config.intraday_options_entry_mode not in {None, "LIVE_STAGED", "LEGACY_IMMEDIATE"}:
+        raise ValueError(
+            "Intraday options entry mode must be LIVE_STAGED or LEGACY_IMMEDIATE"
+        )
     return config
 
 
@@ -514,6 +522,7 @@ def should_auto_select_top1(
 
 
 def collect_session_configuration() -> SessionConfig:
+    runtime_config = get_runtime_config()
     log_broker_network_banner()
     log_event("[SETUP] Choose trading engine - determines trading style and timeframe")
     log_event("[SETUP]   INTRADAY EQUITY: 1-minute data, MIS product, 9:15-15:30, auto square-off")
@@ -678,6 +687,48 @@ def collect_session_configuration() -> SessionConfig:
         f"[MAIN] Risk style selected: {risk_style['name']} | ATR stop={atr_stop_multiplier:.2f}x | ATR trail={trailing_atr_multiplier:.2f}x | Target RR={target_risk_reward:.2f}x | Capital risk={risk_percent * 100:.2f}%"
     )
 
+    intraday_options_lot_mode = None
+    intraday_options_entry_mode = None
+    if engine.name == "intraday_options" and atm_option_config:
+        log_event("[SETUP] Intraday options lot sizing - choose whether live entries should default to one lot or scale with capital.")
+        log_help("Choose 1 for a fixed one-lot live entry size or 2 to keep capital-based sizing. Example: 2")
+        default_lot_mode = (
+            1 if runtime_config.fno.intraday_options_lot_mode == "ONE_LOT" else 2
+        )
+        intraday_options_lot_mode = cli_input.prompt_choice(
+            "Intraday options lot sizing: ONE LOT(1) or CAPITAL BASED(2) [default 2]: ",
+            [
+                {"label": "ONE LOT", "key": 1, "value": "ONE_LOT"},
+                {"label": "CAPITAL BASED", "key": 2, "value": "CAPITAL_BASED"},
+            ],
+            default=default_lot_mode,
+        )
+        log_event(
+            "[MAIN] Intraday options lot sizing selected: "
+            + ("1 lot default" if intraday_options_lot_mode == "ONE_LOT" else "capital based")
+        )
+        log_event("[SETUP] Intraday options entry mode - choose between staged breakout confirmation and the older immediate breakout behavior.")
+        log_help("Choose 1 for live staged breakout confirmation or 2 for legacy immediate breakout entry. Example: 1")
+        default_entry_mode = (
+            2 if runtime_config.fno.intraday_options_entry_mode == "LEGACY_IMMEDIATE" else 1
+        )
+        intraday_options_entry_mode = cli_input.prompt_choice(
+            "Intraday options entry mode: LIVE STAGED(1) or LEGACY IMMEDIATE BREAKOUT(2) [default 1]: ",
+            [
+                {"label": "LIVE STAGED", "key": 1, "value": "LIVE_STAGED"},
+                {"label": "LEGACY IMMEDIATE BREAKOUT", "key": 2, "value": "LEGACY_IMMEDIATE"},
+            ],
+            default=default_entry_mode,
+        )
+        log_event(
+            "[MAIN] Intraday options entry mode selected: "
+            + (
+                "live staged breakout confirmation"
+                if intraday_options_entry_mode == "LIVE_STAGED"
+                else "legacy immediate breakout"
+            )
+        )
+
     auto_single_selection_mode = should_auto_select_top1(
         symbol_mode,
         selected_symbols,
@@ -766,6 +817,12 @@ def collect_session_configuration() -> SessionConfig:
         engine,
         DEFAULT_CONFIRMATIONS,
     )
+    if engine.name == "intraday_options":
+        engine.momentum_entry_mode = (
+            "LEGACY_RAW"
+            if intraday_options_entry_mode == "LEGACY_IMMEDIATE"
+            else "STAGED"
+        )
     log_event(
         f"[MAIN] Scan configuration | Engine={engine.name} | Data provider={data_provider} | Execution provider={execution_provider} | Symbol mode={symbol_mode} | Symbols={len(selected_symbols)} | Data={engine.data_period}/{engine.data_interval} | Mode={mode} | Max positions={max_open_positions} | Max/trade={max_capital_per_trade:.2f} | Max deployed={max_capital_deployed:.2f} | One trade/day={one_trade_per_symbol_per_day} | Selection={entry_selection_mode} | Top N={top_n_count}"
     )
@@ -800,5 +857,7 @@ def collect_session_configuration() -> SessionConfig:
         strategy_name=strategy_name,
         strategies=strategies,
         min_confirmations=min_confirmations,
-        )
+        intraday_options_lot_mode=intraday_options_lot_mode,
+        intraday_options_entry_mode=intraday_options_entry_mode,
+    )
     )

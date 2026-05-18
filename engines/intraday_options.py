@@ -98,6 +98,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
     def __init__(self, sl_percent, target_percent, trailing_percent):
         super().__init__(sl_percent, target_percent, trailing_percent)
         self.momentum_entry_setups = {}
+        self.momentum_entry_mode = "STAGED"
         self.runtime_state_dirty = False
 
     @staticmethod
@@ -360,6 +361,14 @@ class IntradayOptionsEngine(OptionsEquityEngine):
     ):
         del intraday_history_df, min_confirmations
         filtered = dict(evaluation)
+        if str(getattr(self, "momentum_entry_mode", "STAGED")).upper() == "LEGACY_RAW":
+            entry_profile = self.resolve_entry_profile(filtered, analytics=analytics)
+            if entry_profile == "MOMENTUM" and filtered.get("signal") in {"BUY", "SELL"}:
+                filtered["options_filter_note"] = (
+                    "Legacy raw breakout mode enabled: bypassed live options filters "
+                    "for momentum-style intraday options backtest entry"
+                )
+                return filtered
         if analytics is None:
             if prefetched_underlying_df is not None:
                 return filtered
@@ -918,6 +927,18 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                 "Momentum entry validator blocked trade: "
                 f"range {snapshot['candle_range']:.2f} exceeded spike limit "
                 f"{snapshot['avg_range'] * self.momentum_spike_multiplier:.2f}"
+            )
+        if str(getattr(self, "momentum_entry_mode", "STAGED")).upper() == "IMMEDIATE":
+            if not snapshot["breakout_detected"]:
+                self._clear_momentum_setup(setup_key)
+                return False, (
+                    "Momentum entry validator blocked trade: breakout candle "
+                    f"did not clear the previous {'high' if signal == 'BUY' else 'low'}"
+                )
+            self._clear_momentum_setup(setup_key)
+            return True, (
+                "Momentum immediate entry enabled: breakout candle accepted without "
+                "follow-through and pullback staging"
             )
 
         if setup and setup.get("state") == "awaiting_confirmation":

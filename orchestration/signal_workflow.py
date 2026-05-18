@@ -7,7 +7,12 @@ from typing import Any
 
 from config import resolve_asset_class
 from executor import calculate_cost_aware_targets
-from fno_data_fetcher import get_atm_option_strike, get_option_greeks_snapshot, resolve_option_contract
+from fno_data_fetcher import (
+    get_atm_option_strike,
+    get_available_option_strikes,
+    get_option_greeks_snapshot,
+    resolve_option_contract,
+)
 from indicators import compute_vwap
 from signal_scoring import evaluate_symbol_signal, get_atr_value, rank_candidates
 
@@ -82,8 +87,16 @@ def get_stable_signal_data(engine: Any, data: Any, now: datetime) -> Any:
         return data
 
     latest_ts = data.index[-1]
-    latest_naive = latest_ts.to_pydatetime().replace(tzinfo=None)
-    current_minute = now.replace(second=0, microsecond=0)
+    latest_dt = latest_ts.to_pydatetime()
+    if latest_dt.tzinfo is not None:
+        if now.tzinfo is None:
+            current_dt = now.replace(tzinfo=latest_dt.tzinfo)
+        else:
+            current_dt = now.astimezone(latest_dt.tzinfo)
+    else:
+        current_dt = now.replace(tzinfo=None)
+    latest_naive = latest_dt.replace(tzinfo=None)
+    current_minute = current_dt.replace(second=0, microsecond=0, tzinfo=None)
     if latest_naive >= current_minute and getattr(engine, "require_closed_signal_candle", False):
         return data.iloc[:-1]
     return data
@@ -104,12 +117,26 @@ def resolve_atm_option_contract_snapshot(
     underlying = atm_option_config["underlying"]
     expiry = atm_option_config["expiry"]
     strike_offset = int(atm_option_config.get("strike_offset", 0))
-    strike = get_atm_option_strike(
-        underlying,
-        expiry,
-        option_type,
-        strike_offset=strike_offset,
-    )
+    if (
+        atm_option_config.get("historical_atm_from_underlying")
+        and underlying_data is not None
+        and not underlying_data.empty
+    ):
+        strikes = get_available_option_strikes(underlying, expiry, option_type)
+        if not strikes:
+            raise RuntimeError(f"No strikes found for {underlying} {expiry}.")
+        underlying_price = float(underlying_data.iloc[-1]["Close"])
+        atm_strike = min(strikes, key=lambda candidate: abs(float(candidate) - underlying_price))
+        atm_index = strikes.index(atm_strike)
+        target_index = max(0, min(len(strikes) - 1, atm_index + strike_offset))
+        strike = int(strikes[target_index])
+    else:
+        strike = get_atm_option_strike(
+            underlying,
+            expiry,
+            option_type,
+            strike_offset=strike_offset,
+        )
     contract_symbol = resolve_option_contract(underlying, expiry, strike, option_type)
     option_data = fetch_data(
         contract_symbol,
@@ -433,7 +460,12 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
                     "atr": symbol_snapshots[symbol]["atr"],
                     "analytics": option_analytics,
                     "trade_identity": trade_identity,
-                    "underlying_signal": evaluation.get("option_signal"),
+                    "strategy": evaluation.get("strategy"),
+                    "option_signal": evaluation.get("option_signal"),
+                    "reason": evaluation.get("reason"),
+                    "underlying_symbol": symbol if dynamic_atm_scan else None,
+                    "strike": contract_snapshot["strike"] if dynamic_atm_scan else None,
+                    "option_type": contract_snapshot["option_type"] if dynamic_atm_scan else evaluation.get("option_type"),
                     "strike_offset": (
                         contract_snapshot["strike_offset"] if dynamic_atm_scan else None
                     ),

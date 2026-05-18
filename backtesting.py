@@ -4,7 +4,9 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+import re
 
 import pandas as pd
 import yfinance as yf
@@ -34,6 +36,7 @@ from fno_data_fetcher import (
     get_contract_lot_size,
     get_fno_display_name,
     get_fno_spot_quote_symbol,
+    get_option_greeks_snapshot,
     get_options_data,
     resolve_option_contract,
 )
@@ -44,8 +47,9 @@ from models.position_adapter import (
     position_side,
     signed_position_value,
 )
+from orchestration.signal_workflow import scan_symbols, should_enter_trade
 from risk_manager import atr_position_size, atr_stop_from_value, calculate_target_price
-from signal_scoring import evaluate_symbol_signal, get_atr_value, rank_candidates
+from signal_scoring import get_atr_value
 from transaction_costs import estimate_intraday_equity_round_trip_cost
 from transaction_costs import (
     estimate_delivery_equity_round_trip_cost,
@@ -106,7 +110,7 @@ BACKTEST_DEFAULT_DATA = {
     "futures_equity": ("2mo", "15m"),
     "options_equity": ("2mo", "15m"),
     "intraday_futures": ("5d", "5m"),
-    "intraday_options": ("5d", "5m"),
+    "intraday_options": ("1d", "1m"),
 }
 RESULTS_DIR = Path("Results") / "BackTest"
 VALID_BACKTEST_PERIODS = (
@@ -151,6 +155,8 @@ class BacktestConfig:
     max_capital_deployed: float
     universe: tuple[str, ...]
     one_trade_per_symbol_per_day: bool = True
+    intraday_options_lot_mode: str = "CAPITAL_BASED"
+    intraday_options_entry_mode: str = "LIVE_STAGED"
     summary_lines: list[str] = field(default_factory=list)
     option_backtest_settings: dict[str, Any] | None = None
 
@@ -180,7 +186,13 @@ class BacktestEngine:
         if self.config.engine_name == "intraday_futures":
             return IntradayFuturesEngine(sl_percent, target_percent, trailing_percent)
         if self.config.engine_name == "intraday_options":
-            return IntradayOptionsEngine(sl_percent, target_percent, trailing_percent)
+            engine = IntradayOptionsEngine(sl_percent, target_percent, trailing_percent)
+            engine.momentum_entry_mode = (
+                "LEGACY_RAW"
+                if str(self.config.intraday_options_entry_mode).upper() == "LEGACY_IMMEDIATE"
+                else "STAGED"
+            )
+            return engine
         return None
 
     def fetch_history(self):
@@ -219,7 +231,7 @@ class BacktestEngine:
             period=self.config.period,
             interval=self.config.interval,
             provider="KITE",
-            use_cache=False,
+            use_cache=True,
         )
         if hasattr(underlying_data.columns, "levels"):
             underlying_data.columns = [col[0] for col in underlying_data.columns]
@@ -241,18 +253,13 @@ class BacktestEngine:
             "ATM_PLUS_1": 1,
             "ATM_MINUS_1": -1,
         }.get(str(settings.get("strike_mode") or "ATM").upper(), 0)
-        spot_low = float(underlying_data["Low"].min())
-        spot_high = float(underlying_data["High"].max())
-        strike_padding = max(2, abs(offset_steps) + 1) * strike_step
-        strike_min = spot_low - strike_padding
-        strike_max = spot_high + strike_padding
-        selected_strikes = [
-            strike
-            for strike in strikes
-            if strike_min <= float(strike) <= strike_max
-        ]
+        selected_strikes = self._select_dynamic_atm_strikes(
+            strikes,
+            underlying_data,
+            offset_steps,
+        )
         if not selected_strikes:
-            selected_strikes = strikes
+            selected_strikes = [min(strikes, key=lambda strike: abs(float(strike) - float(underlying_data["Close"].iloc[-1])))]
 
         history = {underlying_symbol: underlying_data}
         contracts: dict[tuple[int, str], str] = {}
@@ -305,6 +312,30 @@ class BacktestEngine:
         ]
         return min(step_candidates) if step_candidates else 50
 
+    @staticmethod
+    def _select_dynamic_atm_strikes(strikes, underlying_data, offset_steps):
+        ordered_strikes = sorted({int(float(strike)) for strike in strikes})
+        if not ordered_strikes or underlying_data.empty:
+            return []
+
+        selected = set()
+        closes = (
+            underlying_data["Close"]
+            .dropna()
+            .astype(float)
+            .tolist()
+        )
+        for close_price in closes:
+            atm_strike = min(
+                ordered_strikes,
+                key=lambda strike: abs(float(strike) - float(close_price)),
+            )
+            atm_index = ordered_strikes.index(atm_strike)
+            target_index = max(0, min(len(ordered_strikes) - 1, atm_index + int(offset_steps)))
+            selected.add(int(ordered_strikes[target_index]))
+
+        return sorted(selected)
+
     def run(self):
         history = self.fetch_history()
         if not history:
@@ -319,8 +350,6 @@ class BacktestEngine:
 
     def _process_timestamp(self, history, timestamp):
         latest_prices = {}
-        candidates = []
-        signal_symbols = self._signal_symbols()
 
         for symbol, df in history.items():
             current_slice = df.loc[:timestamp]
@@ -344,52 +373,22 @@ class BacktestEngine:
                 else:
                     position = self.positions[symbol]
                     update_trailing_stop(position, latest_prices[symbol], 0)
-                    exit_reason = evaluate_exit(position, latest_candle, include_target=True)
+                    exit_reason = self.engine_helper.evaluate_position_exit(position, latest_candle)
                     if exit_reason:
-                        self._exit_position(symbol, latest_prices[symbol], timestamp, exit_reason)
+                        exit_fill_price = self._resolve_exit_fill_price(
+                            position=position,
+                            latest_candle=latest_candle,
+                            exit_reason=str(exit_reason),
+                            fallback_close=latest_prices[symbol],
+                        )
+                        self._exit_position(symbol, exit_fill_price, timestamp, exit_reason)
                 continue
 
-            if symbol not in signal_symbols:
-                continue
-
-            if not self._can_enter_symbol(symbol, timestamp):
-                continue
-
-            evaluation = self._evaluate_signal(symbol, current_slice)
-            if self.config.engine_name == "intraday_options":
-                candidate = self._build_intraday_options_candidate(
-                    signal_symbol=symbol,
-                    signal_slice=current_slice,
-                    timestamp=timestamp,
-                    evaluation=evaluation,
-                    history=history,
-                )
-                if candidate is not None:
-                    candidates.append(candidate)
-                continue
-
-            if evaluation["signal"] not in {"BUY", "SELL"}:
-                continue
-
-            candidates.append(
-                {
-                    "symbol": symbol,
-                    "signal": evaluation["signal"],
-                    "agreement_count": evaluation["agreement_count"],
-                    "score": evaluation["score"],
-                    "latest_close": latest_prices[symbol],
-                    "atr": get_atr_value(current_slice),
-                    "strategy": evaluation.get("strategy"),
-                    "option_signal": evaluation.get("option_signal"),
-                    "reason": evaluation.get("reason"),
-                }
-            )
-
-        min_rank_score = None
-        if self.config.engine_name == "intraday_options":
-            min_rank_score = 0.0
-        ranked = rank_candidates(candidates, min_score=min_rank_score)
-        self._enter_ranked_candidates(ranked, timestamp)
+        scan_result = scan_symbols(
+            self._build_signal_context(history, timestamp),
+            pd.Timestamp(timestamp).to_pydatetime(),
+        )
+        self._enter_ranked_candidates(scan_result.ranked_candidates, timestamp)
         self._mark_equity(timestamp, latest_prices)
 
     def _can_enter_symbol(self, symbol, timestamp):
@@ -413,6 +412,67 @@ class BacktestEngine:
             return tuple(settings.get("signal_symbols") or self.config.universe)
         return self.config.universe
 
+    def _build_signal_context(self, history, timestamp):
+        trade_day = pd.Timestamp(timestamp).date()
+        selected_symbols = list(self._signal_symbols())
+        runtime_option_settings = self._build_runtime_option_settings()
+        mode = "3" if self.config.strategy_mode == "AUTO_ADAPTIVE" else (
+            "1" if self.config.strategy_mode == "SINGLE" else "2"
+        )
+        selected_history = history
+
+        def fetch_data(symbol, period=None, interval=None, provider=None, use_cache=False):
+            del provider, use_cache
+            frame = selected_history.get(symbol)
+            if frame is None:
+                return pd.DataFrame()
+            slice_df = frame.loc[:timestamp]
+            if slice_df.empty:
+                return slice_df
+            requested_interval = str(interval or self.config.interval)
+            if requested_interval == self.config.interval:
+                return slice_df.copy()
+            if requested_interval == "1d":
+                return self._build_daily_history(slice_df)
+            return slice_df.copy()
+
+        logger = SimpleNamespace(exception=lambda *args, **kwargs: None)
+        return SimpleNamespace(
+            config=SimpleNamespace(
+                selected_symbols=selected_symbols,
+                data_provider="BACKTEST",
+                mode=mode,
+                strategy_name=self.config.strategy_name,
+                strategies=list(self.config.strategies),
+                min_confirmations=self.config.min_confirmations,
+                atm_option_config=runtime_option_settings,
+                option_pair_config=None,
+            ),
+            engine=self.engine_helper,
+            positions=self.positions,
+            regime_cache={},
+            fetch_data=fetch_data,
+            log_event=lambda *args, **kwargs: None,
+            logger=logger,
+            traded_symbols_today=self.traded_symbols_by_day[trade_day],
+            trade_counts_today={},
+        )
+
+    def _build_runtime_option_settings(self):
+        settings = self.config.option_backtest_settings or {}
+        if self.config.engine_name != "intraday_options" or settings.get("structure_mode") != "SINGLE":
+            return None
+        strike_mode = str(settings.get("strike_mode") or "ATM").upper()
+        strike_offset = {"ATM": 0, "ATM_PLUS_1": 1, "ATM_MINUS_1": -1}.get(strike_mode, 0)
+        return {
+            "scan_symbol": str(settings.get("underlying_symbol") or self.config.universe[0]),
+            "underlying": str(settings.get("base_symbol") or ""),
+            "expiry": str(settings.get("expiry") or ""),
+            "strike_offset": strike_offset,
+            "strike_offset_mode": strike_mode,
+            "historical_atm_from_underlying": True,
+        }
+
     def _build_intraday_options_candidate(
         self,
         *,
@@ -422,6 +482,8 @@ class BacktestEngine:
         evaluation,
         history,
     ):
+        if evaluation.get("signal") not in {"BUY", "SELL"}:
+            return None
         option_signal = str(evaluation.get("option_signal") or "")
         option_type = str(evaluation.get("option_type") or "")
         if option_signal not in {"BUY_CE", "BUY_PE"}:
@@ -460,20 +522,47 @@ class BacktestEngine:
         if latest_close <= 0 or atr_value <= 0:
             return None
 
+        option_history_daily = self._build_daily_history(option_history)
+        try:
+            option_analytics = get_option_greeks_snapshot(
+                contract_symbol,
+                option_intraday=option_slice,
+                underlying_intraday=signal_slice,
+                option_history=option_history_daily,
+                option_price=latest_close,
+                underlying_price=underlying_close,
+            )
+        except Exception:
+            option_analytics = None
+
+        filtered_evaluation = dict(evaluation)
+        if hasattr(self.engine_helper, "apply_signal_filters"):
+            filtered_evaluation = self.engine_helper.apply_signal_filters(
+                filtered_evaluation,
+                option_slice,
+                intraday_history_df=None,
+                min_confirmations=self.config.min_confirmations,
+                analytics=option_analytics,
+                prefetched_underlying_df=signal_slice,
+            )
+        if filtered_evaluation.get("signal") not in {"BUY", "SELL"}:
+            return None
+
         return {
             "symbol": contract_symbol,
             "signal": "BUY",
-            "agreement_count": evaluation["agreement_count"],
-            "score": evaluation["score"],
+            "agreement_count": filtered_evaluation["agreement_count"],
+            "score": filtered_evaluation["score"],
             "latest_close": latest_close,
             "atr": atr_value,
-            "strategy": evaluation.get("strategy"),
+            "strategy": filtered_evaluation.get("strategy"),
             "option_signal": option_signal,
-            "reason": evaluation.get("reason"),
+            "reason": filtered_evaluation.get("reason"),
             "trade_identity": str(settings.get("base_symbol") or signal_symbol),
             "underlying_symbol": signal_symbol,
             "strike": strike,
             "option_type": option_type,
+            "analytics": option_analytics,
         }
 
     def _evaluate_signal(self, symbol, current_slice):
@@ -565,14 +654,30 @@ class BacktestEngine:
             if remaining_deployable <= 0:
                 break
 
-            sizing = atr_position_size(
-                capital=current_equity,
-                entry_price=candidate["latest_close"],
-                atr_value=candidate["atr"],
-                atr_multiplier=self.config.atr_stop_multiplier,
-                risk_percent=self.config.risk_percent,
-            )
-            qty = sizing["quantity"]
+            if self.config.engine_name == "intraday_options":
+                lot_size = (
+                    get_contract_lot_size(candidate["symbol"])
+                    if ":" in candidate["symbol"]
+                    else 1
+                )
+                if self.config.intraday_options_lot_mode == "ONE_LOT":
+                    qty = int(lot_size)
+                else:
+                    available_capital = min(
+                        float(self.cash),
+                        float(self.config.max_capital_per_trade),
+                        float(remaining_deployable),
+                    )
+                    qty = int(available_capital / candidate["latest_close"])
+            else:
+                sizing = atr_position_size(
+                    capital=current_equity,
+                    entry_price=candidate["latest_close"],
+                    atr_value=candidate["atr"],
+                    atr_multiplier=self.config.atr_stop_multiplier,
+                    risk_percent=self.config.risk_percent,
+                )
+                qty = sizing["quantity"]
             qty = min(qty, int(self.config.max_capital_per_trade / candidate["latest_close"]))
             qty = min(qty, int(remaining_deployable / candidate["latest_close"]))
             if self.config.engine_name == "intraday_options":
@@ -586,6 +691,14 @@ class BacktestEngine:
             if qty <= 0:
                 continue
 
+            if not should_enter_trade(
+                candidate,
+                self._build_entry_context(),
+                entry_price=float(candidate["latest_close"]),
+                quantity=int(qty),
+            ):
+                continue
+
             entry_price = candidate["latest_close"]
             stop_data = atr_stop_from_value(
                 candidate["signal"],
@@ -593,11 +706,28 @@ class BacktestEngine:
                 candidate["atr"],
                 self.config.atr_stop_multiplier,
             )
-            target_price = calculate_target_price(
-                candidate["signal"],
-                entry_price,
-                stop_data["stop_distance"] * self.config.target_risk_reward,
-            )
+            actual_targets = dict(candidate.get("cost_aware_targets") or {})
+            if not actual_targets:
+                actual_targets = {
+                    "stop_loss": stop_data["stop_loss_price"],
+                    "target": calculate_target_price(
+                        candidate["signal"],
+                        entry_price,
+                        stop_data["stop_distance"] * self.config.target_risk_reward,
+                    ),
+                    "trailing_stop": (
+                        entry_price - (candidate["atr"] * self.config.trailing_atr_multiplier)
+                        if candidate["signal"] == "BUY"
+                        else entry_price + (candidate["atr"] * self.config.trailing_atr_multiplier)
+                    ),
+                    "multi_level_targets": [],
+                    "cost_to_profit_ratio": 0.0,
+                    "expected_costs": 0.0,
+                    "expected_net_profit": 0.0,
+                    "min_breakeven_price": entry_price,
+                    "asset_class": self.config.engine_name.upper(),
+                    "risk_profile": self.config.risk_style_name,
+                }
             trailing_distance = candidate["atr"] * self.config.trailing_atr_multiplier
             trailing_stop = (
                 entry_price - trailing_distance
@@ -605,7 +735,7 @@ class BacktestEngine:
                 else entry_price + trailing_distance
             )
             if self.config.engine_name == "intraday_options":
-                targets = calculate_cost_aware_targets(
+                actual_targets = calculate_cost_aware_targets(
                     entry_price=entry_price,
                     quantity=qty,
                     asset_class="INTRADAY_OPTIONS",
@@ -620,49 +750,51 @@ class BacktestEngine:
                     entry_price=entry_price,
                     atr=float(candidate["atr"] or 0.0),
                     signal_score=float(candidate.get("score") or 0.0),
-                    analytics={},
+                    analytics=dict(candidate.get("analytics") or {}),
                     lot_size=get_contract_lot_size(candidate["symbol"]) if ":" in candidate["symbol"] else 1,
-                    now=pd.Timestamp(timestamp).to_pydatetime(),
-                    entry_analytics={},
-                    engine_name=self.config.engine_name,
-                    execution_mode="PAPER",
-                    order_product=self.engine_helper.order_product,
-                    extra_fields={
-                        "trade_identity": trade_identity,
-                        "cost_to_profit_ratio": targets["cost_to_profit_ratio"],
-                        "expected_costs": targets["expected_costs"],
-                        "expected_net_profit": targets["expected_net_profit"],
-                        "partial_exit_events": [],
-                        "realized_pnl_parts": 0.0,
-                        "realized_charges_parts": 0.0,
-                    },
-                )
-                self.positions[candidate["symbol"]]["stop_loss"] = float(targets["stop_loss"])
-                self.positions[candidate["symbol"]]["target"] = float(targets["target"])
-                self.positions[candidate["symbol"]]["trailing_stop"] = float(targets["trailing_stop"])
-                self.positions[candidate["symbol"]]["stop_distance"] = abs(
-                    float(entry_price) - float(targets["stop_loss"])
-                )
-                self.positions[candidate["symbol"]]["min_breakeven_price"] = float(targets["min_breakeven_price"])
-                if targets["multi_level_targets"]:
-                    if len(targets["multi_level_targets"]) >= 1:
-                        self.positions[candidate["symbol"]]["runner_level1_target"] = float(targets["multi_level_targets"][0])
-                    if len(targets["multi_level_targets"]) >= 2:
-                        self.positions[candidate["symbol"]]["runner_level2_target"] = float(targets["multi_level_targets"][1])
-                    if len(targets["multi_level_targets"]) >= 3:
-                        self.positions[candidate["symbol"]]["runner_level3_target"] = float(targets["multi_level_targets"][2])
+                        now=pd.Timestamp(timestamp).to_pydatetime(),
+                        entry_analytics=dict(candidate.get("analytics") or {}),
+                        engine_name=self.config.engine_name,
+                        execution_mode="PAPER",
+                        order_product=self.engine_helper.order_product,
+                        extra_fields={
+                            "trade_identity": trade_identity,
+                            "asset_class": actual_targets["asset_class"],
+                            "risk_profile": actual_targets["risk_profile"],
+                            "cost_to_profit_ratio": actual_targets["cost_to_profit_ratio"],
+                            "expected_costs": actual_targets["expected_costs"],
+                            "expected_net_profit": actual_targets["expected_net_profit"],
+                            "partial_exit_events": [],
+                            "realized_pnl_parts": 0.0,
+                            "realized_charges_parts": 0.0,
+                        },
+                    )
+                self.positions[candidate["symbol"]]["min_breakeven_price"] = float(actual_targets["min_breakeven_price"])
             else:
                 self.positions[candidate["symbol"]] = build_position(
                     symbol=candidate["symbol"],
                     side=candidate["signal"],
                     quantity=qty,
                     entry_price=entry_price,
-                    stop_loss=stop_data["stop_loss_price"],
-                    target=target_price,
-                    trailing_stop=trailing_stop,
+                    stop_loss=actual_targets["stop_loss"],
+                    target=actual_targets["target"],
+                    trailing_stop=actual_targets["trailing_stop"],
                     trailing_distance=trailing_distance,
+                    trailing_activation_distance=max(float(trailing_distance), float(stop_data["stop_distance"])),
+                    trailing_active=False,
                     atr=candidate["atr"],
-                    stop_distance=stop_data["stop_distance"],
+                    stop_distance=abs(float(entry_price) - float(actual_targets["stop_loss"])),
+                    entry_time=pd.Timestamp(timestamp).isoformat(),
+                    engine_name=self.config.engine_name,
+                    execution_mode="PAPER",
+                    order_product=getattr(self.engine_helper, "order_product", "CNC"),
+                    trade_identity=trade_identity,
+                    asset_class=actual_targets["asset_class"],
+                    risk_profile=actual_targets["risk_profile"],
+                    min_breakeven_price=actual_targets["min_breakeven_price"],
+                    expected_costs=actual_targets["expected_costs"],
+                    expected_net_profit=actual_targets["expected_net_profit"],
+                    cost_to_profit_ratio=actual_targets["cost_to_profit_ratio"],
                 )
 
             if candidate["signal"] == "BUY":
@@ -690,6 +822,13 @@ class BacktestEngine:
                 }
             )
 
+    def _build_entry_context(self):
+        return SimpleNamespace(
+            engine=SimpleNamespace(name=self.config.engine_name),
+            config=SimpleNamespace(risk_style_name=self.config.risk_style_name),
+            log_event=lambda *args, **kwargs: None,
+        )
+
     def _manage_intraday_options_position(self, *, symbol, latest_candle, latest_close, timestamp):
         position = self.positions.get(symbol)
         if not position:
@@ -702,8 +841,6 @@ class BacktestEngine:
                 "Low": float(latest_candle["Low"]),
             },
         }
-
-        update_trailing_stop(position, float(latest_close), 0)
 
         if hasattr(self.engine_helper, "get_runner_partial_exit"):
             for _ in range(3):
@@ -724,15 +861,23 @@ class BacktestEngine:
                 if symbol not in self.positions:
                     return
 
-        time_exit_reason = None
-        if hasattr(self.engine_helper, "get_time_exit_reason"):
-            time_exit_reason = self.engine_helper.get_time_exit_reason(
+        exit_reason = self.engine_helper.evaluate_position_exit(position, latest_candle)
+        if not exit_reason and hasattr(self.engine_helper, "get_time_exit_reason"):
+            exit_reason = self.engine_helper.get_time_exit_reason(
                 position,
                 pd.Timestamp(timestamp).to_pydatetime(),
             )
-        exit_reason = time_exit_reason or evaluate_exit(position, latest_candle, include_target=True)
         if exit_reason:
-            self._exit_position(symbol, float(latest_close), timestamp, str(exit_reason))
+            exit_fill_price = self._resolve_exit_fill_price(
+                position=position,
+                latest_candle=latest_candle,
+                exit_reason=str(exit_reason),
+                fallback_close=float(latest_close),
+            )
+            self._exit_position(symbol, exit_fill_price, timestamp, str(exit_reason))
+            return
+
+        update_trailing_stop(position, float(latest_close), 0)
 
     def _partial_exit_position(self, *, symbol, exit_price, timestamp, action, snapshot):
         position = self.positions.get(symbol)
@@ -879,6 +1024,33 @@ class BacktestEngine:
 
         return 0.0
 
+    @staticmethod
+    def _resolve_exit_fill_price(*, position, latest_candle, exit_reason, fallback_close):
+        normalized_reason = str(exit_reason or "")
+        side = position_side(position)
+        candle_open = float(latest_candle.get("Open", fallback_close))
+        fallback_close = float(fallback_close)
+
+        if normalized_reason == "STOP_LOSS":
+            level = float(position["stop_loss"])
+            if side == "BUY":
+                return min(candle_open, level) if candle_open <= level else level
+            return max(candle_open, level) if candle_open >= level else level
+
+        if normalized_reason == "TRAILING_STOP":
+            level = float(position["trailing_stop"])
+            if side == "BUY":
+                return min(candle_open, level) if candle_open <= level else level
+            return max(candle_open, level) if candle_open >= level else level
+
+        if normalized_reason == "TARGET":
+            level = float(position["target"])
+            if side == "BUY":
+                return max(candle_open, level) if candle_open >= level else level
+            return min(candle_open, level) if candle_open <= level else level
+
+        return fallback_close
+
     def _close_all_open_positions(self, history, timestamp):
         for symbol in list(self.positions):
             latest_df = history[symbol].loc[:timestamp]
@@ -908,6 +1080,8 @@ class BacktestEngine:
     def _build_summary(self):
         equity_df = pd.DataFrame(self.equity_curve)
         trades_df = pd.DataFrame(self.trades)
+        if not trades_df.empty:
+            trades_df = self._enrich_trade_report_fields(trades_df)
         ending_equity = float(equity_df["equity"].iloc[-1]) if not equity_df.empty else self.cash
         total_return = ((ending_equity - self.config.capital) / self.config.capital) * 100
 
@@ -940,6 +1114,35 @@ class BacktestEngine:
             "equity_curve": equity_df,
             "trades": trades_df,
         }
+
+    @staticmethod
+    def _enrich_trade_report_fields(trades_df):
+        def parse_symbol_metadata(symbol):
+            match = re.search(r"(\d+)(CE|PE)$", str(symbol or ""))
+            if not match:
+                return None, None
+            return int(match.group(1)), match.group(2)
+
+        trades_df = trades_df.copy()
+        if "strike" not in trades_df.columns:
+            trades_df["strike"] = None
+        if "option_type" not in trades_df.columns:
+            trades_df["option_type"] = None
+        if "underlying_close_at_entry" not in trades_df.columns:
+            trades_df["underlying_close_at_entry"] = None
+
+        for index, row in trades_df.iterrows():
+            parsed_strike, parsed_option_type = parse_symbol_metadata(row.get("symbol"))
+            if pd.isna(row.get("strike")) and parsed_strike is not None:
+                trades_df.at[index, "strike"] = parsed_strike
+            if pd.isna(row.get("option_type")) and parsed_option_type is not None:
+                trades_df.at[index, "option_type"] = parsed_option_type
+            if pd.isna(row.get("underlying_close_at_entry")):
+                analytics = row.get("analytics")
+                if isinstance(analytics, dict):
+                    trades_df.at[index, "underlying_close_at_entry"] = analytics.get("underlying_price")
+
+        return trades_df
 
 
 def print_prompt_help(explanation, example=None):
@@ -1348,6 +1551,46 @@ def prompt_backtest_config():
         summary_lines = [summary_label]
         option_backtest_settings = None
 
+    intraday_options_lot_mode = "CAPITAL_BASED"
+    intraday_options_entry_mode = "LIVE_STAGED"
+    if engine_class.name == "intraday_options":
+        print_prompt_help(
+            "Choose whether intraday options backtests should default to one lot or size positions from available capital.",
+            "2 for capital-based sizing",
+        )
+        intraday_options_lot_mode = prompt_choice(
+            "Intraday options lot sizing: ONE LOT(1) or CAPITAL BASED(2) [default 2]: ",
+            [
+                {"key": 1, "value": "ONE_LOT"},
+                {"key": 2, "value": "CAPITAL_BASED"},
+            ],
+            default=2,
+        )
+        summary_lines.append(
+            "Intraday options lot sizing="
+            + ("1 lot default" if intraday_options_lot_mode == "ONE_LOT" else "capital based")
+        )
+        print_prompt_help(
+            "Choose whether momentum-style intraday options entries should follow the live staged breakout workflow or the older immediate breakout entry behavior.",
+            "1 for live staged",
+        )
+        intraday_options_entry_mode = prompt_choice(
+            "Intraday options entry mode: LIVE STAGED(1) or LEGACY IMMEDIATE BREAKOUT(2) [default 1]: ",
+            [
+                {"key": 1, "value": "LIVE_STAGED"},
+                {"key": 2, "value": "LEGACY_IMMEDIATE"},
+            ],
+            default=1,
+        )
+        summary_lines.append(
+            "Intraday options entry mode="
+            + (
+                "live staged breakout confirmation"
+                if intraday_options_entry_mode == "LIVE_STAGED"
+                else "legacy immediate breakout"
+            )
+        )
+
     print_prompt_help(
         "Choose the risk style that controls ATR stop, trailing stop, and capital risk.",
         "2 for BALANCED",
@@ -1423,6 +1666,11 @@ def prompt_backtest_config():
         engine_class.name,
         (getattr(engine_class, "data_period", "6mo"), getattr(engine_class, "data_interval", "1d")),
     )
+    if engine_class.name == "intraday_options":
+        print(
+            "[SETUP] Recommended for NIFTY ATM intraday options premium backtests: "
+            "period=1d and interval=1m for a cleaner single-session run with reduced Kite load."
+        )
     print(f"[SETUP] Valid backtest periods: {', '.join(VALID_BACKTEST_PERIODS)}")
     print_prompt_help(
         "Enter the Yahoo Finance period window for data download.",
@@ -1477,6 +1725,8 @@ def prompt_backtest_config():
         max_capital_deployed=max_capital_deployed,
         universe=universe,
         one_trade_per_symbol_per_day=one_trade_per_symbol_per_day,
+        intraday_options_lot_mode=intraday_options_lot_mode,
+        intraday_options_entry_mode=intraday_options_entry_mode,
         summary_lines=summary_lines,
         option_backtest_settings=option_backtest_settings,
     )

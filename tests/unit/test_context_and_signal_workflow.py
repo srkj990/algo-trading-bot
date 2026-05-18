@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -126,6 +127,19 @@ class SignalWorkflowHelperTests(unittest.TestCase):
         stable = get_stable_signal_data(engine, data, now)
         self.assertEqual(len(stable), 1)
 
+    def test_get_stable_signal_data_handles_timezone_aware_candles(self) -> None:
+        engine = SimpleNamespace(require_closed_signal_candle=True)
+        now = datetime(2026, 4, 29, 9, 31, 15, tzinfo=ZoneInfo("Asia/Kolkata"))
+        data = pd.DataFrame(
+            [{"Close": 100.0}, {"Close": 101.0}],
+            index=[
+                pd.Timestamp("2026-04-29 09:30:00", tz="Asia/Kolkata"),
+                pd.Timestamp("2026-04-29 09:31:00", tz="Asia/Kolkata"),
+            ],
+        )
+        stable = get_stable_signal_data(engine, data, now)
+        self.assertEqual(len(stable), 1)
+
     def test_log_market_context_writes_reason_when_present(self) -> None:
         log_event = Mock()
         log_market_context(
@@ -166,6 +180,36 @@ class SignalWorkflowHelperTests(unittest.TestCase):
             )
         self.assertEqual(snapshot["symbol"], "NFO:TEST24500CE")
         self.assertEqual(snapshot["latest_close"], 11.0)
+
+    def test_resolve_atm_option_contract_snapshot_uses_historical_underlying_for_backtest_atm(self) -> None:
+        underlying_data = pd.DataFrame(
+            [{"Open": 23400.0, "High": 23420.0, "Low": 23380.0, "Close": 23410.0, "Volume": 0}],
+            index=[pd.Timestamp("2026-05-18 10:35:00+05:30")],
+        )
+        option_data = pd.DataFrame(
+            [{"Open": 10.0, "High": 12.0, "Low": 9.0, "Close": 11.0, "Volume": 100}],
+            index=[pd.Timestamp("2026-05-18 10:35:00+05:30")],
+        )
+        with patch("orchestration.signal_workflow.get_available_option_strikes", return_value=[23350, 23400, 23450, 23650]), \
+             patch("orchestration.signal_workflow.resolve_option_contract", return_value="NFO:TEST23400CE"), \
+             patch("orchestration.signal_workflow.get_option_greeks_snapshot", return_value={"delta": 0.3}), \
+             patch("orchestration.signal_workflow.get_atr_value", return_value=2.5), \
+             patch("orchestration.signal_workflow.get_atm_option_strike") as mock_live_atm:
+            snapshot = resolve_atm_option_contract_snapshot(
+                engine=SimpleNamespace(data_period="10d", data_interval="1m", require_closed_signal_candle=False),
+                atm_option_config={
+                    "underlying": "NIFTY",
+                    "expiry": "2026-05-19",
+                    "strike_offset": 0,
+                    "historical_atm_from_underlying": True,
+                },
+                evaluation={"option_type": "CE"},
+                now=datetime(2026, 5, 18, 10, 36, 0),
+                fetch_data=Mock(return_value=option_data),
+                underlying_data=underlying_data,
+            )
+        self.assertEqual(snapshot["symbol"], "NFO:TEST23400CE")
+        mock_live_atm.assert_not_called()
 
     def test_scan_symbols_skips_greeks_for_dynamic_atm_underlying_until_contract_is_resolved(self) -> None:
         underlying_data = pd.DataFrame(
@@ -227,6 +271,115 @@ class SignalWorkflowHelperTests(unittest.TestCase):
         self.assertIn("NSE:NIFTY 50", result.symbol_snapshots)
         self.assertIsNone(result.symbol_snapshots["NSE:NIFTY 50"]["options_filter_note"])
         mock_greeks.assert_not_called()
+
+    def test_scan_symbols_populates_dynamic_atm_candidate_metadata(self) -> None:
+        underlying_data = pd.DataFrame(
+            [
+                {"Open": 24000.0, "High": 24020.0, "Low": 23980.0, "Close": 24010.0, "Volume": 0},
+                {"Open": 24010.0, "High": 24030.0, "Low": 24000.0, "Close": 24025.0, "Volume": 0},
+            ],
+            index=[
+                pd.Timestamp("2026-04-29 09:30:00"),
+                pd.Timestamp("2026-04-29 09:31:00"),
+            ],
+        )
+        option_data = pd.DataFrame(
+            [
+                {"Open": 10.0, "High": 12.0, "Low": 9.0, "Close": 11.0, "Volume": 100},
+                {"Open": 11.0, "High": 13.0, "Low": 10.0, "Close": 12.0, "Volume": 120},
+            ],
+            index=[
+                pd.Timestamp("2026-04-29 09:30:00"),
+                pd.Timestamp("2026-04-29 09:31:00"),
+            ],
+        )
+        engine = SimpleNamespace(
+            name="intraday_options",
+            data_period="1d",
+            data_interval="1m",
+            require_closed_signal_candle=False,
+            apply_signal_filters=lambda evaluation, intraday_df, **kwargs: dict(evaluation),
+            normalize_entry_signal=lambda signal: signal if signal in {"BUY", "SELL"} else None,
+            runtime_state_dirty=False,
+        )
+        config = SimpleNamespace(
+            selected_symbols=["NSE:NIFTY 50"],
+            data_provider="KITE",
+            mode="1",
+            strategy_name="ATM_BREAKOUT_EXPANSION",
+            strategies=["ATM_BREAKOUT_EXPANSION"],
+            min_confirmations=1,
+            atm_option_config={
+                "scan_symbol": "NSE:NIFTY 50",
+                "underlying": "NIFTY",
+                "expiry": "2026-04-30",
+                "strike_offset": 0,
+                "strike_offset_mode": "ATM",
+            },
+            option_pair_config=None,
+        )
+
+        def fake_fetch(symbol, *args, **kwargs):
+            return underlying_data if symbol == "NSE:NIFTY 50" else option_data
+
+        context = SimpleNamespace(
+            config=config,
+            engine=engine,
+            positions={},
+            regime_cache={},
+            fetch_data=Mock(side_effect=fake_fetch),
+            log_event=Mock(),
+            logger=Mock(),
+            traded_symbols_today=set(),
+            trade_counts_today={},
+        )
+
+        with patch(
+            "orchestration.signal_workflow.evaluate_symbol_signal",
+            return_value={
+                "signal": "BUY",
+                "agreement_count": 1,
+                "score": 0.5,
+                "details": {},
+                "reason": "Breakout",
+                "option_signal": "BUY_CE",
+                "option_type": "CE",
+                "strategy": "ATM_BREAKOUT_EXPANSION",
+            },
+        ), patch(
+            "orchestration.signal_workflow.resolve_atm_option_contract_snapshot",
+            return_value={
+                "symbol": "NFO:TEST24000CE",
+                "strike": 24000,
+                "option_type": "CE",
+                "data": option_data,
+                "latest_candle": option_data.iloc[-1],
+                "latest_close": 12.0,
+                "atr": 2.5,
+                "analytics": {
+                    "underlying_price": 24025.0,
+                    "option_price": 12.0,
+                    "option_type": "CE",
+                    "iv": 0.2,
+                    "delta": 0.3,
+                    "gamma": 0.01,
+                    "theta": -0.5,
+                    "vega": 0.4,
+                    "iv_percentile": 25.0,
+                },
+                "trade_identity": "NIFTY",
+                "strike_offset": 0,
+                "strike_offset_mode": "ATM",
+            },
+        ):
+            result = scan_symbols(context, datetime(2026, 4, 29, 9, 32, 0))
+
+        candidate = result.ranked_candidates[0]
+        self.assertEqual(candidate["strategy"], "ATM_BREAKOUT_EXPANSION")
+        self.assertEqual(candidate["option_signal"], "BUY_CE")
+        self.assertEqual(candidate["underlying_symbol"], "NSE:NIFTY 50")
+        self.assertEqual(candidate["strike"], 24000)
+        self.assertEqual(candidate["option_type"], "CE")
 
 
 if __name__ == "__main__":

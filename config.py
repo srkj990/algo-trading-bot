@@ -467,6 +467,8 @@ class FnoConfig:
     intraday_options_regime_sideways_range_pct: float
     intraday_options_regime_sideways_vwap_dev_pct: float
     intraday_options_regime_expansion_iv_change_pct: float
+    intraday_options_lot_mode: str
+    intraday_options_entry_mode: str
     intraday_options_roll_trigger_pct: float
     intraday_options_theta_exit_ratio: float
     intraday_options_theta_exit_min_minutes: int
@@ -492,6 +494,14 @@ class FnoConfig:
             raise ValueError("fno.intraday_options_min_signal_score must be >= 0")
         if self.intraday_options_max_hold_minutes < 0:
             raise ValueError("fno.intraday_options_max_hold_minutes must be >= 0")
+        if self.intraday_options_lot_mode not in {"ONE_LOT", "CAPITAL_BASED"}:
+            raise ValueError(
+                "fno.intraday_options_lot_mode must be ONE_LOT or CAPITAL_BASED"
+            )
+        if self.intraday_options_entry_mode not in {"LIVE_STAGED", "LEGACY_IMMEDIATE"}:
+            raise ValueError(
+                "fno.intraday_options_entry_mode must be LIVE_STAGED or LEGACY_IMMEDIATE"
+            )
         if self.intraday_options_roll_trigger_pct < 0:
             raise ValueError("fno.intraday_options_roll_trigger_pct must be >= 0")
         if self.intraday_options_theta_exit_ratio < 0:
@@ -798,6 +808,14 @@ def _default_runtime_config_map() -> dict[str, Any]:
             "intraday_options_regime_expansion_iv_change_pct": float(
                 os.getenv("INTRADAY_OPTIONS_REGIME_EXPANSION_IV_CHANGE_PCT", "2.0")
             ),
+            "intraday_options_lot_mode": os.getenv(
+                "INTRADAY_OPTIONS_LOT_MODE",
+                "CAPITAL_BASED",
+            ).upper(),
+            "intraday_options_entry_mode": os.getenv(
+                "INTRADAY_OPTIONS_ENTRY_MODE",
+                "LIVE_STAGED",
+            ).upper(),
             "intraday_options_roll_trigger_pct": float(
                 os.getenv("INTRADAY_OPTIONS_ROLL_TRIGGER_PCT", "2.0")
             ),
@@ -888,19 +906,19 @@ ASSET_CLASS_RISK_PROFILES = {
             "sl_percent": 0.7,
             "target_percent": 1.2,
             "trailing_percent": 0.35,
-            "min_breakeven_move": 0.3,
+            "min_breakeven_move": 0.35,
         },
         "BALANCED": {
             "sl_percent": 1.0,
             "target_percent": 1.8,
             "trailing_percent": 0.5,
-            "min_breakeven_move": 0.4,
+            "min_breakeven_move": 0.55,
         },
         "AGGRESSIVE": {
             "sl_percent": 1.2,
             "target_percent": 2.5,
             "trailing_percent": 0.7,
-            "min_breakeven_move": 0.6,
+            "min_breakeven_move": 0.8,
         },
     },
     "INTRADAY_OPTIONS": {
@@ -908,21 +926,21 @@ ASSET_CLASS_RISK_PROFILES = {
             "sl_percent": 8.0,
             "target_percent": 12.0,
             "trailing_percent": 4.0,
-            "min_breakeven_move": 1.0,
+            "min_breakeven_move": 2.5,
             "multi_level_targets": [6.0, 12.0, 18.0],
         },
         "BALANCED": {
             "sl_percent": 10.0,
             "target_percent": 15.0,
             "trailing_percent": 4.8,
-            "min_breakeven_move": 1.0,
+            "min_breakeven_move": 3.5,
             "multi_level_targets": [8.0, 15.0, 22.0],
         },
         "AGGRESSIVE": {
             "sl_percent": 12.0,
             "target_percent": 20.0,
             "trailing_percent": 6.0,
-            "min_breakeven_move": 1.0,
+            "min_breakeven_move": 5.0,
             "multi_level_targets": [10.0, 18.0, 28.0],
         },
     },
@@ -931,19 +949,19 @@ ASSET_CLASS_RISK_PROFILES = {
             "sl_percent": 1.5,
             "target_percent": 2.0,
             "trailing_percent": 0.5,
-            "min_breakeven_move": 0.15,
+            "min_breakeven_move": 0.45,
         },
         "BALANCED": {
             "sl_percent": 2.0,
             "target_percent": 3.0,
             "trailing_percent": 0.75,
-            "min_breakeven_move": 0.15,
+            "min_breakeven_move": 0.65,
         },
         "AGGRESSIVE": {
             "sl_percent": 2.8,
             "target_percent": 4.5,
             "trailing_percent": 1.0,
-            "min_breakeven_move": 0.15,
+            "min_breakeven_move": 0.9,
         },
     },
     "FUTURES_EQUITY": {
@@ -951,19 +969,19 @@ ASSET_CLASS_RISK_PROFILES = {
             "sl_percent": 0.8,
             "target_percent": 1.4,
             "trailing_percent": 0.4,
-            "min_breakeven_move": 0.12,
+            "min_breakeven_move": 0.3,
         },
         "BALANCED": {
             "sl_percent": 1.1,
             "target_percent": 1.8,
             "trailing_percent": 0.55,
-            "min_breakeven_move": 0.12,
+            "min_breakeven_move": 0.45,
         },
         "AGGRESSIVE": {
             "sl_percent": 1.5,
             "target_percent": 2.4,
             "trailing_percent": 0.7,
-            "min_breakeven_move": 0.12,
+            "min_breakeven_move": 0.65,
         },
     },
     "OPTIONS_EQUITY": {
@@ -971,21 +989,21 @@ ASSET_CLASS_RISK_PROFILES = {
             "sl_percent": 3.0,
             "target_percent": 5.0,
             "trailing_percent": 1.25,
-            "min_breakeven_move": 0.3,
+            "min_breakeven_move": 1.0,
             "multi_level_targets": [2.5, 5.0, 9.0],
         },
         "BALANCED": {
             "sl_percent": 4.0,
             "target_percent": 7.0,
             "trailing_percent": 1.5,
-            "min_breakeven_move": 0.3,
+            "min_breakeven_move": 1.5,
             "multi_level_targets": [3.0, 7.0, 12.0],
         },
         "AGGRESSIVE": {
             "sl_percent": 5.0,
             "target_percent": 9.0,
             "trailing_percent": 2.0,
-            "min_breakeven_move": 0.3,
+            "min_breakeven_move": 2.25,
             "multi_level_targets": [4.0, 9.0, 15.0],
         },
     },
@@ -994,19 +1012,19 @@ ASSET_CLASS_RISK_PROFILES = {
             "sl_percent": 0.6,
             "target_percent": 1.0,
             "trailing_percent": 0.3,
-            "min_breakeven_move": 0.1,
+            "min_breakeven_move": 0.2,
         },
         "BALANCED": {
             "sl_percent": 0.9,
             "target_percent": 1.5,
             "trailing_percent": 0.4,
-            "min_breakeven_move": 0.1,
+            "min_breakeven_move": 0.3,
         },
         "AGGRESSIVE": {
             "sl_percent": 1.2,
             "target_percent": 2.0,
             "trailing_percent": 0.55,
-            "min_breakeven_move": 0.1,
+            "min_breakeven_move": 0.45,
         },
     },
 }

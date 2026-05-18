@@ -110,11 +110,13 @@ Recent architecture improvements now also include:
   - vega-crush blocker based on 15-minute IV change
   - expiry warning when time-to-expiry is very low
   - configurable per-underlying daily trade cap
-  - selectable `ATM SINGLE OPTION` or `TWO-LEG RANGE PAIR` entry flow
+  - selectable `ATM SINGLE OPTION` or `TWO-LEG RANGE PAIR` entry flow in live/paper
   - bounded-market two-leg short pair with linked exits on range break or leg stop
   - dynamic ATM strike rolling when the underlying moves beyond the configured threshold
   - theta-aware explicit exit guard for long single-leg intraday options
   - trailing-only single-leg runner mode with no partial profit exits
+  - configurable live default for `ONE_LOT` vs `CAPITAL_BASED` sizing
+  - configurable live default for `LIVE_STAGED` vs `LEGACY_IMMEDIATE` momentum entry mode
   - lot-size aware sizing and startup sync for MIS options only
 
 ## Trading Features
@@ -150,6 +152,15 @@ Current behavior:
 - invalid values such as negative cache TTLs or zero min quantities fail fast
 - YAML overrides are merged on top of the built-in defaults
 - the old constant imports remain available for compatibility while newer code reads structured sections
+- for `intraday_options`, runtime YAML can now define the default live lot-sizing mode and momentum entry mode before the CLI prompts are shown
+
+Example:
+
+```yaml
+fno:
+  intraday_options_lot_mode: "CAPITAL_BASED"
+  intraday_options_entry_mode: "LIVE_STAGED"
+```
 
 ## Caching And Audit Safety
 
@@ -1117,8 +1128,18 @@ There is now a basic F&O backtesting entry flow, but it is still simplified.
 Current behavior:
 
 - `intraday_options` backtesting in `ATM SINGLE OPTION` mode now uses the underlying only for signal generation, then resolves a real option contract and uses option premium candles for entry, exit, and sizing
+- historical ATM strike selection in backtests is now derived from the underlying candle at that backtest timestamp, not from the current live spot quote
 - `intraday_options` `TWO-LEG RANGE PAIR` premium backtesting is not implemented yet
 - this is still not a full options simulator with expiry decay modeling, historical Greeks, or dynamic strike-roll behavior matching live execution
+
+Trade CSV now also carries richer intraday-options context when available, including fields such as:
+
+- `strategy`
+- `option_signal`
+- `underlying_symbol`
+- `strike`
+- `option_type`
+- `underlying_close_at_entry`
 
 ### End-of-Run Trade Report
 
@@ -1145,6 +1166,8 @@ These environment-backed controls now affect `intraday_options`:
 - `INTRADAY_OPTIONS_IV_EXPANSION_MAX_IV_PERCENTILE`
 - `INTRADAY_OPTIONS_SIDEWAYS_VWAP_BAND_PCT`
 - `INTRADAY_OPTIONS_SIDEWAYS_LOOKBACK_CANDLES`
+- `INTRADAY_OPTIONS_LOT_MODE`
+- `INTRADAY_OPTIONS_ENTRY_MODE`
 - `INTRADAY_OPTIONS_ROLL_TRIGGER_PCT`
 - `INTRADAY_OPTIONS_THETA_EXIT_RATIO`
 - `INTRADAY_OPTIONS_THETA_EXIT_MIN_MINUTES`

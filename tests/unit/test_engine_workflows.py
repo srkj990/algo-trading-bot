@@ -409,6 +409,47 @@ class IntradayOptionsEngineTests(unittest.TestCase):
             "awaiting_confirmation",
         )
 
+    def test_validate_momentum_entry_passes_immediately_in_immediate_mode(self) -> None:
+        self.engine.momentum_entry_mode = "IMMEDIATE"
+        passed, reason = self.engine.validate_momentum_entry(
+            "BUY",
+            self._option_session_df(),
+            {"underlying_bias": "BULLISH", "volatility_regime": "NORMAL"},
+            latest_close=105.8,
+            option_vwap=103.0,
+            strategy_name="ATM_BREAKOUT_EXPANSION",
+        )
+        self.assertTrue(passed)
+        self.assertIn("immediate entry enabled", reason)
+        self.assertEqual(self.engine.momentum_entry_setups, {})
+
+    def test_apply_signal_filters_bypasses_live_options_filters_in_legacy_raw_mode(self) -> None:
+        self.engine.momentum_entry_mode = "LEGACY_RAW"
+        evaluation = {
+            "signal": "BUY",
+            "agreement_count": 1,
+            "score": 1.5,
+            "strategy": "ATM_BREAKOUT_EXPANSION",
+            "details": {},
+        }
+        analytics = {
+            "underlying": "NIFTY",
+            "underlying_bias": "NEUTRAL",
+            "option_type": "CE",
+            "option_price": 120.0,
+            "delta": 0.10,
+            "iv": 0.2,
+            "iv_percentile": 95.0,
+            "days_to_expiry": 3,
+        }
+        filtered = self.engine.apply_signal_filters(
+            evaluation,
+            self._option_session_df(),
+            analytics=analytics,
+        )
+        self.assertEqual(filtered["signal"], "BUY")
+        self.assertIn("Legacy raw breakout mode enabled", filtered["options_filter_note"])
+
     def test_validate_momentum_entry_confirms_after_follow_through(self) -> None:
         breakout_df = self._option_session_df()
         self.engine.validate_momentum_entry(

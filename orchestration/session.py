@@ -628,12 +628,16 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
             "stop_distance": stop_distance,
             "stop_loss_price": stop_loss_price,
         }
-        qty = position_size(
-            capital=cfg.capital,
-            entry_price=entry_price,
-            stop_loss_price=stop_loss_price,
-            risk_percent=cfg.risk_percent,
-        )
+        if cfg.intraday_options_lot_mode == "ONE_LOT":
+            qty = get_contract_lot_size(symbol)
+        else:
+            remaining_deployable = max(0.0, cfg.max_capital_deployed - deployed_capital)
+            available_capital = min(
+                float(cfg.capital - deployed_capital),
+                float(cfg.max_capital_per_trade),
+                float(remaining_deployable),
+            )
+            qty = int(available_capital / entry_price) if entry_price > 0 else 0
     else:
         stop_data = atr_stop_from_value(candidate["signal"], entry_price, atr_value, cfg.atr_stop_multiplier)
         if stop_data["stop_distance"] <= 0:
@@ -818,19 +822,6 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
             order_product=engine.order_product,
             extra_fields=position_extra_fields,
         )
-        context.positions[symbol]["stop_loss"] = float(actual_targets["stop_loss"])
-        context.positions[symbol]["target"] = float(actual_targets["target"])
-        context.positions[symbol]["trailing_stop"] = float(actual_targets["trailing_stop"])
-        context.positions[symbol]["stop_distance"] = abs(
-            float(actual_entry_price) - float(actual_targets["stop_loss"])
-        )
-        if actual_targets["multi_level_targets"]:
-            if len(actual_targets["multi_level_targets"]) >= 1:
-                context.positions[symbol]["runner_level1_target"] = float(actual_targets["multi_level_targets"][0])
-            if len(actual_targets["multi_level_targets"]) >= 2:
-                context.positions[symbol]["runner_level2_target"] = float(actual_targets["multi_level_targets"][1])
-            if len(actual_targets["multi_level_targets"]) >= 3:
-                context.positions[symbol]["runner_level3_target"] = float(actual_targets["multi_level_targets"][2])
     else:
         context.positions[symbol] = build_position(
             symbol=symbol,

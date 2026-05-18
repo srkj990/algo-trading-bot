@@ -62,6 +62,8 @@ fno:
   intraday_options_regime_sideways_range_pct: 0.55
   intraday_options_regime_sideways_vwap_dev_pct: 0.0025
   intraday_options_regime_expansion_iv_change_pct: 2.0
+  intraday_options_lot_mode: "CAPITAL_BASED"
+  intraday_options_entry_mode: "LIVE_STAGED"
   intraday_options_roll_trigger_pct: 2.0
   intraday_options_theta_exit_ratio: 0.08
   intraday_options_theta_exit_min_minutes: 10

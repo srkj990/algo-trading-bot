@@ -15,6 +15,8 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertGreater(runtime_config.data_cache.max_entries, 0)
         self.assertIn("MIS", runtime_config.orders.allowed_products)
         self.assertIn("MA", runtime_config.strategy.min_candles)
+        self.assertIn(runtime_config.fno.intraday_options_lot_mode, {"ONE_LOT", "CAPITAL_BASED"})
+        self.assertIn(runtime_config.fno.intraday_options_entry_mode, {"LIVE_STAGED", "LEGACY_IMMEDIATE"})
 
 
 class TradeStoreTests(unittest.TestCase):
