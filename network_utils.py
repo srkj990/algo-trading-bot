@@ -9,6 +9,8 @@ from pathlib import Path
 import requests
 from requests.adapters import HTTPAdapter
 
+from config import get_broker_request_timeout_seconds
+
 
 DEFAULT_BROKER_IP_MODE = "IPV4_ONLY"
 _getaddrinfo_lock = threading.RLock()
@@ -56,13 +58,25 @@ class IPv4OnlyAdapter(HTTPAdapter):
             return super().send(request, *args, **kwargs)
 
 
-def create_requests_session(ip_mode=None):
+def create_requests_session(ip_mode=None, timeout_seconds=None):
     session = requests.Session()
     normalized_mode = (ip_mode or DEFAULT_BROKER_IP_MODE).strip().upper()
     if normalized_mode == "IPV4_ONLY":
         adapter = IPv4OnlyAdapter()
         session.mount("https://", adapter)
         session.mount("http://", adapter)
+
+    resolved_timeout = timeout_seconds
+    if resolved_timeout is None:
+        resolved_timeout = get_broker_request_timeout_seconds()
+    resolved_timeout = float(resolved_timeout)
+    original_request = session.request
+
+    def _request_with_default_timeout(method, url, **kwargs):
+        kwargs.setdefault("timeout", resolved_timeout)
+        return original_request(method, url, **kwargs)
+
+    session.request = _request_with_default_timeout
     return session
 
 

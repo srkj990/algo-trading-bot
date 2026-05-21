@@ -64,6 +64,9 @@ fno:
   intraday_options_regime_expansion_iv_change_pct: 2.0
   intraday_options_lot_mode: "CAPITAL_BASED"
   intraday_options_entry_mode: "LIVE_STAGED"
+  intraday_options_max_entry_cost_ratio: 0.30
+  intraday_options_max_spread_pct: 0.02
+  intraday_options_min_open_interest: 1000
   intraday_options_roll_trigger_pct: 2.0
   intraday_options_theta_exit_ratio: 0.08
   intraday_options_theta_exit_min_minutes: 10

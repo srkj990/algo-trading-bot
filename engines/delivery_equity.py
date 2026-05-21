@@ -64,7 +64,7 @@ class DeliveryEquityEngine(TradingEngine):
         self.max_symbol_allocation = max_symbol_allocation
 
     def evaluate_position_exit(self, position, latest_candle):
-        return evaluate_exit(position, latest_candle, include_target=False)
+        return evaluate_exit(position, latest_candle, include_target=True)
 
     def get_signal_exit_reason(self, position, signal):
         if position["side"] == "BUY" and signal == "SELL":

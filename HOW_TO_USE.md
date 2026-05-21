@@ -507,7 +507,7 @@ The bot blocks new entries 30 minutes before the MIS square-off window and autom
 
 ## 9. Engine 6 — Intraday Options
 
-**What it does:** The most feature-rich engine. Monitors the underlying index in real time using 1-minute candles (checked every 15 seconds). When the chosen strategy fires, it automatically resolves the live ATM (or near-ATM) option contract and places the trade. Includes strike rolling, theta exit, vega-crush blocking, spread filtering, margin pre-checks, live staged-vs-legacy momentum entry control, and configurable one-lot vs capital-based sizing defaults.
+**What it does:** The most feature-rich engine. Monitors the underlying index in real time using 1-minute candles (checked every 15 seconds). When the chosen strategy fires, it automatically resolves the live ATM (or near-ATM) option contract and places the trade. Includes strike rolling, theta exit, vega-crush blocking, spread filtering, margin pre-checks, live staged-vs-legacy momentum entry control, configurable one-lot vs capital-based sizing defaults, premium-volatility-aware trailing distance, and lot-aware runner exits for larger single-leg positions.
 
 > **Requires Kite.** This engine has two distinct structures — choose based on your market view.
 
@@ -609,12 +609,19 @@ What happens live:
 
 1. Bot waits for the first 15-minute candle to close to establish the opening range.
 2. When price breaks the range high, signal fires `BUY_CE`. Bot resolves the live `ATM + 1` call strike.
-3. Pre-flight checks: spread, margin, delta, IV percentile, vega-crush guard all run.
+3. Pre-flight checks: spread, intraday-options spread cap, OI, margin, delta, IV percentile, vega-crush guard, and cost-vs-profit ratio all run.
 4. If all pass → limit order placed via Kite, polled until fill confirmed.
-5. Fill-based SL and target are set. Position is tracked with 7.5% trailing stop.
+5. Fill-based stop and runner levels are set. Trailing distance is derived from `max(ATR_based, premium_volatility_based)` instead of a fixed percent trail.
 6. If underlying moves more than `INTRADAY_OPTIONS_ROLL_TRIGGER_PCT` — position rolls to a fresh ATM strike.
 7. If theta decay crosses `INTRADAY_OPTIONS_THETA_EXIT_RATIO` — position is force-exited.
 8. All positions squared off before MIS window regardless of P&L.
+
+Current ATM single-option runner behavior:
+
+- 1-2 lots: trailing-only runner behavior stays unchanged.
+- Above 2 lots: exit 20% of lots at `+8%` premium, exit 20% of lots at `+15%` premium, and trail the remaining runner when the trend still persists.
+- Trailing distance is derived from `max(ATR_based, premium_volatility_based)` instead of a fixed percent trail.
+- Lot counting uses the resolved contract's broker lot size, not a hardcoded underlying map. If broker metadata says NIFTY is `65` and SENSEX is `20`, the engine will use those values automatically.
 
 ---
 
@@ -768,9 +775,18 @@ The same two live intraday-options defaults can also be placed in `config.runtim
 fno:
   intraday_options_lot_mode: "CAPITAL_BASED"
   intraday_options_entry_mode: "LIVE_STAGED"
+  intraday_options_max_entry_cost_ratio: 0.30
+  intraday_options_max_spread_pct: 0.02
+  intraday_options_min_open_interest: 1000
 ```
 
 These YAML values become the default selections shown in the live CLI prompts.
+
+Additional live intraday-options protections:
+
+- `intraday_options_max_entry_cost_ratio`: reject entries when estimated round-trip costs consume too much of projected profit
+- `intraday_options_max_spread_pct`: reject wide-spread contracts even if the generic order spread cap is looser
+- `intraday_options_min_open_interest`: reject low-liquidity contracts when the broker quote includes OI
 
 ### Risk styles at a glance
 
@@ -827,7 +843,7 @@ All F&O engines require Kite. Make sure `KITE_API_KEY`, `KITE_API_SECRET`, and `
 
 ### Order rejected — "Insufficient margin"
 
-The bot's margin pre-check is blocking the entry. Either reduce position size, free up margin in your Kite account, or reduce `Max open positions`.
+The bot's margin pre-check is blocking the entry. Either reduce position size, free up margin in your Kite account, or reduce `Max open positions`. Intraday options also estimate required margin before the live order is submitted.
 
 ### Kite `invalid access token` error mid-session
 

@@ -271,6 +271,15 @@ def get_broker_ip_mode() -> str:
     return os.getenv("BROKER_IP_MODE", "IPV4_ONLY").upper()
 
 
+def get_broker_request_timeout_seconds() -> float:
+    raw_value = os.getenv("BROKER_REQUEST_TIMEOUT_SECONDS", "30").strip()
+    try:
+        timeout_seconds = float(raw_value)
+    except ValueError:
+        return 30.0
+    return timeout_seconds if timeout_seconds > 0 else 30.0
+
+
 def get_default_data_provider() -> str:
     return os.getenv("DATA_PROVIDER", "YFINANCE").upper()
 
@@ -469,6 +478,9 @@ class FnoConfig:
     intraday_options_regime_expansion_iv_change_pct: float
     intraday_options_lot_mode: str
     intraday_options_entry_mode: str
+    intraday_options_max_entry_cost_ratio: float
+    intraday_options_max_spread_pct: float
+    intraday_options_min_open_interest: int
     intraday_options_roll_trigger_pct: float
     intraday_options_theta_exit_ratio: float
     intraday_options_theta_exit_min_minutes: int
@@ -502,6 +514,12 @@ class FnoConfig:
             raise ValueError(
                 "fno.intraday_options_entry_mode must be LIVE_STAGED or LEGACY_IMMEDIATE"
             )
+        if self.intraday_options_max_entry_cost_ratio < 0:
+            raise ValueError("fno.intraday_options_max_entry_cost_ratio must be >= 0")
+        if self.intraday_options_max_spread_pct < 0:
+            raise ValueError("fno.intraday_options_max_spread_pct must be >= 0")
+        if self.intraday_options_min_open_interest < 0:
+            raise ValueError("fno.intraday_options_min_open_interest must be >= 0")
         if self.intraday_options_roll_trigger_pct < 0:
             raise ValueError("fno.intraday_options_roll_trigger_pct must be >= 0")
         if self.intraday_options_theta_exit_ratio < 0:
@@ -816,6 +834,15 @@ def _default_runtime_config_map() -> dict[str, Any]:
                 "INTRADAY_OPTIONS_ENTRY_MODE",
                 "LIVE_STAGED",
             ).upper(),
+            "intraday_options_max_entry_cost_ratio": float(
+                os.getenv("INTRADAY_OPTIONS_MAX_ENTRY_COST_RATIO", "0.30")
+            ),
+            "intraday_options_max_spread_pct": float(
+                os.getenv("INTRADAY_OPTIONS_MAX_SPREAD_PCT", "0.02")
+            ),
+            "intraday_options_min_open_interest": int(
+                os.getenv("INTRADAY_OPTIONS_MIN_OPEN_INTEREST", "1000")
+            ),
             "intraday_options_roll_trigger_pct": float(
                 os.getenv("INTRADAY_OPTIONS_ROLL_TRIGGER_PCT", "2.0")
             ),
@@ -901,6 +928,10 @@ ENGINE_TO_ASSET_CLASS = {
 }
 
 ASSET_CLASS_RISK_PROFILES = {
+    # INTRADAY_EQUITY:
+    # - Used directly by cost-aware target calculations via executor.calculate_cost_aware_targets().
+    # - sl_percent / target_percent / trailing_percent are also used by the engine's normal build_position path.
+    # - min_breakeven_move is only used by cost-aware target calculations.
     "INTRADAY_EQUITY": {
         "CONSERVATIVE": {
             "sl_percent": 0.7,
@@ -915,12 +946,19 @@ ASSET_CLASS_RISK_PROFILES = {
             "min_breakeven_move": 0.55,
         },
         "AGGRESSIVE": {
-            "sl_percent": 1.2,
-            "target_percent": 2.5,
-            "trailing_percent": 0.7,
-            "min_breakeven_move": 0.8,
+            "sl_percent": 4.5,
+            "target_percent": 10.0,
+            "trailing_percent": 3.0,
+            "min_breakeven_move": 3.5,
         },
     },
+    # INTRADAY_OPTIONS:
+    # - Used indirectly by cost-aware target calculations and entry profitability checks.
+    # - These values are NOT the main live ATM options stop/target/trail driver.
+    # - The intraday_options engine mostly derives its own ATR/regime/premium-volatility-based
+    #   stop, target, and trailing levels in engines/intraday_options.py.
+    # - multi_level_targets here are currently ignored by the trend-adaptive intraday_options path.
+    # - min_breakeven_move here is only used by cost-aware target calculations.
     "INTRADAY_OPTIONS": {
         "CONSERVATIVE": {
             "sl_percent": 8.0,
@@ -944,18 +982,23 @@ ASSET_CLASS_RISK_PROFILES = {
             "multi_level_targets": [10.0, 18.0, 28.0],
         },
     },
+    # DELIVERY_EQUITY:
+    # - Used directly by cost-aware target calculations.
+    # - sl_percent / target_percent / trailing_percent are also used directly by the engine's
+    #   build_position path for live/paper positions.
+    # - min_breakeven_move is only used by cost-aware target calculations.
     "DELIVERY_EQUITY": {
         "CONSERVATIVE": {
-            "sl_percent": 1.5,
-            "target_percent": 2.0,
-            "trailing_percent": 0.5,
-            "min_breakeven_move": 0.45,
+            "sl_percent": 2.5,
+            "target_percent": 5.0,
+            "trailing_percent": 1.8,
+            "min_breakeven_move": 1.5,
         },
         "BALANCED": {
-            "sl_percent": 2.0,
-            "target_percent": 3.0,
-            "trailing_percent": 0.75,
-            "min_breakeven_move": 0.65,
+            "sl_percent": 3.5,
+            "target_percent": 7.0,
+            "trailing_percent": 2.2,
+            "min_breakeven_move": 2.5,
         },
         "AGGRESSIVE": {
             "sl_percent": 2.8,
@@ -964,6 +1007,11 @@ ASSET_CLASS_RISK_PROFILES = {
             "min_breakeven_move": 0.9,
         },
     },
+    # FUTURES_EQUITY:
+    # - Used directly by cost-aware target calculations.
+    # - sl_percent / target_percent / trailing_percent are also used directly by the engine's
+    #   build_position path for normal futures positions.
+    # - min_breakeven_move is only used by cost-aware target calculations.
     "FUTURES_EQUITY": {
         "CONSERVATIVE": {
             "sl_percent": 0.8,
@@ -984,6 +1032,11 @@ ASSET_CLASS_RISK_PROFILES = {
             "min_breakeven_move": 0.65,
         },
     },
+    # OPTIONS_EQUITY:
+    # - Used directly by cost-aware target calculations.
+    # - sl_percent / target_percent / trailing_percent are also used directly by the engine's
+    #   build_position path for standard options positions.
+    # - multi_level_targets and min_breakeven_move are used by cost-aware target calculations.
     "OPTIONS_EQUITY": {
         "CONSERVATIVE": {
             "sl_percent": 3.0,
@@ -1007,6 +1060,11 @@ ASSET_CLASS_RISK_PROFILES = {
             "multi_level_targets": [4.0, 9.0, 15.0],
         },
     },
+    # INTRADAY_FUTURES:
+    # - Used directly by cost-aware target calculations.
+    # - sl_percent / target_percent / trailing_percent are also used directly by the engine's
+    #   build_position path for normal intraday futures positions.
+    # - min_breakeven_move is only used by cost-aware target calculations.
     "INTRADAY_FUTURES": {
         "CONSERVATIVE": {
             "sl_percent": 0.6,

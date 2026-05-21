@@ -152,6 +152,7 @@ class KiteBrokerClient(BrokerClient):
             last_price=float(data.get("last_price") or 0.0),
             bid_price=float(best_bid) if best_bid is not None else None,
             ask_price=float(best_ask) if best_ask is not None else None,
+            open_interest=int(data.get("oi") or 0) if data.get("oi") is not None else None,
         )
 
     def cancel_order(self, order_id: str) -> bool:
@@ -438,6 +439,7 @@ class UpstoxBrokerClient(BrokerClient):
             last_price=float(first_item.get("last_price") or 0.0),
             bid_price=float(best_bid) if best_bid is not None else None,
             ask_price=float(best_ask) if best_ask is not None else None,
+            open_interest=None,
         )
 
     def cancel_order(self, order_id: str) -> bool:

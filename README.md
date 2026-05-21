@@ -22,7 +22,7 @@ Recent UX/runtime improvements now also include:
 - asset-class aware stop-loss, target, and trailing-stop presets keyed off the selected engine and risk style
 - cost-aware pre-trade filtering that can skip setups whose net edge is too small after estimated charges
 - widened `INTRADAY_OPTIONS` presets so option stops and trailing distances better reflect premium volatility
-- trailing-only intraday options runner behavior for ATM single-leg longs, so the full quantity can stay in trend until stop-loss, trailing stop, or time-based exit
+- trend-adaptive intraday options runner behavior for ATM single-leg longs, with premium-volatility-aware trailing distance and lot-aware partial exits for larger positions
 
 Recent architecture improvements now also include:
 
@@ -114,7 +114,10 @@ Recent architecture improvements now also include:
   - bounded-market two-leg short pair with linked exits on range break or leg stop
   - dynamic ATM strike rolling when the underlying moves beyond the configured threshold
   - theta-aware explicit exit guard for long single-leg intraday options
-  - trailing-only single-leg runner mode with no partial profit exits
+  - trend-adaptive single-leg runner mode with premium-volatility-aware trailing distance
+  - 1-2 lot single-leg runner positions keep the trailing-only behavior
+  - positions above 2 lots can book 20% at `+8%` premium, 20% at `+15%` premium, and trail the runner
+  - lot counting follows the actual broker contract lot size for the resolved option
   - configurable live default for `ONE_LOT` vs `CAPITAL_BASED` sizing
   - configurable live default for `LIVE_STAGED` vs `LEGACY_IMMEDIATE` momentum entry mode
   - lot-size aware sizing and startup sync for MIS options only
@@ -160,6 +163,9 @@ Example:
 fno:
   intraday_options_lot_mode: "CAPITAL_BASED"
   intraday_options_entry_mode: "LIVE_STAGED"
+  intraday_options_max_entry_cost_ratio: 0.30
+  intraday_options_max_spread_pct: 0.02
+  intraday_options_min_open_interest: 1000
 ```
 
 ## Caching And Audit Safety
@@ -350,11 +356,16 @@ This computes:
 Implemented in `engines/intraday_options.py`.
 
 Runner partial exit logic triggers when:
-- `latest_high >= runner_level1_target` (then mark completed)
-- `latest_high >= runner_level2_target` (then mark completed)
+- for 1-2 lots, the ATM single-leg runner remains effectively trailing-only with no fixed partial exits
+- for positions above 2 lots:
+  - `+8%` premium can exit `20%` of total lots
+  - `+15%` premium can exit `20%` of total lots
 
 And stop protection uses:
 - `protected_level = max(runner_level1_target, exit_price - trailing_distance)`
+
+Trailing distance now uses:
+- `max(ATR_based, premium_volatility_based)`
 
 ---
 
@@ -1168,6 +1179,9 @@ These environment-backed controls now affect `intraday_options`:
 - `INTRADAY_OPTIONS_SIDEWAYS_LOOKBACK_CANDLES`
 - `INTRADAY_OPTIONS_LOT_MODE`
 - `INTRADAY_OPTIONS_ENTRY_MODE`
+- `INTRADAY_OPTIONS_MAX_ENTRY_COST_RATIO`
+- `INTRADAY_OPTIONS_MAX_SPREAD_PCT`
+- `INTRADAY_OPTIONS_MIN_OPEN_INTEREST`
 - `INTRADAY_OPTIONS_ROLL_TRIGGER_PCT`
 - `INTRADAY_OPTIONS_THETA_EXIT_RATIO`
 - `INTRADAY_OPTIONS_THETA_EXIT_MIN_MINUTES`
@@ -1182,6 +1196,8 @@ Current behavior:
 - ATM single-leg `BUY_PE` entries are allowed only when the underlying is bearish on VWAP plus EMA
 - low-score signals are skipped even if they are directionally valid
 - live entries can now be blocked when the best bid/ask spread is wider than the configured threshold
+- live intraday-options entries can now use a stricter engine-level spread cap, defaulting to `2%`
+- live intraday-options entries can now be blocked when broker quote OI is below the configured threshold, defaulting to `1000`
 - live entries can now be blocked when available broker margin is below the estimated requirement
 - broker-submitted orders are polled until a fill/reject/cancel state is confirmed instead of trusting the initial response alone
 - live entries can now be sent as `MARKET` or `LIMIT` orders based on runtime config
@@ -1204,13 +1220,15 @@ Current behavior:
 - intraday options supervision now runs every `15` seconds while signal entries still wait for closed `1m` candles
 - order logs now print clearer entry and exit banners so live actions stand out in both console and log file
 - bracket-order entry support is now exposed as a synthetic execution helper; it records stop-loss and target intent even though current Kite docs expose `regular` and `co` varieties rather than native `BO`
-- single-leg entries now compute stop, target, trailing stop, breakeven, and expected net profit from asset-class-specific risk profiles plus estimated round-trip costs
-- cost-aware entry gating rejects trades when estimated costs make the setup net-unprofitable or consume more than `35%` of projected profit
+- single-leg entries still use asset-class-specific risk profiles for profitability checks, breakeven, and expected net profit calculations
+- cost-aware entry gating rejects trades when estimated costs make the setup net-unprofitable or consume more than the configured intraday-options cap, default `30%` of projected profit
 - `INTRADAY_OPTIONS` now uses wider risk presets:
   - `CONSERVATIVE`: `8%` SL, `12%` target, `4%` trail, `[6%, 12%, 18%]` staged targets
   - `BALANCED`: `10%` SL, `15%` target, `4.8%` trail, `[8%, 15%, 22%]` staged targets
   - `AGGRESSIVE`: `12%` SL, `20%` target, `6%` trail, `[10%, 18%, 28%]` staged targets
-- long ATM single-leg intraday options now keep the full quantity open in runner mode and ignore fixed profit-target exits once the trailing-only path is active
+- the live ATM single-leg `intraday_options` engine derives its own stop, target, and trailing levels from ATR, regime, signal score, and premium volatility
+- long ATM single-leg intraday options now keep the trailing-only behavior for 1-2 lots
+- positions above 2 lots can take lot-aware partial exits before the remaining runner continues
 - `ATM_BREAKOUT_EXPANSION` looks for compression, breakout, volume spike, and ATR expansion on the underlying before buying the ATM option
 - `ATM_IV_EXPANSION` looks for low-IV percentile plus a momentum candle at a key level before buying the ATM option
 - `ATM_TRAP_REVERSAL` looks for failed support/resistance breaks and reversal recovery before buying the ATM option
@@ -1221,8 +1239,7 @@ Current behavior:
 
 - no rich broker-native margin calculator yet for complex option-selling structures
 - no general basket/multi-leg options strategy engine yet beyond the bounded two-leg range pair
-- no open-interest / option-chain analytics yet
-- no reliable PCR/OI filter yet because there is no option-chain ingestion layer
+- no reliable option-chain-level PCR/OI filter yet because there is no full option-chain ingestion layer
 - F&O backtesting is currently proxy-based for some flows rather than full contract-premium modeling
 - Upstox F&O support is still missing
 - IV percentile/rank is approximate, not a full volatility surface model
@@ -1238,7 +1255,7 @@ Current behavior:
 - add a small dashboard or TUI view for live P&L, Greeks drift, and square-off countdown
 - add open-interest, put-call ratio, and event-volatility filters for options
 - deepen F&O backtesting with true option-premium candles, decay, rollover, and richer lot/margin modeling
-- extend synthetic bracket support into managed OCO cancellation and broker-side child-order reconciliation
+- extend synthetic bracket support into managed OCO cancellation and full broker-side child-order reconciliation
 
 ## Suggested Next Refactoring Steps
 

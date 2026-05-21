@@ -179,14 +179,14 @@ class PositionWorkflowHelperTests(unittest.TestCase):
         )
         self.assertTrue(str(reason).startswith("THETA_EXIT_"))
 
-    def test_manage_open_positions_keeps_full_quantity_for_trailing_only_runner(self) -> None:
+    def test_manage_open_positions_keeps_full_quantity_for_two_lot_runner(self) -> None:
         from engines.intraday_options import IntradayOptionsEngine
 
         engine = IntradayOptionsEngine(5.0, 10.0, 4.0)
         position = engine.build_trend_adaptive_position(
             symbol="NFO:NIFTYTESTCE",
             side="BUY",
-            quantity=150,
+            quantity=100,
             entry_price=100.0,
             atr=4.0,
             signal_score=0.8,
@@ -227,8 +227,59 @@ class PositionWorkflowHelperTests(unittest.TestCase):
             slippage_pct_per_side=0.0,
         )
         self.assertTrue(changed)
-        self.assertEqual(positions["NFO:NIFTYTESTCE"]["quantity"], 150)
+        self.assertEqual(positions["NFO:NIFTYTESTCE"]["quantity"], 100)
         self.assertEqual(len(trade_book), 0)
+
+    def test_manage_open_positions_takes_partial_exit_for_three_lot_runner(self) -> None:
+        from engines.intraday_options import IntradayOptionsEngine
+
+        engine = IntradayOptionsEngine(5.0, 10.0, 4.0)
+        position = engine.build_trend_adaptive_position(
+            symbol="NFO:NIFTYTESTCE",
+            side="BUY",
+            quantity=195,
+            entry_price=100.0,
+            atr=4.0,
+            signal_score=0.8,
+            analytics={"volatility_regime": "NORMAL"},
+            lot_size=65,
+            now=datetime(2026, 4, 29, 10, 0, 0),
+            entry_analytics={"underlying": "NIFTY", "option_type": "CE"},
+            engine_name=engine.name,
+            execution_mode="PAPER",
+            order_product="MIS",
+            extra_fields={},
+        )
+        positions = {"NFO:NIFTYTESTCE": position}
+        trade_book = []
+        level1_trigger = float(position["runner_level1_target"]) + 0.05
+        changed = position_flow.manage_open_positions(
+            engine=engine,
+            positions=positions,
+            symbol_snapshots={
+                "NFO:NIFTYTESTCE": {
+                    "latest_close": level1_trigger,
+                    "latest_candle": {
+                        "High": level1_trigger,
+                        "Low": level1_trigger,
+                    },
+                    "signal": "BUY",
+                    "analytics": {"theta": -1.0, "option_price": level1_trigger, "volatility_regime": "NORMAL"},
+                }
+            },
+            now=datetime(2026, 4, 29, 10, 5, 0),
+            trade_book=trade_book,
+            trade_store=None,
+            place_order=Mock(return_value=Mock(average_price=level1_trigger)),
+            log_order_signal_banner=Mock(),
+            fetch_data=Mock(),
+            log_event=Mock(),
+            transaction_cost_model_enabled=False,
+            slippage_pct_per_side=0.0,
+        )
+        self.assertTrue(changed)
+        self.assertEqual(positions["NFO:NIFTYTESTCE"]["quantity"], 130)
+        self.assertEqual(len(trade_book), 1)
 
     def test_force_square_off_positions_returns_false_when_flat(self) -> None:
         changed = position_flow.force_square_off_positions(

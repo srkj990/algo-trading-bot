@@ -563,6 +563,14 @@ class BacktestEngine:
             "strike": strike,
             "option_type": option_type,
             "analytics": option_analytics,
+            "premium_volatility_distance": (
+                self.engine_helper.get_premium_volatility_trailing_distance(
+                    option_slice,
+                    option_analytics,
+                )
+                if hasattr(self.engine_helper, "get_premium_volatility_trailing_distance")
+                else 0.0
+            ),
         }
 
     def _evaluate_signal(self, symbol, current_slice):
@@ -655,6 +663,11 @@ class BacktestEngine:
                 break
 
             if self.config.engine_name == "intraday_options":
+                min_contract_price = float(
+                    getattr(self.engine_helper, "min_contract_price", 0.0) or 0.0
+                )
+                if float(candidate["latest_close"]) < min_contract_price:
+                    continue
                 lot_size = (
                     get_contract_lot_size(candidate["symbol"])
                     if ":" in candidate["symbol"]
@@ -743,20 +756,24 @@ class BacktestEngine:
                     signal_strength=float(candidate.get("score") or 0.5),
                     side=candidate["signal"],
                 )
-                self.positions[candidate["symbol"]] = self.engine_helper.build_trend_adaptive_position(
-                    symbol=candidate["symbol"],
-                    side=candidate["signal"],
-                    quantity=qty,
-                    entry_price=entry_price,
-                    atr=float(candidate["atr"] or 0.0),
-                    signal_score=float(candidate.get("score") or 0.0),
-                    analytics=dict(candidate.get("analytics") or {}),
-                    lot_size=get_contract_lot_size(candidate["symbol"]) if ":" in candidate["symbol"] else 1,
+                try:
+                    self.positions[candidate["symbol"]] = self.engine_helper.build_trend_adaptive_position(
+                        symbol=candidate["symbol"],
+                        side=candidate["signal"],
+                        quantity=qty,
+                        entry_price=entry_price,
+                        atr=float(candidate["atr"] or 0.0),
+                        signal_score=float(candidate.get("score") or 0.0),
+                        analytics=dict(candidate.get("analytics") or {}),
+                        lot_size=get_contract_lot_size(candidate["symbol"]) if ":" in candidate["symbol"] else 1,
                         now=pd.Timestamp(timestamp).to_pydatetime(),
                         entry_analytics=dict(candidate.get("analytics") or {}),
                         engine_name=self.config.engine_name,
                         execution_mode="PAPER",
                         order_product=self.engine_helper.order_product,
+                        premium_volatility_distance=float(
+                            candidate.get("premium_volatility_distance") or 0.0
+                        ),
                         extra_fields={
                             "trade_identity": trade_identity,
                             "asset_class": actual_targets["asset_class"],
@@ -769,6 +786,8 @@ class BacktestEngine:
                             "realized_charges_parts": 0.0,
                         },
                     )
+                except ValueError:
+                    continue
                 self.positions[candidate["symbol"]]["min_breakeven_price"] = float(actual_targets["min_breakeven_price"])
             else:
                 self.positions[candidate["symbol"]] = build_position(

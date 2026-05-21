@@ -60,7 +60,16 @@ def should_enter_trade(
         )
         return False
 
-    if targets["cost_to_profit_ratio"] > 0.35:
+    max_cost_ratio = float(
+        getattr(
+            getattr(getattr(context, "runtime_config", None), "fno", None),
+            "intraday_options_max_entry_cost_ratio",
+            0.30,
+        )
+        if asset_class == "INTRADAY_OPTIONS"
+        else 0.35
+    )
+    if targets["cost_to_profit_ratio"] > max_cost_ratio:
         context.log_event(
             f"[SKIP] Costs too high ({targets['cost_to_profit_ratio'] * 100:.1f}% of profit) "
             f"for {signal['symbol']}"
@@ -459,6 +468,14 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
                     "latest_close": candidate_latest_close,
                     "atr": symbol_snapshots[symbol]["atr"],
                     "analytics": option_analytics,
+                    "premium_volatility_distance": (
+                        engine.get_premium_volatility_trailing_distance(
+                            contract_data,
+                            option_analytics,
+                        )
+                        if hasattr(engine, "get_premium_volatility_trailing_distance")
+                        else 0.0
+                    ),
                     "trade_identity": trade_identity,
                     "strategy": evaluation.get("strategy"),
                     "option_signal": evaluation.get("option_signal"),

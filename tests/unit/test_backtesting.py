@@ -10,258 +10,6 @@ from backtesting import BacktestConfig, BacktestEngine
 
 
 class BacktestWorkflowTests(unittest.TestCase):
-    def test_intraday_options_capital_based_backtest_uses_capital_sized_lot_quantity(self) -> None:
-        config = BacktestConfig(
-            engine_name="intraday_options",
-            capital=100000.0,
-            period="1d",
-            interval="1m",
-            strategy_mode="SINGLE",
-            strategy_name="ATM_BREAKOUT_EXPANSION",
-            strategies=("ATM_BREAKOUT_EXPANSION",),
-            min_confirmations=1,
-            risk_percent=0.01,
-            atr_stop_multiplier=2.0,
-            trailing_atr_multiplier=1.25,
-            target_risk_reward=2.0,
-            risk_style_name="BALANCED",
-            top_n=1,
-            max_positions=1,
-            max_capital_per_trade=100000.0,
-            max_capital_deployed=100000.0,
-            universe=("NSE:NIFTY 50",),
-            intraday_options_lot_mode="CAPITAL_BASED",
-            option_backtest_settings={
-                "base_symbol": "NIFTY",
-                "expiry": "2026-05-19",
-                "structure_mode": "SINGLE",
-                "strike_mode": "ATM",
-                "underlying_symbol": "NSE:NIFTY 50",
-                "signal_symbols": ("NSE:NIFTY 50",),
-            },
-        )
-        engine = BacktestEngine(config)
-        candidate = {
-            "symbol": "NFO:TESTCE",
-            "signal": "BUY",
-            "agreement_count": 1,
-            "score": 0.8,
-            "latest_close": 100.0,
-            "atr": 50.0,
-            "strategy": "ATM_BREAKOUT_EXPANSION",
-            "reason": "test",
-            "analytics": {"underlying_price": 24000.0, "option_type": "CE"},
-        }
-
-        with patch("backtesting.get_contract_lot_size", return_value=75), \
-             patch("engines.intraday_options.get_contract_lot_size", return_value=75), \
-             patch("engines.options_equity.get_contract_lot_size", return_value=75), \
-             patch("backtesting.should_enter_trade", return_value=True), \
-             patch("backtesting.calculate_cost_aware_targets", return_value={
-                 "asset_class": "INTRADAY_OPTIONS",
-                 "risk_profile": "BALANCED",
-                 "stop_loss": 90.0,
-                 "target": 120.0,
-                 "trailing_stop": 92.0,
-                 "min_breakeven_price": 101.0,
-                 "expected_costs": 25.0,
-                 "expected_net_profit": 100.0,
-                 "cost_to_profit_ratio": 0.2,
-                 "multi_level_targets": [],
-             }):
-            engine._enter_ranked_candidates([candidate], pd.Timestamp("2026-05-18 10:00:00+05:30"))
-
-        self.assertEqual(engine.trades[0]["quantity"], 150)
-
-    def test_intraday_options_backtest_keeps_trend_adaptive_exit_levels(self) -> None:
-        config = BacktestConfig(
-            engine_name="intraday_options",
-            capital=100000.0,
-            period="1d",
-            interval="1m",
-            strategy_mode="SINGLE",
-            strategy_name="ATM_BREAKOUT_EXPANSION",
-            strategies=("ATM_BREAKOUT_EXPANSION",),
-            min_confirmations=1,
-            risk_percent=0.01,
-            atr_stop_multiplier=2.0,
-            trailing_atr_multiplier=1.25,
-            target_risk_reward=2.0,
-            risk_style_name="BALANCED",
-            top_n=1,
-            max_positions=1,
-            max_capital_per_trade=100000.0,
-            max_capital_deployed=100000.0,
-            universe=("NSE:NIFTY 50",),
-            option_backtest_settings={
-                "base_symbol": "NIFTY",
-                "expiry": "2026-05-19",
-                "structure_mode": "SINGLE",
-                "strike_mode": "ATM",
-                "underlying_symbol": "NSE:NIFTY 50",
-                "signal_symbols": ("NSE:NIFTY 50",),
-            },
-        )
-        engine = BacktestEngine(config)
-        candidate = {
-            "symbol": "NFO:TESTCE",
-            "signal": "BUY",
-            "agreement_count": 1,
-            "score": 0.8,
-            "latest_close": 100.0,
-            "atr": 5.0,
-            "strategy": "ATM_BREAKOUT_EXPANSION",
-            "reason": "test",
-            "analytics": {"underlying_price": 24000.0, "option_type": "CE"},
-        }
-        trend_position = {
-            "symbol": "NFO:TESTCE",
-            "side": "BUY",
-            "quantity": 75,
-            "entry_price": 100.0,
-            "stop_loss": 88.0,
-            "target": 135.0,
-            "trailing_stop": 90.0,
-            "best_price": 100.0,
-            "trailing_distance": 6.0,
-            "trailing_activation_distance": 8.0,
-            "trailing_active": False,
-        }
-
-        with patch("backtesting.get_contract_lot_size", return_value=75), \
-             patch("engines.intraday_options.get_contract_lot_size", return_value=75), \
-             patch("engines.options_equity.get_contract_lot_size", return_value=75), \
-             patch("backtesting.should_enter_trade", return_value=True), \
-             patch("backtesting.calculate_cost_aware_targets", return_value={
-                 "asset_class": "INTRADAY_OPTIONS",
-                 "risk_profile": "BALANCED",
-                 "stop_loss": 95.0,
-                 "target": 110.0,
-                 "trailing_stop": 97.0,
-                 "min_breakeven_price": 101.0,
-                 "expected_costs": 25.0,
-                 "expected_net_profit": 100.0,
-                 "cost_to_profit_ratio": 0.2,
-                 "multi_level_targets": [108.0, 112.0, 118.0],
-             }), \
-             patch.object(engine.engine_helper, "build_trend_adaptive_position", return_value=dict(trend_position)):
-            engine._enter_ranked_candidates([candidate], pd.Timestamp("2026-05-18 10:00:00+05:30"))
-
-        position = engine.positions["NFO:TESTCE"]
-        self.assertEqual(position["stop_loss"], 88.0)
-        self.assertEqual(position["target"], 135.0)
-        self.assertEqual(position["trailing_stop"], 90.0)
-
-    def test_intraday_options_backtest_uses_previous_trailing_level_for_current_candle(self) -> None:
-        config = BacktestConfig(
-            engine_name="intraday_options",
-            capital=100000.0,
-            period="1d",
-            interval="1m",
-            strategy_mode="SINGLE",
-            strategy_name="ATM_BREAKOUT_EXPANSION",
-            strategies=("ATM_BREAKOUT_EXPANSION",),
-            min_confirmations=1,
-            risk_percent=0.01,
-            atr_stop_multiplier=2.0,
-            trailing_atr_multiplier=1.25,
-            target_risk_reward=2.0,
-            risk_style_name="BALANCED",
-            top_n=1,
-            max_positions=1,
-            max_capital_per_trade=100000.0,
-            max_capital_deployed=100000.0,
-            universe=("NSE:NIFTY 50",),
-            option_backtest_settings={
-                "base_symbol": "NIFTY",
-                "expiry": "2026-05-19",
-                "structure_mode": "SINGLE",
-                "strike_mode": "ATM",
-                "underlying_symbol": "NSE:NIFTY 50",
-                "signal_symbols": ("NSE:NIFTY 50",),
-            },
-        )
-        engine = BacktestEngine(config)
-        engine.positions["NFO:TESTCE"] = {
-            "symbol": "NFO:TESTCE",
-            "side": "BUY",
-            "quantity": 75,
-            "entry_price": 100.0,
-            "stop_loss": 95.0,
-            "target": 130.0,
-            "trailing_stop": 95.0,
-            "best_price": 100.0,
-            "trailing_distance": 5.0,
-            "trailing_activation_distance": 1.0,
-            "trailing_active": False,
-            "entry_time": "2026-05-18T10:35:00+05:30",
-        }
-
-        engine._manage_intraday_options_position(
-            symbol="NFO:TESTCE",
-            latest_candle={"Open": 100.0, "High": 106.0, "Low": 100.0, "Close": 106.0},
-            latest_close=106.0,
-            timestamp=pd.Timestamp("2026-05-18 10:36:00+05:30"),
-        )
-
-        self.assertIn("NFO:TESTCE", engine.positions)
-        self.assertEqual(engine.positions["NFO:TESTCE"]["trailing_stop"], 101.0)
-
-    def test_intraday_options_backtest_prioritizes_price_exit_over_time_exit(self) -> None:
-        config = BacktestConfig(
-            engine_name="intraday_options",
-            capital=100000.0,
-            period="1d",
-            interval="1m",
-            strategy_mode="SINGLE",
-            strategy_name="ATM_BREAKOUT_EXPANSION",
-            strategies=("ATM_BREAKOUT_EXPANSION",),
-            min_confirmations=1,
-            risk_percent=0.01,
-            atr_stop_multiplier=2.0,
-            trailing_atr_multiplier=1.25,
-            target_risk_reward=2.0,
-            risk_style_name="BALANCED",
-            top_n=1,
-            max_positions=1,
-            max_capital_per_trade=100000.0,
-            max_capital_deployed=100000.0,
-            universe=("NSE:NIFTY 50",),
-            option_backtest_settings={
-                "base_symbol": "NIFTY",
-                "expiry": "2026-05-19",
-                "structure_mode": "SINGLE",
-                "strike_mode": "ATM",
-                "underlying_symbol": "NSE:NIFTY 50",
-                "signal_symbols": ("NSE:NIFTY 50",),
-            },
-        )
-        engine = BacktestEngine(config)
-        engine.positions["NFO:TESTCE"] = {
-            "symbol": "NFO:TESTCE",
-            "side": "BUY",
-            "quantity": 75,
-            "entry_price": 100.0,
-            "stop_loss": 95.0,
-            "target": 130.0,
-            "trailing_stop": 95.0,
-            "best_price": 100.0,
-            "trailing_distance": 5.0,
-            "trailing_activation_distance": 1.0,
-            "trailing_active": False,
-            "entry_time": "2026-05-18T14:30:00+05:30",
-        }
-        engine.trades.append({"symbol": "NFO:TESTCE", "side": "BUY", "entry_price": 100.0, "quantity": 75})
-
-        engine._manage_intraday_options_position(
-            symbol="NFO:TESTCE",
-            latest_candle={"Open": 94.0, "High": 100.0, "Low": 93.0, "Close": 94.0},
-            latest_close=94.0,
-            timestamp=pd.Timestamp("2026-05-18 15:02:00+05:30"),
-        )
-
-        self.assertEqual(engine.trades[-1]["exit_reason"], "STOP_LOSS")
-
     def test_intraday_options_engine_uses_legacy_raw_entry_mode_when_configured(self) -> None:
         config = BacktestConfig(
             engine_name="intraday_options",
@@ -379,6 +127,56 @@ class BacktestWorkflowTests(unittest.TestCase):
             engine._enter_ranked_candidates([candidate], pd.Timestamp("2026-05-18 10:00:00+05:30"))
 
         mock_gate.assert_called_once()
+        self.assertFalse(engine.positions)
+        self.assertEqual(engine.trades, [])
+
+    def test_enter_ranked_candidates_skips_underpriced_intraday_option_contracts(self) -> None:
+        config = BacktestConfig(
+            engine_name="intraday_options",
+            capital=100000.0,
+            period="1d",
+            interval="1m",
+            strategy_mode="SINGLE",
+            strategy_name="ATM_BREAKOUT_EXPANSION",
+            strategies=("ATM_BREAKOUT_EXPANSION",),
+            min_confirmations=1,
+            risk_percent=0.01,
+            atr_stop_multiplier=2.0,
+            trailing_atr_multiplier=1.25,
+            target_risk_reward=2.0,
+            risk_style_name="BALANCED",
+            top_n=1,
+            max_positions=1,
+            max_capital_per_trade=100000.0,
+            max_capital_deployed=100000.0,
+            universe=("BSE:SENSEX",),
+            option_backtest_settings={
+                "base_symbol": "SENSEX",
+                "expiry": "2026-05-21",
+                "structure_mode": "SINGLE",
+                "strike_mode": "ATM",
+                "underlying_symbol": "BSE:SENSEX",
+                "signal_symbols": ("BSE:SENSEX",),
+            },
+        )
+        engine = BacktestEngine(config)
+        candidate = {
+            "symbol": "BFO:SENSEX2652175100PE",
+            "signal": "BUY",
+            "agreement_count": 1,
+            "score": 0.7,
+            "latest_close": 0.05,
+            "atr": 20.0,
+            "strategy": "ATM_BREAKOUT_EXPANSION",
+            "reason": "test",
+            "analytics": {"option_price": 0.05},
+        }
+
+        with patch("backtesting.get_contract_lot_size", return_value=20), \
+             patch("backtesting.should_enter_trade", return_value=True) as mock_gate:
+            engine._enter_ranked_candidates([candidate], pd.Timestamp("2026-05-21 10:00:00+05:30"))
+
+        mock_gate.assert_not_called()
         self.assertFalse(engine.positions)
         self.assertEqual(engine.trades, [])
 

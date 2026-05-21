@@ -106,6 +106,35 @@ class SignalWorkflowHelperTests(unittest.TestCase):
         self.assertFalse(allowed)
         context.log_event.assert_called()
 
+    def test_should_enter_trade_rejects_intraday_options_when_cost_ratio_exceeds_runtime_limit(self) -> None:
+        signal = {
+            "symbol": "NFO:TESTCE",
+            "signal": "BUY",
+            "latest_close": 100.0,
+            "score": 0.7,
+        }
+        context = SimpleNamespace(
+            engine=SimpleNamespace(name="intraday_options"),
+            config=SimpleNamespace(risk_style_name="BALANCED"),
+            runtime_config=SimpleNamespace(
+                fno=SimpleNamespace(intraday_options_max_entry_cost_ratio=0.30)
+            ),
+            log_event=Mock(),
+        )
+        with patch("orchestration.signal_workflow.calculate_cost_aware_targets", return_value={
+            "stop_loss": 95.0,
+            "target": 110.0,
+            "trailing_stop": 97.0,
+            "expected_gross_profit": 1000.0,
+            "expected_costs": 320.0,
+            "expected_net_profit": 680.0,
+            "cost_to_profit_ratio": 0.32,
+            "is_profitable": True,
+        }):
+            allowed = should_enter_trade(signal, context, quantity=100)
+        self.assertFalse(allowed)
+        context.log_event.assert_called()
+
     def test_get_cached_regime_context_returns_matching_day(self) -> None:
         regime_cache = {"SBIN.NS": {"trade_day": "2026-04-29", "context": {"mode": "trend"}}}
         self.assertEqual(

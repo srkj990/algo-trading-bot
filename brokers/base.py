@@ -20,6 +20,7 @@ class Quote:
     last_price: float
     bid_price: float | None = None
     ask_price: float | None = None
+    open_interest: int | None = None
 
     @property
     def spread(self) -> float | None:

@@ -12,6 +12,7 @@ from config import (
     TRANSACTION_SLIPPAGE_PCT_PER_SIDE,
 )
 from executor import calculate_cost_aware_targets
+from executor import get_available_margin, get_quote
 from engines.common import (
     apply_capital_limits_to_quantity,
     build_position,
@@ -60,6 +61,57 @@ def _resolve_limit_price(entry_price: float, side: str, buffer_pct: float) -> fl
     return max(0.01, price - buffer)
 
 
+def _validate_intraday_options_live_entry(context, symbol, quantity, entry_price, actual_targets) -> bool:
+    if str(context.config.execution_mode).upper() != "LIVE":
+        return True
+
+    fno_cfg = context.runtime_config.fno
+    quote = get_quote(symbol, provider=context.config.execution_provider)
+    spread_pct = quote.spread_pct
+    max_spread_pct = float(fno_cfg.intraday_options_max_spread_pct or 0.0)
+    if max_spread_pct > 0 and spread_pct is not None and spread_pct > max_spread_pct:
+        context.log_event(
+            f"[FILTER] Skipping {symbol}: spread {spread_pct * 100:.2f}% exceeds "
+            f"intraday-options max {max_spread_pct * 100:.2f}%"
+        )
+        return False
+
+    min_open_interest = int(fno_cfg.intraday_options_min_open_interest or 0)
+    open_interest = quote.open_interest
+    if min_open_interest > 0 and open_interest is not None and int(open_interest) < min_open_interest:
+        context.log_event(
+            f"[FILTER] Skipping {symbol}: OI {int(open_interest)} below minimum "
+            f"{min_open_interest}"
+        )
+        return False
+
+    max_cost_ratio = float(fno_cfg.intraday_options_max_entry_cost_ratio or 0.0)
+    actual_cost_ratio = float(actual_targets.get("cost_to_profit_ratio") or 0.0)
+    if max_cost_ratio > 0 and actual_cost_ratio > max_cost_ratio:
+        context.log_event(
+            f"[FILTER] Skipping {symbol}: expected costs are {actual_cost_ratio * 100:.1f}% "
+            f"of profit, above max {max_cost_ratio * 100:.1f}%"
+        )
+        return False
+
+    if bool(context.runtime_config.orders.margin_check_enabled):
+        available_margin = get_available_margin(
+            product=context.engine.order_product,
+            provider=context.config.execution_provider,
+        )
+        if available_margin is not None:
+            required_margin = float(entry_price) * int(quantity)
+            required_margin *= 1 + float(context.runtime_config.orders.margin_buffer_pct or 0.0)
+            if float(available_margin) < required_margin:
+                context.log_event(
+                    f"[FILTER] Skipping {symbol}: available margin {float(available_margin):.2f} "
+                    f"below estimated requirement {required_margin:.2f}"
+                )
+                return False
+
+    return True
+
+
 def _build_intraday_option_position_from_roll(context, current_position, symbol, qty, entry_price, analytics, now):
     extra_fields = {
         "trade_identity": current_position.get("trade_identity"),
@@ -71,6 +123,11 @@ def _build_intraday_option_position_from_roll(context, current_position, symbol,
         "roll_count": int(current_position.get("roll_count", 0)) + 1,
     }
     if hasattr(context.engine, "build_trend_adaptive_position"):
+        option_data = context.fetch_data(
+            symbol,
+            period=context.engine.data_period,
+            interval=context.engine.data_interval,
+        )
         return context.engine.build_trend_adaptive_position(
             symbol=symbol,
             side="BUY",
@@ -85,6 +142,14 @@ def _build_intraday_option_position_from_roll(context, current_position, symbol,
             engine_name=context.engine.name,
             execution_mode=context.config.execution_mode,
             order_product=context.engine.order_product,
+            premium_volatility_distance=(
+                context.engine.get_premium_volatility_trailing_distance(
+                    option_data,
+                    analytics,
+                )
+                if hasattr(context.engine, "get_premium_volatility_trailing_distance")
+                else 0.0
+            ),
             extra_fields=extra_fields,
         )
     stop_distance = float(entry_price) * 0.10
@@ -461,6 +526,22 @@ def _execute_pair_entry(context, candidate, now, deployed_capital):
             float(trailing_distance or 0.0),
             float(leg_entry["stop_data"].get("stop_distance") or 0.0) * float(TRAILING_ACTIVATION_STOP_DISTANCE_MULTIPLIER or 0.0),
         )
+        leg_targets = calculate_cost_aware_targets(
+            entry_price=float(leg_entry["entry_price"]),
+            quantity=int(qty),
+            asset_class="INTRADAY_OPTIONS",
+            risk_profile=cfg.risk_style_name,
+            signal_strength=float(candidate.get("score") or 0.5),
+            side=candidate["signal"],
+        )
+        if not _validate_intraday_options_live_entry(
+            context,
+            leg_symbol,
+            qty,
+            leg_entry["entry_price"],
+            leg_targets,
+        ):
+            continue
         try:
             log_order_signal_banner(
                 context.log_event,
@@ -502,6 +583,11 @@ def _execute_pair_entry(context, candidate, now, deployed_capital):
                 )
                 continue
             qty = int(order_result.filled_quantity)
+            if qty < requested_qty:
+                context.log_event(
+                    f"[ORDER] Pair leg partial fill | Symbol={leg_symbol} | Filled={qty}/{requested_qty}",
+                    "warning",
+                )
             context.log_event(
                 f"[ORDER] Pair leg accepted | Symbol={leg_symbol} | OrderId={order_result.order_id} | "
                 f"Filled={qty}/{requested_qty}"
@@ -528,19 +614,39 @@ def _execute_pair_entry(context, candidate, now, deployed_capital):
                     exit_time=now,
                 )
             raise
+        actual_entry_price = float(order_result.average_price or leg_entry["entry_price"])
+        actual_stop_data = atr_stop_from_value(
+            candidate["signal"],
+            actual_entry_price,
+            leg_entry["atr"],
+            cfg.atr_stop_multiplier,
+        )
+        actual_target_distance = actual_stop_data["stop_distance"] * cfg.target_risk_reward
+        actual_target_price = calculate_target_price(
+            candidate["signal"],
+            actual_entry_price,
+            actual_target_distance,
+        )
+        actual_trailing_distance = leg_entry["atr"] * cfg.trailing_atr_multiplier
+        actual_trailing_stop = float(actual_stop_data["stop_loss_price"])
+        actual_trailing_activation_distance = max(
+            float(actual_trailing_distance or 0.0),
+            float(actual_stop_data.get("stop_distance") or 0.0)
+            * float(TRAILING_ACTIVATION_STOP_DISTANCE_MULTIPLIER or 0.0),
+        )
         context.positions[leg_symbol] = build_position(
             symbol=leg_symbol,
             side=candidate["signal"],
             quantity=qty,
-            entry_price=float(order_result.average_price or leg_entry["entry_price"]),
-            stop_loss=leg_entry["stop_data"]["stop_loss_price"],
-            target=target_price,
-            trailing_stop=trailing_stop,
-            trailing_distance=trailing_distance,
-            trailing_activation_distance=trailing_activation_distance,
+            entry_price=actual_entry_price,
+            stop_loss=actual_stop_data["stop_loss_price"],
+            target=actual_target_price,
+            trailing_stop=actual_trailing_stop,
+            trailing_distance=actual_trailing_distance,
+            trailing_activation_distance=actual_trailing_activation_distance,
             trailing_active=False,
             atr=leg_entry["atr"],
-            stop_distance=leg_entry["stop_data"]["stop_distance"],
+            stop_distance=actual_stop_data["stop_distance"],
             lot_size=leg_entry["lot_size"],
             entry_analytics=leg_entry["analytics"],
             pair_id=pair_id,
@@ -560,7 +666,7 @@ def _execute_pair_entry(context, candidate, now, deployed_capital):
         )
         entered_pair_symbols.append(leg_symbol)
         context.traded_symbols_today.add(leg_symbol)
-        estimated_trade_capital += float(order_result.average_price or leg_entry["entry_price"]) * qty
+        estimated_trade_capital += actual_entry_price * qty
 
     if trade_key:
         context.trade_counts_today[trade_key] = int(context.trade_counts_today.get(trade_key, 0)) + 1
@@ -617,6 +723,9 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
                 atr=atr_value,
                 signal_score=float(candidate.get("score") or 0.0),
                 analytics=candidate.get("analytics") or {},
+                premium_volatility_distance=float(
+                    candidate.get("premium_volatility_distance") or 0.0
+                ),
             )
             stop_distance = float(level_spec["stop_distance"])
             stop_loss_price = float(level_spec["stop_loss_price"])
@@ -729,6 +838,24 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
             )
             return False
 
+    if engine.name == "intraday_options" and cfg.atm_option_config:
+        preflight_targets = calculate_cost_aware_targets(
+            entry_price=float(entry_price),
+            quantity=int(qty),
+            asset_class="INTRADAY_OPTIONS",
+            risk_profile=cfg.risk_style_name,
+            signal_strength=float(candidate.get("score") or 0.5),
+            side=candidate["signal"],
+        )
+        if not _validate_intraday_options_live_entry(
+            context,
+            symbol,
+            qty,
+            entry_price,
+            preflight_targets,
+        ):
+            return False
+
     context.log_event(
         f"[ENTRY] Executing trade on {symbol} | Signal={candidate['signal']} | Agree={candidate['agreement_count']} | "
         f"Score={candidate['score']:.4f} | ATR={atr_value:.2f} | "
@@ -778,6 +905,12 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
         )
         return False
     qty = int(order_result.filled_quantity)
+    if qty < requested_qty:
+        context.log_event(
+            f"[ORDER] Partial fill on {symbol} | Filled={qty}/{requested_qty} | "
+            "recalculating position using actual filled quantity",
+            "warning",
+        )
     actual_entry_price = float(order_result.average_price or entry_price)
     estimated_trade_capital = actual_entry_price * qty
     actual_targets = calculate_cost_aware_targets(
@@ -820,6 +953,9 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
             engine_name=engine.name,
             execution_mode=context.config.execution_mode,
             order_product=engine.order_product,
+            premium_volatility_distance=float(
+                candidate.get("premium_volatility_distance") or 0.0
+            ),
             extra_fields=position_extra_fields,
         )
     else:

@@ -94,6 +94,10 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         INTRADAY_OPTIONS_TIME_EXIT_CUTOFF, "%H:%M"
     ).time()
     runner_level_exit_fractions = (0.3, 0.4, 0.3)
+    runner_partial_exit_lot_threshold = 2
+    runner_level1_premium_target_pct = 8.0
+    runner_level2_premium_target_pct = 15.0
+    runner_partial_exit_fraction = 0.2
 
     def __init__(self, sl_percent, target_percent, trailing_percent):
         super().__init__(sl_percent, target_percent, trailing_percent)
@@ -108,6 +112,17 @@ class IntradayOptionsEngine(OptionsEquityEngine):
 
     def _build_runner_lot_plan(self, quantity, lot_size):
         total_lots = max(1, int(quantity) // max(1, int(lot_size or 1)))
+        if total_lots > int(self.runner_partial_exit_lot_threshold):
+            level1_lots = max(1, int(total_lots * float(self.runner_partial_exit_fraction)))
+            remaining_after_level1 = max(1, total_lots - level1_lots)
+            level2_lots = max(1, int(total_lots * float(self.runner_partial_exit_fraction)))
+            level2_lots = min(level2_lots, max(0, remaining_after_level1 - 1))
+            runner_lots = max(1, total_lots - level1_lots - level2_lots)
+            return [
+                level1_lots * int(lot_size),
+                level2_lots * int(lot_size),
+                runner_lots * int(lot_size),
+            ]
         if total_lots < 2:
             return [0, 0, int(quantity)]
 
@@ -126,6 +141,19 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             runner_lots * int(lot_size),
         ]
 
+    def _uses_fixed_premium_runner_exits(self, quantity, lot_size):
+        total_lots = max(1, int(quantity) // max(1, int(lot_size or 1)))
+        return total_lots > int(self.runner_partial_exit_lot_threshold)
+
+    def _strong_trend_persists(self, position, snapshot):
+        analytics = (snapshot or {}).get("analytics") or position.get("entry_analytics") or {}
+        regime = self._runner_regime_label(analytics)
+        latest_close = float((snapshot or {}).get("latest_close") or 0.0)
+        level1_target = float(position.get("runner_level1_target") or position["entry_price"])
+        if position["side"] == "BUY":
+            return regime != "SIDEWAYS" and latest_close >= level1_target
+        return regime != "SIDEWAYS" and latest_close <= level1_target
+
     def get_trend_adaptive_level_spec(
         self,
         *,
@@ -134,16 +162,17 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         atr,
         signal_score,
         analytics,
+        premium_volatility_distance=None,
     ):
         regime = self._runner_regime_label(analytics)
         base_atr = max(float(atr or 0.0), float(entry_price) * 0.015)
         normalized_score = min(1.0, max(0.0, float(signal_score or 0.0)))
-        conviction = 1.0 + normalized_score
+        conviction = 1.0 + (normalized_score * 0.5)
 
         stop_multiplier = {
             "SIDEWAYS": 2.0,
             "NORMAL": 1.7,
-            "EXPANSION": 1.35,
+            "EXPANSION": 1.7,
         }[regime]
         target_multiplier = {
             "SIDEWAYS": 1.1,
@@ -151,33 +180,70 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             "EXPANSION": 2.3,
         }[regime]
         trailing_multiplier = {
-            "SIDEWAYS": 1.0,
-            "NORMAL": 0.9,
-            "EXPANSION": 0.75,
+            "SIDEWAYS": 0.8,
+            "NORMAL": 1.0,
+            "EXPANSION": 1.15,
         }[regime]
 
         stop_distance = max(float(entry_price) * 0.05, base_atr * stop_multiplier)
         target_distance = max(float(entry_price) * 0.08, base_atr * target_multiplier * conviction)
-        trailing_distance = max(float(entry_price) * 0.035, base_atr * trailing_multiplier)
+        atr_trailing_distance = max(float(entry_price) * 0.035, base_atr * trailing_multiplier)
+        premium_volatility_distance = max(float(premium_volatility_distance or 0.0), 0.0)
+        trailing_distance = max(atr_trailing_distance, premium_volatility_distance)
         level1_distance = target_distance * 0.5
         level2_distance = target_distance
         level3_distance = target_distance * 1.6
+        minimum_price_level = 0.01
         stop_loss_price = (
             float(entry_price) - stop_distance
             if side == "BUY"
             else float(entry_price) + stop_distance
+        )
+        stop_loss_price = max(minimum_price_level, stop_loss_price)
+        level1_target = max(
+            minimum_price_level,
+            calculate_target_price(side, float(entry_price), level1_distance),
+        )
+        level2_target = max(
+            minimum_price_level,
+            calculate_target_price(side, float(entry_price), level2_distance),
+        )
+        level3_target = max(
+            minimum_price_level,
+            calculate_target_price(side, float(entry_price), level3_distance),
         )
         return {
             "runner_regime": regime,
             "runner_signal_score": normalized_score,
             "stop_distance": stop_distance,
             "stop_loss_price": stop_loss_price,
+            "atr_trailing_distance": atr_trailing_distance,
+            "premium_volatility_distance": premium_volatility_distance,
             "trailing_distance": trailing_distance,
-            "level1_target": calculate_target_price(side, float(entry_price), level1_distance),
-            "level2_target": calculate_target_price(side, float(entry_price), level2_distance),
-            "level3_target": calculate_target_price(side, float(entry_price), level3_distance),
+            "level1_target": level1_target,
+            "level2_target": level2_target,
+            "level3_target": level3_target,
             "trailing_activation_distance": max(float(trailing_distance), float(level1_distance) * 0.8),
         }
+
+    def get_premium_volatility_trailing_distance(self, intraday_df, analytics=None):
+        del analytics
+        if intraday_df is None or intraday_df.empty:
+            return 0.0
+
+        session_df = intraday_df.loc[
+            intraday_df.index.date == intraday_df.index[-1].date()
+        ]
+        lookback = max(5, int(self.volatility_quality_lookback))
+        if session_df.empty:
+            return 0.0
+
+        recent = session_df.tail(lookback)
+        recent_ranges = recent["High"] - recent["Low"]
+        avg_range = float(recent_ranges.mean()) if not recent_ranges.empty else 0.0
+        if avg_range != avg_range:
+            return 0.0
+        return max(0.0, avg_range * float(self.volatility_range_multiplier))
 
     def build_trend_adaptive_position(
         self,
@@ -195,6 +261,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         engine_name,
         execution_mode,
         order_product,
+        premium_volatility_distance=None,
         extra_fields=None,
     ):
         level_spec = self.get_trend_adaptive_level_spec(
@@ -203,9 +270,30 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             atr=atr,
             signal_score=signal_score,
             analytics=analytics,
+            premium_volatility_distance=premium_volatility_distance,
         )
         trailing_stop = float(level_spec["stop_loss_price"])
         exit_quantities = self._build_runner_lot_plan(quantity, lot_size)
+        use_fixed_premium_runner_exits = self._uses_fixed_premium_runner_exits(quantity, lot_size)
+        level1_target = float(level_spec["level1_target"])
+        level2_target = float(level_spec["level2_target"])
+        if use_fixed_premium_runner_exits:
+            level1_target = max(
+                0.01,
+                calculate_target_price(
+                    side,
+                    float(entry_price),
+                    float(entry_price) * (float(self.runner_level1_premium_target_pct) / 100.0),
+                ),
+            )
+            level2_target = max(
+                0.01,
+                calculate_target_price(
+                    side,
+                    float(entry_price),
+                    float(entry_price) * (float(self.runner_level2_premium_target_pct) / 100.0),
+                ),
+            )
 
         payload = {
             "symbol": symbol,
@@ -228,15 +316,18 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             "order_product": order_product,
             "runner_enabled": True,
             "runner_trailing_only": True,
+            "runner_partial_exit_enabled": use_fixed_premium_runner_exits,
             "runner_regime": level_spec["runner_regime"],
             "runner_signal_score": level_spec["runner_signal_score"],
-            "runner_level1_target": level_spec["level1_target"],
-            "runner_level2_target": level_spec["level2_target"],
+            "runner_level1_target": level1_target,
+            "runner_level2_target": level2_target,
             "runner_level3_target": level_spec["level3_target"],
             "runner_exit_quantities": exit_quantities,
             "runner_exits_completed": [False, False, False],
             "runner_last_level_hit": None,
             "runner_stop_distance": level_spec["stop_distance"],
+            "premium_volatility_distance": level_spec["premium_volatility_distance"],
+            "atr_trailing_distance": level_spec["atr_trailing_distance"],
         }
         if extra_fields:
             payload.update(extra_fields)
@@ -247,15 +338,61 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         return evaluate_exit(position, latest_candle, include_target=include_target)
 
     def get_runner_partial_exit(self, position, snapshot, now):
-        del snapshot, now
+        del now
         if not position.get("runner_enabled"):
             return None
-        if bool(position.get("runner_trailing_only")):
+        if not bool(position.get("runner_partial_exit_enabled")):
             return None
+        latest_candle = (snapshot or {}).get("latest_candle") or {}
+        completed = list(position.get("runner_exits_completed") or [False, False, False])
+        exit_quantities = list(position.get("runner_exit_quantities") or [0, 0, 0])
+        if position["side"] == "BUY":
+            trigger_price = float(latest_candle.get("High") or 0.0)
+            if (
+                not completed[0]
+                and int(exit_quantities[0]) > 0
+                and trigger_price >= float(position["runner_level1_target"])
+            ):
+                return {
+                    "level_index": 0,
+                    "quantity": int(exit_quantities[0]),
+                    "reason": "RUNNER_LEVEL1_8PCT",
+                }
+            if (
+                not completed[1]
+                and int(exit_quantities[1]) > 0
+                and trigger_price >= float(position["runner_level2_target"])
+            ):
+                return {
+                    "level_index": 1,
+                    "quantity": int(exit_quantities[1]),
+                    "reason": "RUNNER_LEVEL2_15PCT",
+                }
+        else:
+            trigger_price = float(latest_candle.get("Low") or 0.0)
+            if (
+                not completed[0]
+                and int(exit_quantities[0]) > 0
+                and trigger_price <= float(position["runner_level1_target"])
+            ):
+                return {
+                    "level_index": 0,
+                    "quantity": int(exit_quantities[0]),
+                    "reason": "RUNNER_LEVEL1_8PCT",
+                }
+            if (
+                not completed[1]
+                and int(exit_quantities[1]) > 0
+                and trigger_price <= float(position["runner_level2_target"])
+            ):
+                return {
+                    "level_index": 1,
+                    "quantity": int(exit_quantities[1]),
+                    "reason": "RUNNER_LEVEL2_15PCT",
+                }
         return None
 
     def apply_runner_partial_exit(self, position, action, exit_price, snapshot):
-        del snapshot
         completed = list(position.get("runner_exits_completed") or [False, False, False])
         index = int(action["level_index"])
         completed[index] = True
@@ -275,7 +412,8 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                 position["stop_loss"] = max(float(position["stop_loss"]), protected_level)
                 position["trailing_stop"] = max(float(position["trailing_stop"]), protected_level)
                 position["target"] = float(position["runner_level3_target"])
-                position["trailing_active"] = True
+                if self._strong_trend_persists(position, snapshot):
+                    position["trailing_active"] = True
 
     def get_cycle_state(self, now):
         if now.weekday() >= 5:
