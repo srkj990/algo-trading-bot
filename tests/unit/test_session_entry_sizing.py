@@ -5,10 +5,38 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from engines.intraday_options import IntradayOptionsEngine
-from orchestration.session import _execute_single_entry
+from orchestration.session import _execute_single_entry, _sync_exit_only_live_positions
 
 
 class SessionEntrySizingTests(unittest.TestCase):
+    def test_exit_only_live_sync_refreshes_manual_positions(self) -> None:
+        context = SimpleNamespace(
+            config=SimpleNamespace(
+                execution_mode="LIVE",
+                exit_only_mode=True,
+            ),
+            engine=SimpleNamespace(
+                reconcile_startup=Mock(
+                    return_value={
+                        "NFO:MANUALCE": {
+                            "symbol": "NFO:MANUALCE",
+                            "side": "BUY",
+                            "quantity": 75,
+                            "entry_price": 100.0,
+                        }
+                    }
+                )
+            ),
+            positions={},
+            log_event=Mock(),
+        )
+
+        changed = _sync_exit_only_live_positions(context)
+
+        self.assertTrue(changed)
+        self.assertIn("NFO:MANUALCE", context.positions)
+        context.engine.reconcile_startup.assert_called_once()
+
     def test_intraday_options_capital_based_qty_uses_affordable_lot_quantity(self) -> None:
         engine = IntradayOptionsEngine(sl_percent=10.0, target_percent=20.0, trailing_percent=7.5)
         context = SimpleNamespace(

@@ -365,6 +365,27 @@ class DataCacheConfig:
 
 
 @dataclass(frozen=True)
+class RiskControlsConfig:
+    daily_max_loss_pct: float
+    consecutive_loss_limit: int
+    api_failure_pause_minutes: int
+    max_orders_per_minute: int
+    abnormal_slippage_pause_pct: float
+
+    def validate(self) -> None:
+        if self.daily_max_loss_pct < 0:
+            raise ValueError("risk_controls.daily_max_loss_pct must be >= 0")
+        if self.consecutive_loss_limit < 0:
+            raise ValueError("risk_controls.consecutive_loss_limit must be >= 0")
+        if self.api_failure_pause_minutes < 0:
+            raise ValueError("risk_controls.api_failure_pause_minutes must be >= 0")
+        if self.max_orders_per_minute < 0:
+            raise ValueError("risk_controls.max_orders_per_minute must be >= 0")
+        if self.abnormal_slippage_pause_pct < 0:
+            raise ValueError("risk_controls.abnormal_slippage_pause_pct must be >= 0")
+
+
+@dataclass(frozen=True)
 class OrderValidationConfig:
     enabled: bool
     allowed_products: tuple[str, ...]
@@ -534,22 +555,30 @@ class RuntimeConfig:
     execution_safety: ExecutionSafetyConfig
     transaction_costs: TransactionCostConfig
     data_cache: DataCacheConfig
+    risk_controls: RiskControlsConfig
     orders: OrderValidationConfig
     trade_store: TradeStoreConfig
     logging: LoggingConfig
     universe: UniverseConfig
     fno: FnoConfig
+    engine_defaults: dict[str, Any]
+    backtest_defaults: dict[str, Any]
 
     def validate(self) -> None:
         self.strategy.validate()
         self.execution_safety.validate()
         self.transaction_costs.validate()
         self.data_cache.validate()
+        self.risk_controls.validate()
         self.orders.validate()
         self.trade_store.validate()
         self.logging.validate()
         self.universe.validate()
         self.fno.validate()
+        if not self.engine_defaults:
+            raise ValueError("engine_defaults cannot be empty")
+        if not self.backtest_defaults:
+            raise ValueError("backtest_defaults cannot be empty")
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -613,6 +642,23 @@ def _default_runtime_config_map() -> dict[str, Any]:
             "per_cycle_enabled": _parse_bool(
                 os.getenv("DATA_CACHE_PER_CYCLE_ENABLED", "1"),
                 default=True,
+            ),
+        },
+        "risk_controls": {
+            "daily_max_loss_pct": float(
+                os.getenv("RISK_DAILY_MAX_LOSS_PCT", "0.03")
+            ),
+            "consecutive_loss_limit": int(
+                os.getenv("RISK_CONSECUTIVE_LOSS_LIMIT", "4")
+            ),
+            "api_failure_pause_minutes": int(
+                os.getenv("RISK_API_FAILURE_PAUSE_MINUTES", "5")
+            ),
+            "max_orders_per_minute": int(
+                os.getenv("RISK_MAX_ORDERS_PER_MINUTE", "10")
+            ),
+            "abnormal_slippage_pause_pct": float(
+                os.getenv("RISK_ABNORMAL_SLIPPAGE_PAUSE_PCT", "0.5")
             ),
         },
         "orders": {
@@ -853,6 +899,125 @@ def _default_runtime_config_map() -> dict[str, Any]:
                 os.getenv("INTRADAY_OPTIONS_THETA_EXIT_MIN_MINUTES", "10")
             ),
         },
+        "engine_defaults": {
+            "delivery_equity": {
+                "max_symbol_allocation": 0.25,
+                "nifty_trend_symbol": "NSE:NIFTY 50",
+                "nifty_trend_ma_window": 50,
+                "max_hold_days": 5,
+            },
+            "intraday_equity": {
+                "gap_threshold_percent": 1.0,
+                "opening_range_candles": 15,
+                "breakout_volume_multiplier": 1.2,
+            },
+            "futures_equity": {
+                "max_symbol_allocation": 0.25,
+            },
+            "options_equity": {
+                "max_symbol_allocation": 0.25,
+            },
+            "intraday_futures": {
+                "max_symbol_allocation": 0.35,
+            },
+            "intraday_options": {
+                "max_symbol_allocation": 0.2,
+                "min_contract_price": 8.0,
+                "min_abs_delta": 0.2,
+                "max_buy_iv_percentile": 85.0,
+                "min_sell_iv_percentile": 15.0,
+                "momentum_volume_multiplier": 1.5,
+                "momentum_spike_multiplier": 2.0,
+                "momentum_min_body_ratio": 0.6,
+                "momentum_quality_lookback": 20,
+                "momentum_fast_ema_span": 9,
+                "momentum_confirmation_timeout_candles": 3,
+                "momentum_pullback_timeout_candles": 5,
+                "momentum_pullback_band_pct": 0.0035,
+                "mean_reversion_max_body_ratio": 0.55,
+                "mean_reversion_spike_multiplier": 1.4,
+                "mean_reversion_retest_band_pct": 0.0035,
+                "mean_reversion_quality_lookback": 20,
+                "volatility_min_body_ratio": 0.45,
+                "volatility_range_multiplier": 1.2,
+                "volatility_quality_lookback": 20,
+                "runner_level_exit_fractions": [0.3, 0.4, 0.3],
+                "runner_partial_exit_lot_threshold": 2,
+                "runner_level1_premium_target_pct": 8.0,
+                "runner_level2_premium_target_pct": 15.0,
+                "runner_partial_exit_fraction": 0.2,
+            },
+        },
+        "backtest_defaults": {
+            "risk_styles": {
+                "1": {
+                    "name": "CONSERVATIVE",
+                    "atr_stop_multiplier": 1.5,
+                    "trailing_atr_multiplier": 1.0,
+                    "target_risk_reward": 1.8,
+                    "sl_percent": 0.4,
+                    "target_percent": 0.8,
+                    "trailing_percent": 0.25,
+                    "risk_percent": 0.005,
+                },
+                "2": {
+                    "name": "BALANCED",
+                    "atr_stop_multiplier": 2.0,
+                    "trailing_atr_multiplier": 1.25,
+                    "target_risk_reward": 2.0,
+                    "sl_percent": 0.5,
+                    "target_percent": 1.0,
+                    "trailing_percent": 0.35,
+                    "risk_percent": 0.01,
+                },
+                "3": {
+                    "name": "AGGRESSIVE",
+                    "atr_stop_multiplier": 2.5,
+                    "trailing_atr_multiplier": 1.5,
+                    "target_risk_reward": 2.2,
+                    "sl_percent": 0.7,
+                    "target_percent": 1.4,
+                    "trailing_percent": 0.5,
+                    "risk_percent": 0.015,
+                },
+            },
+            "default_data": {
+                "intraday_equity": {"period": "5d", "interval": "5m"},
+                "delivery_equity": {"period": "6mo", "interval": "1d"},
+                "futures_equity": {"period": "2mo", "interval": "15m"},
+                "options_equity": {"period": "2mo", "interval": "15m"},
+                "intraday_futures": {"period": "5d", "interval": "5m"},
+                "intraday_options": {"period": "1d", "interval": "1m"},
+            },
+            "engine_sl_target_defaults": {
+                "sl_percent": 0.5,
+                "target_percent": 1.0,
+                "trailing_percent": 0.35,
+            },
+            "prompt_defaults": {
+                "engine_choice": 1,
+                "capital": 100000,
+                "symbol_mode": 3,
+                "single_symbol_key": "1",
+                "fno_futures_base_symbol": 3,
+                "fno_options_base_symbol": 1,
+                "expiry_choice": 1,
+                "intraday_options_structure_mode": 1,
+                "intraday_options_strike_mode": 1,
+                "fno_contract_confirm": 1,
+                "intraday_options_strategy": 1,
+                "intraday_equity_strategy_mode": 1,
+                "default_strategy_mode": 1,
+                "single_strategy_key": "1",
+                "risk_style": 2,
+                "max_positions": 1,
+                "one_trade_per_symbol_per_day": 1,
+                "entry_selection_mode": 1,
+                "top_n": 2,
+                "intraday_options_lot_mode": 2,
+                "intraday_options_entry_mode": 1,
+            },
+        },
     }
 
 
@@ -863,6 +1028,7 @@ def _build_runtime_config() -> RuntimeConfig:
         execution_safety=ExecutionSafetyConfig(**merged["execution_safety"]),
         transaction_costs=TransactionCostConfig(**merged["transaction_costs"]),
         data_cache=DataCacheConfig(**merged["data_cache"]),
+        risk_controls=RiskControlsConfig(**merged["risk_controls"]),
         orders=OrderValidationConfig(
             allowed_products=tuple(merged["orders"]["allowed_products"]),
             allowed_order_types=tuple(merged["orders"]["allowed_order_types"]),
@@ -906,6 +1072,8 @@ def _build_runtime_config() -> RuntimeConfig:
         logging=LoggingConfig(**merged["logging"]),
         universe=UniverseConfig(**merged["universe"]),
         fno=FnoConfig(**merged["fno"]),
+        engine_defaults=merged["engine_defaults"],
+        backtest_defaults=merged["backtest_defaults"],
     )
     config.validate()
     return config
@@ -1136,6 +1304,8 @@ ONLY_MANAGE_CONFIGURED_SYMBOLS = (
 
 LOG_FILE = RUNTIME_CONFIG.logging.file_name
 LOG_LEVEL = RUNTIME_CONFIG.logging.level
+ENGINE_DEFAULTS = RUNTIME_CONFIG.engine_defaults
+BACKTEST_DEFAULTS = RUNTIME_CONFIG.backtest_defaults
 
 FNO_UNDERLYING_DETAILS = RUNTIME_CONFIG.fno.underlying_details
 FNO_INDEX_SYMBOLS = list(FNO_UNDERLYING_DETAILS)

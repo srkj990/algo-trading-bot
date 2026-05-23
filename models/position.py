@@ -121,14 +121,14 @@ class Position:
         if self.side == PositionSide.BUY:
             if latest_low <= self.stop_loss:
                 return ExitReason.STOP_LOSS
-            if latest_low <= self.trailing_stop:
+            if (self.trailing_active or self.trailing_activation_distance is None) and latest_low <= self.trailing_stop:
                 return ExitReason.TRAILING_STOP
             if include_target and latest_high >= self.target:
                 return ExitReason.TARGET
         else:
             if latest_high >= self.stop_loss:
                 return ExitReason.STOP_LOSS
-            if latest_high >= self.trailing_stop:
+            if (self.trailing_active or self.trailing_activation_distance is None) and latest_high >= self.trailing_stop:
                 return ExitReason.TRAILING_STOP
             if include_target and latest_low <= self.target:
                 return ExitReason.TARGET

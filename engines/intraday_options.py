@@ -1,6 +1,7 @@
 from datetime import datetime, time
 
 from config import (
+    ENGINE_DEFAULTS,
     INTRADAY_OPTIONS_EXPIRY_WARNING_DAYS,
     INTRADAY_OPTIONS_IV_EXPANSION_MAX_IV_PERCENTILE,
     INTRADAY_OPTIONS_MAX_TRADES_PER_UNDERLYING,
@@ -23,11 +24,13 @@ from data_fetcher import get_data
 from indicators import compute_vwap
 from logger import log_event
 from risk_manager import calculate_target_price
+from signal_scoring import get_atr_value
 
 from .options_equity import OptionsEquityEngine
 
 
 class IntradayOptionsEngine(OptionsEquityEngine):
+    settings = ENGINE_DEFAULTS["intraday_options"]
     name = "intraday_options"
     data_period = "1d"
     data_interval = "1m"
@@ -57,11 +60,11 @@ class IntradayOptionsEngine(OptionsEquityEngine):
     sleep_seconds = 15
     cooldown_seconds = 180
     require_closed_signal_candle = True
-    max_symbol_allocation = 0.2
-    min_contract_price = 8.0
-    min_abs_delta = 0.2
-    max_buy_iv_percentile = 85.0
-    min_sell_iv_percentile = 15.0
+    max_symbol_allocation = float(settings["max_symbol_allocation"])
+    min_contract_price = float(settings["min_contract_price"])
+    min_abs_delta = float(settings["min_abs_delta"])
+    max_buy_iv_percentile = float(settings["max_buy_iv_percentile"])
+    min_sell_iv_percentile = float(settings["min_sell_iv_percentile"])
     max_trades_per_underlying_per_day = INTRADAY_OPTIONS_MAX_TRADES_PER_UNDERLYING
     expiry_warning_days = INTRADAY_OPTIONS_EXPIRY_WARNING_DAYS
     vega_crush_block_percent = INTRADAY_OPTIONS_VEGA_CRUSH_BLOCK_PERCENT
@@ -71,21 +74,21 @@ class IntradayOptionsEngine(OptionsEquityEngine):
     iv_expansion_max_iv_percentile = INTRADAY_OPTIONS_IV_EXPANSION_MAX_IV_PERCENTILE
     sideways_vwap_band_pct = INTRADAY_OPTIONS_SIDEWAYS_VWAP_BAND_PCT
     sideways_lookback_candles = INTRADAY_OPTIONS_SIDEWAYS_LOOKBACK_CANDLES
-    momentum_volume_multiplier = 1.5
-    momentum_spike_multiplier = 2.0
-    momentum_min_body_ratio = 0.6
-    momentum_quality_lookback = 20
-    momentum_fast_ema_span = 9
-    momentum_confirmation_timeout_candles = 3
-    momentum_pullback_timeout_candles = 5
-    momentum_pullback_band_pct = 0.0035
-    mean_reversion_max_body_ratio = 0.55
-    mean_reversion_spike_multiplier = 1.4
-    mean_reversion_retest_band_pct = 0.0035
-    mean_reversion_quality_lookback = 20
-    volatility_min_body_ratio = 0.45
-    volatility_range_multiplier = 1.2
-    volatility_quality_lookback = 20
+    momentum_volume_multiplier = float(settings["momentum_volume_multiplier"])
+    momentum_spike_multiplier = float(settings["momentum_spike_multiplier"])
+    momentum_min_body_ratio = float(settings["momentum_min_body_ratio"])
+    momentum_quality_lookback = int(settings["momentum_quality_lookback"])
+    momentum_fast_ema_span = int(settings["momentum_fast_ema_span"])
+    momentum_confirmation_timeout_candles = int(settings["momentum_confirmation_timeout_candles"])
+    momentum_pullback_timeout_candles = int(settings["momentum_pullback_timeout_candles"])
+    momentum_pullback_band_pct = float(settings["momentum_pullback_band_pct"])
+    mean_reversion_max_body_ratio = float(settings["mean_reversion_max_body_ratio"])
+    mean_reversion_spike_multiplier = float(settings["mean_reversion_spike_multiplier"])
+    mean_reversion_retest_band_pct = float(settings["mean_reversion_retest_band_pct"])
+    mean_reversion_quality_lookback = int(settings["mean_reversion_quality_lookback"])
+    volatility_min_body_ratio = float(settings["volatility_min_body_ratio"])
+    volatility_range_multiplier = float(settings["volatility_range_multiplier"])
+    volatility_quality_lookback = int(settings["volatility_quality_lookback"])
     volatility_regime_expansion_range_pct = INTRADAY_OPTIONS_REGIME_EXPANSION_RANGE_PCT
     volatility_regime_sideways_range_pct = INTRADAY_OPTIONS_REGIME_SIDEWAYS_RANGE_PCT
     volatility_regime_sideways_vwap_dev_pct = INTRADAY_OPTIONS_REGIME_SIDEWAYS_VWAP_DEV_PCT
@@ -93,11 +96,11 @@ class IntradayOptionsEngine(OptionsEquityEngine):
     time_exit_cutoff = datetime.strptime(
         INTRADAY_OPTIONS_TIME_EXIT_CUTOFF, "%H:%M"
     ).time()
-    runner_level_exit_fractions = (0.3, 0.4, 0.3)
-    runner_partial_exit_lot_threshold = 2
-    runner_level1_premium_target_pct = 8.0
-    runner_level2_premium_target_pct = 15.0
-    runner_partial_exit_fraction = 0.2
+    runner_level_exit_fractions = tuple(settings["runner_level_exit_fractions"])
+    runner_partial_exit_lot_threshold = int(settings["runner_partial_exit_lot_threshold"])
+    runner_level1_premium_target_pct = float(settings["runner_level1_premium_target_pct"])
+    runner_level2_premium_target_pct = float(settings["runner_level2_premium_target_pct"])
+    runner_partial_exit_fraction = float(settings["runner_partial_exit_fraction"])
 
     def __init__(self, sl_percent, target_percent, trailing_percent):
         super().__init__(sl_percent, target_percent, trailing_percent)
@@ -111,7 +114,12 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         return label if label in {"SIDEWAYS", "NORMAL", "EXPANSION"} else "NORMAL"
 
     def _build_runner_lot_plan(self, quantity, lot_size):
-        total_lots = max(1, int(quantity) // max(1, int(lot_size or 1)))
+        quantity = int(quantity or 0)
+        lot_size = max(1, int(lot_size or 1))
+        if quantity <= 0 or quantity % lot_size != 0:
+            return [0, 0, max(0, quantity)]
+
+        total_lots = max(1, quantity // lot_size)
         if total_lots > int(self.runner_partial_exit_lot_threshold):
             level1_lots = max(1, int(total_lots * float(self.runner_partial_exit_fraction)))
             remaining_after_level1 = max(1, total_lots - level1_lots)
@@ -124,7 +132,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                 runner_lots * int(lot_size),
             ]
         if total_lots < 2:
-            return [0, 0, int(quantity)]
+            return [0, 0, quantity]
 
         level1_lots = max(1, int(round(total_lots * self.runner_level_exit_fractions[0])))
         remaining_after_level1 = max(1, total_lots - level1_lots)
@@ -136,13 +144,17 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         if (level1_lots + level2_lots + runner_lots) != total_lots:
             runner_lots = total_lots - level1_lots - level2_lots
         return [
-            level1_lots * int(lot_size),
-            level2_lots * int(lot_size),
-            runner_lots * int(lot_size),
-        ]
+                level1_lots * lot_size,
+                level2_lots * lot_size,
+                runner_lots * lot_size,
+            ]
 
     def _uses_fixed_premium_runner_exits(self, quantity, lot_size):
-        total_lots = max(1, int(quantity) // max(1, int(lot_size or 1)))
+        quantity = int(quantity or 0)
+        lot_size = max(1, int(lot_size or 1))
+        if quantity <= 0 or quantity % lot_size != 0:
+            return False
+        total_lots = max(1, quantity // lot_size)
         return total_lots > int(self.runner_partial_exit_lot_threshold)
 
     def _strong_trend_persists(self, position, snapshot):
@@ -295,6 +307,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                 ),
             )
 
+        partial_exit_enabled = any(int(qty or 0) > 0 for qty in exit_quantities[:2])
         payload = {
             "symbol": symbol,
             "side": side,
@@ -316,7 +329,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             "order_product": order_product,
             "runner_enabled": True,
             "runner_trailing_only": True,
-            "runner_partial_exit_enabled": use_fixed_premium_runner_exits,
+            "runner_partial_exit_enabled": partial_exit_enabled,
             "runner_regime": level_spec["runner_regime"],
             "runner_signal_score": level_spec["runner_signal_score"],
             "runner_level1_target": level1_target,
@@ -411,6 +424,20 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                 )
                 position["stop_loss"] = max(float(position["stop_loss"]), protected_level)
                 position["trailing_stop"] = max(float(position["trailing_stop"]), protected_level)
+                position["target"] = float(position["runner_level3_target"])
+                if self._strong_trend_persists(position, snapshot):
+                    position["trailing_active"] = True
+        else:
+            if index == 0:
+                position["stop_loss"] = min(float(position["stop_loss"]), entry_price)
+                position["trailing_stop"] = min(float(position["trailing_stop"]), entry_price)
+            elif index == 1:
+                protected_level = min(
+                    float(position["runner_level1_target"]),
+                    exit_price + max(float(position.get("trailing_distance") or 0.0), 0.01),
+                )
+                position["stop_loss"] = min(float(position["stop_loss"]), protected_level)
+                position["trailing_stop"] = min(float(position["trailing_stop"]), protected_level)
                 position["target"] = float(position["runner_level3_target"])
                 if self._strong_trend_persists(position, snapshot):
                     position["trailing_active"] = True
@@ -1345,6 +1372,89 @@ class IntradayOptionsEngine(OptionsEquityEngine):
     def get_max_trades_per_day(self):
         return self.max_trades_per_underlying_per_day
 
+    def _build_reconciled_live_position(self, item, persisted_position=None):
+        tradingsymbol = item.get("tradingsymbol") or item.get("symbol")
+        exchange = (item.get("exchange") or "NFO").upper()
+        symbol = (
+            f"{exchange}:{tradingsymbol}"
+            if tradingsymbol and ":" not in tradingsymbol
+            else tradingsymbol
+        )
+        if not symbol:
+            return None, None
+
+        quantity = int(item.get("quantity") or 0)
+        if quantity == 0:
+            return None, None
+
+        side = "BUY" if quantity > 0 else "SELL"
+        abs_quantity = abs(quantity)
+        average_price = float(item.get("average_price") or 0.0)
+        lot_size = get_contract_lot_size(symbol)
+        now = datetime.now()
+
+        try:
+            option_intraday = get_data(
+                symbol,
+                period=self.data_period,
+                interval=self.data_interval,
+                provider="KITE",
+            )
+            latest_option_price = (
+                float(option_intraday.iloc[-1]["Close"])
+                if option_intraday is not None and not option_intraday.empty
+                else average_price
+            )
+            analytics = get_option_greeks_snapshot(
+                symbol,
+                option_intraday=option_intraday,
+                option_price=latest_option_price,
+            )
+            atr_value = get_atr_value(option_intraday) if option_intraday is not None and not option_intraday.empty else 0.0
+            premium_volatility_distance = self.get_premium_volatility_trailing_distance(
+                option_intraday,
+                analytics,
+            )
+            rebuilt = self.build_trend_adaptive_position(
+                symbol=symbol,
+                side=side,
+                quantity=abs_quantity,
+                entry_price=average_price,
+                atr=float(atr_value or 0.0),
+                signal_score=0.5,
+                analytics=analytics,
+                lot_size=lot_size,
+                now=now,
+                entry_analytics=analytics,
+                engine_name=self.name,
+                execution_mode="LIVE",
+                order_product=self.order_product,
+                premium_volatility_distance=float(premium_volatility_distance or 0.0),
+                extra_fields={
+                    "reconciled_manual_position": True,
+                },
+            )
+            return symbol, merge_persisted_position_state(rebuilt, persisted_position)
+        except Exception as ex:
+            log_event(
+                f"[RECON] Falling back to generic intraday-options position for {symbol}: {ex}",
+                "warning",
+            )
+            fallback = build_position(
+                symbol=symbol,
+                side=side,
+                quantity=abs_quantity,
+                entry_price=average_price,
+                sl_pct=self.sl_percent,
+                target_pct=self.target_percent,
+                trailing_pct=self.trailing_percent,
+                lot_size=lot_size,
+                engine_name=self.name,
+                execution_mode="LIVE",
+            )
+            fallback["reconciled_manual_position"] = True
+            return symbol, merge_persisted_position_state(fallback, persisted_position)
+
     def reconcile_startup(self, execution_mode, persisted_positions):
         if execution_mode != "LIVE":
             log_event(
@@ -1355,33 +1465,20 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         try:
             broker_positions = {}
             for item in get_options_positions(product="MIS"):
-                tradingsymbol = item.get("tradingsymbol") or item.get("symbol")
-                exchange = (item.get("exchange") or "NFO").upper()
-                symbol = (
-                    f"{exchange}:{tradingsymbol}"
-                    if tradingsymbol and ":" not in tradingsymbol
-                    else tradingsymbol
+                symbol, broker_position = self._build_reconciled_live_position(
+                    item,
+                    persisted_positions.get(
+                        (
+                            f"{(item.get('exchange') or 'NFO').upper()}:{item.get('tradingsymbol') or item.get('symbol')}"
+                            if (item.get("tradingsymbol") or item.get("symbol"))
+                            and ":" not in str(item.get("tradingsymbol") or item.get("symbol"))
+                            else str(item.get("tradingsymbol") or item.get("symbol") or "")
+                        )
+                    ),
                 )
-                if not symbol:
+                if not symbol or not broker_position:
                     continue
-                quantity = int(item.get("quantity") or 0)
-                if quantity == 0:
-                    continue
-
-                broker_position = build_position(
-                    symbol=symbol,
-                    side="BUY" if quantity > 0 else "SELL",
-                    quantity=abs(quantity),
-                    entry_price=float(item.get("average_price") or 0),
-                    sl_pct=self.sl_percent,
-                    target_pct=self.target_percent,
-                    trailing_pct=self.trailing_percent,
-                    lot_size=get_contract_lot_size(symbol),
-                )
-                broker_positions[symbol] = merge_persisted_position_state(
-                    broker_position,
-                    persisted_positions.get(symbol),
-                )
+                broker_positions[symbol] = broker_position
 
             log_event(
                 f"[RECON] Loaded {len(broker_positions)} live intraday options positions from broker"

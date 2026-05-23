@@ -88,7 +88,11 @@ class BacktestWorkflowTests(unittest.TestCase):
             engine._process_timestamp(history, pd.Timestamp("2026-05-18 10:00:00+05:30"))
 
         mock_scan.assert_called_once()
-        mock_enter.assert_called_once_with(ranked_candidates, pd.Timestamp("2026-05-18 10:00:00+05:30"))
+        mock_enter.assert_called_once_with(
+            ranked_candidates,
+            pd.Timestamp("2026-05-18 10:00:00+05:30"),
+            history,
+        )
 
     def test_enter_ranked_candidates_uses_live_trade_gate(self) -> None:
         config = BacktestConfig(
@@ -129,6 +133,50 @@ class BacktestWorkflowTests(unittest.TestCase):
         mock_gate.assert_called_once()
         self.assertFalse(engine.positions)
         self.assertEqual(engine.trades, [])
+
+    def test_delivery_equity_skips_entry_when_nifty_is_below_20dma(self) -> None:
+        config = BacktestConfig(
+            engine_name="delivery_equity",
+            capital=100000.0,
+            period="6mo",
+            interval="1d",
+            strategy_mode="SINGLE",
+            strategy_name="MA",
+            strategies=("MA",),
+            min_confirmations=1,
+            risk_percent=0.01,
+            atr_stop_multiplier=2.0,
+            trailing_atr_multiplier=1.25,
+            target_risk_reward=2.0,
+            risk_style_name="BALANCED",
+            top_n=1,
+            max_positions=1,
+            max_capital_per_trade=100000.0,
+            max_capital_deployed=100000.0,
+            universe=("SBIN.NS",),
+        )
+        engine = BacktestEngine(config)
+        candidate = {
+            "symbol": "SBIN.NS",
+            "signal": "BUY",
+            "agreement_count": 1,
+            "score": 0.7,
+            "latest_close": 100.0,
+            "atr": 2.0,
+            "strategy": "MA",
+            "reason": "test",
+        }
+        index_history = pd.DataFrame(
+            {"Close": list(range(100, 150)) + [120]},
+            index=pd.date_range("2026-03-01", periods=51, freq="D"),
+        )
+        history = {"SBIN.NS": pd.DataFrame(), engine.engine_helper.nifty_trend_symbol: index_history}
+
+        with patch("backtesting.should_enter_trade", return_value=True) as mock_gate:
+            engine._enter_ranked_candidates([candidate], pd.Timestamp("2026-05-21"), history)
+
+        mock_gate.assert_not_called()
+        self.assertFalse(engine.positions)
 
     def test_enter_ranked_candidates_skips_underpriced_intraday_option_contracts(self) -> None:
         config = BacktestConfig(

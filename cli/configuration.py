@@ -81,11 +81,18 @@ ENGINE_OPTIONS = {
 }
 
 
+def _runtime_prompt_default(key: str, fallback: Any) -> Any:
+    runtime_config = get_runtime_config()
+    prompt_defaults = runtime_config.backtest_defaults.get("prompt_defaults", {})
+    return prompt_defaults.get(key, fallback)
+
+
 @dataclass
 class SessionConfig:
     engine_choice: str
     engine: TradingEngine
     execution_mode: str
+    exit_only_mode: bool
     data_provider: str
     execution_provider: str
     capital: float
@@ -176,26 +183,28 @@ def prompt_fno_base_symbols(engine_name: str) -> str:
     log_help("Choose the F&O underlying universe for this run. Example: 1 for NIFTY 50")
 
     if "futures" in engine_name:
+        default_choice = int(_runtime_prompt_default("fno_futures_base_symbol", 3))
         return cli_input.prompt_choice(
-            "F&O futures universe: NIFTY 50(1), SENSEX(2), BOTH(3) [default 3]: ",
+            f"F&O futures universe: NIFTY 50(1), SENSEX(2), BOTH(3) [default {default_choice}]: ",
             [
                 {"label": get_fno_display_name(FNO_INDEX_SYMBOLS[0]), "key": 1, "value": FNO_INDEX_SYMBOLS[0]},
                 {"label": get_fno_display_name(FNO_INDEX_SYMBOLS[1]), "key": 2, "value": FNO_INDEX_SYMBOLS[1]},
                 {"label": "BOTH", "key": 3, "value": "BOTH"},
             ],
-            default=3,
+            default=default_choice,
         )
 
+    default_choice = int(_runtime_prompt_default("fno_options_base_symbol", 1))
     return cli_input.prompt_choice(
         "F&O options underlying: " + ", ".join(
             f"{get_fno_display_name(symbol)}({i})"
             for i, symbol in enumerate(FNO_INDEX_SYMBOLS, start=1)
-        ) + " [default 1]: ",
+        ) + f" [default {default_choice}]: ",
         [
             {"label": get_fno_display_name(symbol), "key": i, "value": symbol}
             for i, symbol in enumerate(FNO_INDEX_SYMBOLS, start=1)
         ],
-        default=1,
+        default=default_choice,
     )
 
 
@@ -212,9 +221,10 @@ def prompt_fno_expiry_selection(base_symbol: str, instrument_type: str) -> str:
 
     log_event("[SETUP] Choose expiry or press Enter to use the nearest available expiry")
     log_help("Choose the expiry number from the list above. Example: 1")
+    expiry_default = int(_runtime_prompt_default("expiry_choice", 1))
     expiry_choice = cli_input.prompt_int(
-        "Choose expiry [default 1]: ",
-        default=1,
+        f"Choose expiry [default {expiry_default}]: ",
+        default=expiry_default,
         minimum=1,
         maximum=len(expiries),
     )
@@ -341,14 +351,15 @@ def prompt_fno_option_contract_selection(base_symbol: str) -> tuple[list[str], s
 def prompt_intraday_atm_option_selection(base_symbol: str) -> tuple[list[str], str, dict[str, Any]]:
     expiry = prompt_fno_expiry_selection(base_symbol, instrument_type="OPT")
     log_help("Choose how far the dynamic ATM selection should move from the current ATM strike. Example: 1 for ATM")
+    default_strike_mode = int(_runtime_prompt_default("intraday_options_strike_mode", 1))
     strike_offset_mode = cli_input.prompt_choice(
-        "ATM strike mode: ATM(1), ATM + 1 STRIKE(2), ATM - 1 STRIKE(3) [default 1]: ",
+        f"ATM strike mode: ATM(1), ATM + 1 STRIKE(2), ATM - 1 STRIKE(3) [default {default_strike_mode}]: ",
         [
             {"label": "ATM", "key": 1, "value": "ATM"},
             {"label": "ATM + 1", "key": 2, "value": "ATM_PLUS_1"},
             {"label": "ATM - 1", "key": 3, "value": "ATM_MINUS_1"},
         ],
-        default=1,
+        default=default_strike_mode,
     )
     strike_offset = {
         "ATM": 0,
@@ -421,13 +432,14 @@ def prompt_fno_contract_selection(
         return contracts, "FNO", None, None
 
     if engine_name == "intraday_options":
+        default_structure_mode = int(_runtime_prompt_default("intraday_options_structure_mode", 1))
         structure_mode = cli_input.prompt_choice(
-            "Options structure: ATM SINGLE OPTION(1) or TWO-LEG RANGE PAIR(2)? [default 1]: ",
+            f"Options structure: ATM SINGLE OPTION(1) or TWO-LEG RANGE PAIR(2)? [default {default_structure_mode}]: ",
             [
                 {"label": "ATM SINGLE OPTION", "key": 1, "value": "SINGLE"},
                 {"label": "TWO-LEG RANGE PAIR", "key": 2, "value": "PAIR"},
             ],
-            default=1,
+            default=default_structure_mode,
         )
         if structure_mode == "PAIR":
             symbols, symbol_mode, pair_config = prompt_fno_option_pair_selection(selection)
@@ -498,13 +510,14 @@ def confirm_selected_fno_contracts(
         atm_option_config,
     )
     log_help("Confirm the resolved F&O structure before the bot proceeds. Example: 1 for YES")
+    default_confirmation = int(_runtime_prompt_default("fno_contract_confirm", 1))
     confirmation = cli_input.prompt_choice(
-        "Continue with these F&O contracts? YES(1) or NO(2) [default 1]: ",
+        f"Continue with these F&O contracts? YES(1) or NO(2) [default {default_confirmation}]: ",
         [
             {"label": "YES", "key": 1, "value": "YES"},
             {"label": "NO", "key": 2, "value": "NO"},
         ],
-        default=1,
+        default=default_confirmation,
     )
     if confirmation != "YES":
         raise SystemExit("[MAIN] F&O contract selection cancelled by user.")
@@ -562,6 +575,23 @@ def collect_session_configuration() -> SessionConfig:
     )
     set_execution_mode(execution_mode)
     log_event(f"[MAIN] Execution mode selected: {execution_mode}")
+
+    log_event("[SETUP] Session behavior - choose whether the bot may open new entries")
+    log_event("[SETUP]   NORMAL: manage open positions and allow fresh entries")
+    log_event("[SETUP]   EXIT ONLY: reconcile broker positions and manage exits, but never open new entries")
+    log_help("Choose EXIT ONLY if you want the engine to manage manually-opened same-day positions without taking new trades. Example: 2 for EXIT ONLY")
+    exit_only_mode = cli_input.prompt_choice(
+        "Session behavior: NORMAL(1) or EXIT ONLY(2)? [default 1]: ",
+        [
+            {"label": "NORMAL", "key": 1, "value": "NORMAL"},
+            {"label": "EXIT ONLY", "key": 2, "value": "EXIT_ONLY"},
+        ],
+        default=1,
+    ) == "EXIT_ONLY"
+    log_event(
+        "[MAIN] Session behavior selected: "
+        + ("EXIT ONLY - no new entries will be placed" if exit_only_mode else "NORMAL")
+    )
 
     if is_fno_engine:
         data_provider = "KITE"
@@ -690,38 +720,18 @@ def collect_session_configuration() -> SessionConfig:
     intraday_options_lot_mode = None
     intraday_options_entry_mode = None
     if engine.name == "intraday_options" and atm_option_config:
-        log_event("[SETUP] Intraday options lot sizing - choose whether live entries should default to one lot or scale with capital.")
-        log_help("Choose 1 for a fixed one-lot live entry size or 2 to keep capital-based sizing. Example: 2")
-        default_lot_mode = (
-            1 if runtime_config.fno.intraday_options_lot_mode == "ONE_LOT" else 2
-        )
-        intraday_options_lot_mode = cli_input.prompt_choice(
-            "Intraday options lot sizing: ONE LOT(1) or CAPITAL BASED(2) [default 2]: ",
-            [
-                {"label": "ONE LOT", "key": 1, "value": "ONE_LOT"},
-                {"label": "CAPITAL BASED", "key": 2, "value": "CAPITAL_BASED"},
-            ],
-            default=default_lot_mode,
-        )
+        intraday_options_lot_mode = str(
+            runtime_config.fno.intraday_options_lot_mode or "CAPITAL_BASED"
+        ).upper()
+        intraday_options_entry_mode = str(
+            runtime_config.fno.intraday_options_entry_mode or "LIVE_STAGED"
+        ).upper()
         log_event(
-            "[MAIN] Intraday options lot sizing selected: "
+            "[MAIN] Intraday options lot sizing from config: "
             + ("1 lot default" if intraday_options_lot_mode == "ONE_LOT" else "capital based")
         )
-        log_event("[SETUP] Intraday options entry mode - choose between staged breakout confirmation and the older immediate breakout behavior.")
-        log_help("Choose 1 for live staged breakout confirmation or 2 for legacy immediate breakout entry. Example: 1")
-        default_entry_mode = (
-            2 if runtime_config.fno.intraday_options_entry_mode == "LEGACY_IMMEDIATE" else 1
-        )
-        intraday_options_entry_mode = cli_input.prompt_choice(
-            "Intraday options entry mode: LIVE STAGED(1) or LEGACY IMMEDIATE BREAKOUT(2) [default 1]: ",
-            [
-                {"label": "LIVE STAGED", "key": 1, "value": "LIVE_STAGED"},
-                {"label": "LEGACY IMMEDIATE BREAKOUT", "key": 2, "value": "LEGACY_IMMEDIATE"},
-            ],
-            default=default_entry_mode,
-        )
         log_event(
-            "[MAIN] Intraday options entry mode selected: "
+            "[MAIN] Intraday options entry mode from config: "
             + (
                 "live staged breakout confirmation"
                 if intraday_options_entry_mode == "LIVE_STAGED"
@@ -832,6 +842,7 @@ def collect_session_configuration() -> SessionConfig:
         engine_choice=engine_choice,
         engine=engine,
         execution_mode=execution_mode,
+        exit_only_mode=exit_only_mode,
         data_provider=data_provider,
         execution_provider=execution_provider,
         capital=capital,

@@ -1,5 +1,6 @@
 from datetime import time
 
+from config import ENGINE_DEFAULTS
 from engines.base import TradingEngine
 from engines.common import build_position, evaluate_exit, get_symbol_deployed_capital
 from executor_fno import get_futures_positions
@@ -8,6 +9,7 @@ from logger import log_event
 
 
 class FuturesEquityEngine(TradingEngine):
+    settings = ENGINE_DEFAULTS["futures_equity"]
     name = "futures_equity"
     data_period = "3mo"
     data_interval = "5m"
@@ -23,7 +25,7 @@ class FuturesEquityEngine(TradingEngine):
     market_close = time(15, 20)
     sleep_seconds = 60
     cooldown_seconds = 300
-    max_symbol_allocation = 0.25
+    max_symbol_allocation = float(settings["max_symbol_allocation"])
 
     def __init__(self, sl_percent, target_percent, trailing_percent):
         self.sl_percent = sl_percent

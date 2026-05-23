@@ -13,10 +13,14 @@ import yfinance as yf
 
 from data_fetcher import get_data
 from config import (
+    BACKTEST_DEFAULTS,
+    FNO_INDEX_SYMBOLS,
+    FNO_UNDERLYING_DETAILS,
     INTRADAY_EQUITY_AUTO_NORMAL_MIN_CONFIRMATIONS,
     MANUAL_SYMBOL_TABLE,
     NIFTY50_SYMBOLS,
     SINGLE_SYMBOL_TABLE,
+    get_runtime_config,
     TRANSACTION_COST_MODEL_ENABLED,
     TRANSACTION_SLIPPAGE_PCT_PER_SIDE,
 )
@@ -47,6 +51,7 @@ from models.position_adapter import (
     position_side,
     signed_position_value,
 )
+from orchestration.positions import normalize_partial_exit_quantity
 from orchestration.signal_workflow import scan_symbols, should_enter_trade
 from risk_manager import atr_position_size, atr_stop_from_value, calculate_target_price
 from signal_scoring import get_atr_value
@@ -58,38 +63,7 @@ from transaction_costs import (
 )
 
 
-RISK_STYLES = {
-    "1": {
-        "name": "CONSERVATIVE",
-        "atr_stop_multiplier": 1.5,
-        "trailing_atr_multiplier": 1.0,
-        "target_risk_reward": 1.8,
-        "sl_percent": 0.4,
-        "target_percent": 0.8,
-        "trailing_percent": 0.25,
-        "risk_percent": 0.005,
-    },
-    "2": {
-        "name": "BALANCED",
-        "atr_stop_multiplier": 2.0,
-        "trailing_atr_multiplier": 1.25,
-        "target_risk_reward": 2.0,
-        "sl_percent": 0.5,
-        "target_percent": 1.0,
-        "trailing_percent": 0.35,
-        "risk_percent": 0.01,
-    },
-    "3": {
-        "name": "AGGRESSIVE",
-        "atr_stop_multiplier": 2.5,
-        "trailing_atr_multiplier": 1.5,
-        "target_risk_reward": 2.2,
-        "sl_percent": 0.7,
-        "target_percent": 1.4,
-        "trailing_percent": 0.5,
-        "risk_percent": 0.015,
-    },
-}
+RISK_STYLES = BACKTEST_DEFAULTS["risk_styles"]
 
 ENGINE_OPTIONS = {
     "1": IntradayEquityEngine,
@@ -100,18 +74,24 @@ ENGINE_OPTIONS = {
     "6": IntradayOptionsEngine,
 }
 
-BACKTEST_FNO_SYMBOLS = {
+SUPPORTED_BACKTEST_FNO_SYMBOLS = {
     "NIFTY": "^NSEI",
     "SENSEX": "^BSESN",
 }
-BACKTEST_DEFAULT_DATA = {
-    "intraday_equity": ("5d", "5m"),
-    "delivery_equity": ("6mo", "1d"),
-    "futures_equity": ("2mo", "15m"),
-    "options_equity": ("2mo", "15m"),
-    "intraday_futures": ("5d", "5m"),
-    "intraday_options": ("1d", "1m"),
+BACKTEST_FNO_SYMBOLS = {
+    key: SUPPORTED_BACKTEST_FNO_SYMBOLS[key]
+    for key in FNO_INDEX_SYMBOLS
+    if key in SUPPORTED_BACKTEST_FNO_SYMBOLS
 }
+BACKTEST_DEFAULT_DATA = {
+    engine_name: (
+        str(values["period"]),
+        str(values["interval"]),
+    )
+    for engine_name, values in BACKTEST_DEFAULTS["default_data"].items()
+}
+BACKTEST_ENGINE_SL_TARGET_DEFAULTS = BACKTEST_DEFAULTS["engine_sl_target_defaults"]
+BACKTEST_PROMPT_DEFAULTS = BACKTEST_DEFAULTS["prompt_defaults"]
 RESULTS_DIR = Path("Results") / "BackTest"
 VALID_BACKTEST_PERIODS = (
     "1d",
@@ -161,6 +141,29 @@ class BacktestConfig:
     option_backtest_settings: dict[str, Any] | None = None
 
 
+def _prompt_default(key, fallback):
+    return BACKTEST_PROMPT_DEFAULTS.get(key, fallback)
+
+
+def _prompt_default_int(key, fallback):
+    return int(_prompt_default(key, fallback))
+
+
+def _prompt_default_float(key, fallback):
+    return float(_prompt_default(key, fallback))
+
+
+def _supported_backtest_fno_choices():
+    return [
+        {
+            "index": index,
+            "symbol": symbol,
+            "display_name": str(FNO_UNDERLYING_DETAILS[symbol]["display_name"]),
+        }
+        for index, symbol in enumerate(BACKTEST_FNO_SYMBOLS, start=1)
+    ]
+
+
 class BacktestEngine:
     def __init__(self, config: BacktestConfig):
         self.config = config
@@ -172,9 +175,9 @@ class BacktestEngine:
         self.engine_helper = self._build_engine_helper()
 
     def _build_engine_helper(self):
-        sl_percent = 0.5
-        target_percent = 1.0
-        trailing_percent = 0.35
+        sl_percent = float(BACKTEST_ENGINE_SL_TARGET_DEFAULTS["sl_percent"])
+        target_percent = float(BACKTEST_ENGINE_SL_TARGET_DEFAULTS["target_percent"])
+        trailing_percent = float(BACKTEST_ENGINE_SL_TARGET_DEFAULTS["trailing_percent"])
         if self.config.engine_name == "intraday_equity":
             return IntradayEquityEngine(sl_percent, target_percent, trailing_percent)
         if self.config.engine_name == "delivery_equity":
@@ -212,6 +215,18 @@ class BacktestEngine:
                 data.columns = [col[0] for col in data.columns]
             if not data.empty:
                 history[symbol] = data.sort_index()
+        if self.config.engine_name == "delivery_equity":
+            index_data = yf.download(
+                "^NSEI",
+                period=self.config.period,
+                interval="1d",
+                auto_adjust=False,
+                progress=False,
+            )
+            if hasattr(index_data.columns, "levels"):
+                index_data.columns = [col[0] for col in index_data.columns]
+            if not index_data.empty:
+                history[self.engine_helper.nifty_trend_symbol] = index_data.sort_index()
         return history
 
     def _fetch_intraday_options_history(self):
@@ -388,7 +403,7 @@ class BacktestEngine:
             self._build_signal_context(history, timestamp),
             pd.Timestamp(timestamp).to_pydatetime(),
         )
-        self._enter_ranked_candidates(scan_result.ranked_candidates, timestamp)
+        self._enter_ranked_candidates(scan_result.ranked_candidates, timestamp, history)
         self._mark_equity(timestamp, latest_prices)
 
     def _can_enter_symbol(self, symbol, timestamp):
@@ -639,7 +654,7 @@ class BacktestEngine:
         )
         return daily.dropna()
 
-    def _enter_ranked_candidates(self, ranked_candidates, timestamp):
+    def _enter_ranked_candidates(self, ranked_candidates, timestamp, history=None):
         for candidate in ranked_candidates[: self.config.top_n]:
             if len(self.positions) >= self.config.max_positions:
                 break
@@ -704,6 +719,21 @@ class BacktestEngine:
             if qty <= 0:
                 continue
 
+            if self.config.engine_name == "delivery_equity" and candidate["signal"] == "BUY":
+                nifty_history = self._build_signal_context(history or {}, timestamp).fetch_data(
+                    self.engine_helper.nifty_trend_symbol,
+                    interval="1d",
+                )
+                trend_ok, trend_reason = self.engine_helper.passes_nifty_trend_guard(
+                    nifty_history,
+                    timestamp,
+                )
+                if not trend_ok:
+                    self.config.summary_lines.append(
+                        f"Skipped {candidate['symbol']} on {pd.Timestamp(timestamp).date()}: {trend_reason}"
+                    )
+                    continue
+
             if not should_enter_trade(
                 candidate,
                 self._build_entry_context(),
@@ -747,6 +777,16 @@ class BacktestEngine:
                 if candidate["signal"] == "BUY"
                 else entry_price + trailing_distance
             )
+            trailing_activation_distance = max(
+                float(trailing_distance),
+                float(stop_data["stop_distance"]),
+            )
+            if self.config.engine_name == "delivery_equity":
+                trailing_activation_distance = self.engine_helper.get_trailing_activation_distance(
+                    entry_price,
+                    actual_targets["target"],
+                    candidate["atr"],
+                )
             if self.config.engine_name == "intraday_options":
                 actual_targets = calculate_cost_aware_targets(
                     entry_price=entry_price,
@@ -799,7 +839,7 @@ class BacktestEngine:
                     target=actual_targets["target"],
                     trailing_stop=actual_targets["trailing_stop"],
                     trailing_distance=trailing_distance,
-                    trailing_activation_distance=max(float(trailing_distance), float(stop_data["stop_distance"])),
+                    trailing_activation_distance=trailing_activation_distance,
                     trailing_active=False,
                     atr=candidate["atr"],
                     stop_distance=abs(float(entry_price) - float(actual_targets["stop_loss"])),
@@ -903,7 +943,7 @@ class BacktestEngine:
         if not position:
             return
 
-        exit_qty = min(int(action["quantity"]), int(position_quantity(position)))
+        exit_qty = normalize_partial_exit_quantity(position, action["quantity"])
         if exit_qty <= 0:
             return
 
@@ -1228,13 +1268,13 @@ def prompt_symbol_selection():
         "3 for full NIFTY50 universe, or 1 for one stock only",
     )
     mode = prompt_choice(
-        "Symbol mode: SINGLE(1), MANUAL MULTI(2), NIFTY50 UNIVERSE(3)? [default 3]: ",
+        f"Symbol mode: SINGLE(1), MANUAL MULTI(2), NIFTY50 UNIVERSE(3)? [default {_prompt_default_int('symbol_mode', 3)}]: ",
         [
             {"key": 1, "value": "SINGLE"},
             {"key": 2, "value": "MANUAL_MULTI"},
             {"key": 3, "value": "NIFTY50"},
         ],
-        default=3,
+        default=_prompt_default_int("symbol_mode", 3),
     )
 
     if mode == "NIFTY50":
@@ -1248,9 +1288,9 @@ def prompt_symbol_selection():
         for key, value in SINGLE_SYMBOL_TABLE.items():
             print(f"{key}. {value}")
         selection = prompt_choice(
-            "Choose single symbol table entry [default 1]: ",
+            f"Choose single symbol table entry [default {_prompt_default('single_symbol_key', '1')}]: ",
             [{"key": key, "value": value} for key, value in SINGLE_SYMBOL_TABLE.items()],
-            default=1,
+            default=_prompt_default("single_symbol_key", "1"),
         )
         return (selection,), f"Single symbol {selection}"
 
@@ -1273,32 +1313,46 @@ def prompt_symbol_selection():
 
 
 def prompt_fno_base_symbol(engine_name):
+    choices = _supported_backtest_fno_choices()
+    if not choices:
+        raise RuntimeError(
+            "No configured F&O underlyings have a supported backtest proxy."
+        )
     if engine_name in {"futures_equity", "intraday_futures"}:
         print_prompt_help(
             "Choose the index universe for futures backtesting.",
-            "3 for both NIFTY 50 and SENSEX",
+            "3 for both configured underlyings" if len(choices) > 1 else "1 for the only configured underlying",
         )
+        default_choice = _prompt_default_int("fno_futures_base_symbol", 3 if len(choices) > 1 else 1)
+        prompt_choices = [
+            {"key": item["index"], "value": item["symbol"]}
+            for item in choices
+        ]
+        if len(choices) > 1:
+            prompt_choices.append({"key": len(choices) + 1, "value": "BOTH"})
+        label = ", ".join(
+            f"{item['display_name']}({item['index']})"
+            for item in choices
+        )
+        if len(choices) > 1:
+            label += f", BOTH({len(choices) + 1})"
         return prompt_choice(
-            "F&O futures universe: NIFTY 50(1), SENSEX(2), BOTH(3) [default 3]: ",
-            [
-                {"key": 1, "value": "NIFTY"},
-                {"key": 2, "value": "SENSEX"},
-                {"key": 3, "value": "BOTH"},
-            ],
-            default=3,
+            f"F&O futures universe: {label} [default {default_choice}]: ",
+            prompt_choices,
+            default=default_choice,
         )
 
     print_prompt_help(
         "Choose the options underlying you want to simulate.",
-        "1 for NIFTY 50",
+        f"1 for {choices[0]['display_name']}",
     )
+    default_choice = _prompt_default_int("fno_options_base_symbol", 1)
     return prompt_choice(
-        "F&O options underlying: NIFTY 50(1), SENSEX(2) [default 1]: ",
-        [
-            {"key": 1, "value": "NIFTY"},
-            {"key": 2, "value": "SENSEX"},
-        ],
-        default=1,
+        "F&O options underlying: "
+        + ", ".join(f"{item['display_name']}({item['index']})" for item in choices)
+        + f" [default {default_choice}]: ",
+        [{"key": item["index"], "value": item["symbol"]} for item in choices],
+        default=default_choice,
     )
 
 
@@ -1314,7 +1368,13 @@ def prompt_fno_expiry(base_symbol, instrument_type):
         "Enter the serial number of the expiry from the list above.",
         "1",
     )
-    choice = prompt_int("Choose expiry [default 1]: ", default=1, minimum=1, maximum=len(expiries))
+    expiry_default = _prompt_default_int("expiry_choice", 1)
+    choice = prompt_int(
+        f"Choose expiry [default {expiry_default}]: ",
+        default=expiry_default,
+        minimum=1,
+        maximum=len(expiries),
+    )
     return expiries[choice - 1]
 
 
@@ -1371,26 +1431,27 @@ def prompt_fno_contract_selection(engine_name):
             "1 for ATM single option",
         )
         structure_mode = prompt_choice(
-            "Options structure: ATM SINGLE OPTION(1) or TWO-LEG RANGE PAIR(2)? [default 1]: ",
+            f"Options structure: ATM SINGLE OPTION(1) or TWO-LEG RANGE PAIR(2) [default {_prompt_default_int('intraday_options_structure_mode', 1)}]: ",
             [
                 {"key": 1, "value": "SINGLE"},
                 {"key": 2, "value": "PAIR"},
             ],
-            default=1,
+            default=_prompt_default_int("intraday_options_structure_mode", 1),
         )
         if structure_mode == "SINGLE":
             print_prompt_help(
                 "Choose how far from ATM the dynamic strike should be selected.",
                 "1 for ATM, 2 for ATM + 1 strike",
             )
+            default_strike_mode = int(_prompt_default("intraday_options_strike_mode", 1))
             strike_mode = prompt_choice(
-                "ATM strike mode: ATM(1), ATM + 1 STRIKE(2), ATM - 1 STRIKE(3) [default 1]: ",
+                f"ATM strike mode: ATM(1), ATM + 1 STRIKE(2), ATM - 1 STRIKE(3) [default {default_strike_mode}]: ",
                 [
                     {"key": 1, "value": "ATM"},
                     {"key": 2, "value": "ATM_PLUS_1"},
                     {"key": 3, "value": "ATM_MINUS_1"},
                 ],
-                default=1,
+                default=default_strike_mode,
             )
             summary_lines.append(
                 f"ATM dynamic structure | Underlying={selection} | Expiry={expiry} | Strike mode={strike_mode.replace('_', ' ')}"
@@ -1420,9 +1481,9 @@ def prompt_fno_contract_selection(engine_name):
         for line in summary_lines:
             print(f"[SETUP]   {line}")
         confirm = prompt_choice(
-            "Continue with these F&O contracts? YES(1) or NO(2) [default 1]: ",
+            f"Continue with these F&O contracts? YES(1) or NO(2) [default {_prompt_default_int('fno_contract_confirm', 1)}]: ",
             [{"key": 1, "value": "YES"}, {"key": 2, "value": "NO"}],
-            default=1,
+            default=_prompt_default_int("fno_contract_confirm", 1),
         )
         if confirm != "YES":
             raise SystemExit("F&O backtest selection cancelled.")
@@ -1457,7 +1518,7 @@ def prompt_strategy_setup(engine_class):
             "3 for VWAP Reversion",
         )
         strategy_name = prompt_choice(
-            "Intraday options strategy: Momentum(1), ORB(2), VWAP Reversion(3), Multi-strategy(4), Breakout Expansion(5), IV Expansion(6), Trap Reversal(7) [default 1]: ",
+            f"Intraday options strategy: Momentum(1), ORB(2), VWAP Reversion(3), Multi-strategy(4), Breakout Expansion(5), IV Expansion(6), Trap Reversal(7) [default {_prompt_default_int('intraday_options_strategy', 1)}]: ",
             [
                 {"key": 1, "value": "ATM_MOMENTUM"},
                 {"key": 2, "value": "ATM_ORB"},
@@ -1467,7 +1528,7 @@ def prompt_strategy_setup(engine_class):
                 {"key": 6, "value": "ATM_IV_EXPANSION"},
                 {"key": 7, "value": "ATM_TRAP_REVERSAL"},
             ],
-            default=1,
+            default=_prompt_default_int("intraday_options_strategy", 1),
         )
         return "SINGLE", strategy_name, (strategy_name,), 1
 
@@ -1477,13 +1538,13 @@ def prompt_strategy_setup(engine_class):
             "3 for Auto Adaptive",
         )
         mode = prompt_choice(
-            "Strategy mode: Single(1), Multi(2), Auto Adaptive(3) [default 1]: ",
+            f"Strategy mode: Single(1), Multi(2), Auto Adaptive(3) [default {_prompt_default_int('intraday_equity_strategy_mode', 1)}]: ",
             [
                 {"key": 1, "value": "SINGLE"},
                 {"key": 2, "value": "MULTI"},
                 {"key": 3, "value": "AUTO_ADAPTIVE"},
             ],
-            default=1,
+            default=_prompt_default_int("intraday_equity_strategy_mode", 1),
         )
         if mode == "AUTO_ADAPTIVE":
             return (
@@ -1498,12 +1559,12 @@ def prompt_strategy_setup(engine_class):
             "1 for Single",
         )
         mode = prompt_choice(
-            "Strategy mode: Single(1) or Multi(2) [default 1]: ",
+            f"Strategy mode: Single(1) or Multi(2) [default {_prompt_default_int('default_strategy_mode', 1)}]: ",
             [
                 {"key": 1, "value": "SINGLE"},
                 {"key": 2, "value": "MULTI"},
             ],
-            default=1,
+            default=_prompt_default_int("default_strategy_mode", 1),
         )
 
     if mode == "SINGLE":
@@ -1520,7 +1581,7 @@ def prompt_strategy_setup(engine_class):
                 {"key": key, "value": value}
                 for key, value in engine_class.supported_strategies.items()
             ],
-            default=1,
+            default=_prompt_default("single_strategy_key", "1"),
         )
         return "SINGLE", strategy_name, (strategy_name,), 1
 
@@ -1544,7 +1605,7 @@ def prompt_backtest_config():
         "6 for INTRADAY OPTIONS",
     )
     engine_choice = prompt_choice(
-        "Trading engine: INTRADAY EQUITY(1), DELIVERY EQUITY(2), FUTURES EQUITY(3), OPTIONS EQUITY(4), INTRADAY FUTURES(5), INTRADAY OPTIONS(6) [default 1]: ",
+        f"Trading engine: INTRADAY EQUITY(1), DELIVERY EQUITY(2), FUTURES EQUITY(3), OPTIONS EQUITY(4), INTRADAY FUTURES(5), INTRADAY OPTIONS(6) [default {_prompt_default_int('engine_choice', 1)}]: ",
         [
             {"key": 1, "value": "1"},
             {"key": 2, "value": "2"},
@@ -1553,7 +1614,7 @@ def prompt_backtest_config():
             {"key": 5, "value": "5"},
             {"key": 6, "value": "6"},
         ],
-        default=1,
+        default=_prompt_default_int("engine_choice", 1),
     )
     engine_class = ENGINE_OPTIONS[engine_choice]
 
@@ -1561,7 +1622,8 @@ def prompt_backtest_config():
         "Enter total capital available for this backtest run.",
         "100000",
     )
-    capital = prompt_float("Enter capital for backtest: ", default=100000, minimum=1)
+    capital_default = _prompt_default_float("capital", 100000)
+    capital = prompt_float("Enter capital for backtest: ", default=capital_default, minimum=1)
 
     if "futures" in engine_class.name or "options" in engine_class.name:
         universe, summary_lines, option_backtest_settings = prompt_fno_contract_selection(engine_class.name)
@@ -1570,36 +1632,13 @@ def prompt_backtest_config():
         summary_lines = [summary_label]
         option_backtest_settings = None
 
-    intraday_options_lot_mode = "CAPITAL_BASED"
-    intraday_options_entry_mode = "LIVE_STAGED"
+    intraday_options_lot_mode = str(get_runtime_config().fno.intraday_options_lot_mode or "CAPITAL_BASED").upper()
+    intraday_options_entry_mode = str(get_runtime_config().fno.intraday_options_entry_mode or "LIVE_STAGED").upper()
     if engine_class.name == "intraday_options":
-        print_prompt_help(
-            "Choose whether intraday options backtests should default to one lot or size positions from available capital.",
-            "2 for capital-based sizing",
-        )
-        intraday_options_lot_mode = prompt_choice(
-            "Intraday options lot sizing: ONE LOT(1) or CAPITAL BASED(2) [default 2]: ",
-            [
-                {"key": 1, "value": "ONE_LOT"},
-                {"key": 2, "value": "CAPITAL_BASED"},
-            ],
-            default=2,
-        )
         summary_lines.append(
             "Intraday options lot sizing="
             + ("1 lot default" if intraday_options_lot_mode == "ONE_LOT" else "capital based")
-        )
-        print_prompt_help(
-            "Choose whether momentum-style intraday options entries should follow the live staged breakout workflow or the older immediate breakout entry behavior.",
-            "1 for live staged",
-        )
-        intraday_options_entry_mode = prompt_choice(
-            "Intraday options entry mode: LIVE STAGED(1) or LEGACY IMMEDIATE BREAKOUT(2) [default 1]: ",
-            [
-                {"key": 1, "value": "LIVE_STAGED"},
-                {"key": 2, "value": "LEGACY_IMMEDIATE"},
-            ],
-            default=1,
+            + " (from config)"
         )
         summary_lines.append(
             "Intraday options entry mode="
@@ -1608,6 +1647,7 @@ def prompt_backtest_config():
                 if intraday_options_entry_mode == "LIVE_STAGED"
                 else "legacy immediate breakout"
             )
+            + " (from config)"
         )
 
     print_prompt_help(
@@ -1616,13 +1656,13 @@ def prompt_backtest_config():
     )
     risk_style = RISK_STYLES[
         prompt_choice(
-            "Risk style: CONSERVATIVE(1), BALANCED(2), AGGRESSIVE(3)? [default 2]: ",
+            f"Risk style: CONSERVATIVE(1), BALANCED(2), AGGRESSIVE(3)? [default {_prompt_default_int('risk_style', 2)}]: ",
             [
                 {"key": 1, "value": "1"},
                 {"key": 2, "value": "2"},
                 {"key": 3, "value": "3"},
             ],
-            default=2,
+            default=_prompt_default_int("risk_style", 2),
         )
     ]
 
@@ -1630,7 +1670,12 @@ def prompt_backtest_config():
         "Enter how many positions can be open at the same time.",
         "1",
     )
-    max_positions = prompt_int("Max open positions [default 1]: ", default=1, minimum=1)
+    max_positions_default = _prompt_default_int("max_positions", 1)
+    max_positions = prompt_int(
+        f"Max open positions [default {max_positions_default}]: ",
+        default=max_positions_default,
+        minimum=1,
+    )
     print_prompt_help(
         "Enter the maximum capital allowed per trade.",
         f"{capital / max_positions:.0f}",
@@ -1655,9 +1700,9 @@ def prompt_backtest_config():
     )
     one_trade_per_symbol_per_day = (
         prompt_choice(
-            "One trade per symbol per day? YES(1) or NO(2) [default 1]: ",
+            f"One trade per symbol per day? YES(1) or NO(2) [default {_prompt_default_int('one_trade_per_symbol_per_day', 1)}]: ",
             [{"key": 1, "value": "YES"}, {"key": 2, "value": "NO"}],
-            default=1,
+            default=_prompt_default_int("one_trade_per_symbol_per_day", 1),
         )
         == "YES"
     )
@@ -1667,9 +1712,9 @@ def prompt_backtest_config():
         "1 for TOP 1, 2 for TOP N",
     )
     entry_selection_mode = prompt_choice(
-        "Entry selection: TOP 1(1) or TOP N(2)? [default 1]: ",
+        f"Entry selection: TOP 1(1) or TOP N(2)? [default {_prompt_default_int('entry_selection_mode', 1)}]: ",
         [{"key": 1, "value": "TOP_1"}, {"key": 2, "value": "TOP_N"}],
-        default=1,
+        default=_prompt_default_int("entry_selection_mode", 1),
     )
     top_n = 1
     if entry_selection_mode == "TOP_N":
@@ -1677,7 +1722,12 @@ def prompt_backtest_config():
             "Enter how many top-ranked signals should be entered each cycle.",
             "2",
         )
-        top_n = prompt_int("How many top-ranked entries? [default 2]: ", default=2, minimum=1)
+        top_n_default = _prompt_default_int("top_n", 2)
+        top_n = prompt_int(
+            f"How many top-ranked entries? [default {top_n_default}]: ",
+            default=top_n_default,
+            minimum=1,
+        )
 
     strategy_mode, strategy_name, strategies, min_confirmations = prompt_strategy_setup(engine_class)
 
@@ -1687,8 +1737,8 @@ def prompt_backtest_config():
     )
     if engine_class.name == "intraday_options":
         print(
-            "[SETUP] Recommended for NIFTY ATM intraday options premium backtests: "
-            "period=1d and interval=1m for a cleaner single-session run with reduced Kite load."
+            "[SETUP] Configured intraday-options backtest defaults: "
+            f"period={default_period} and interval={default_interval}."
         )
     print(f"[SETUP] Valid backtest periods: {', '.join(VALID_BACKTEST_PERIODS)}")
     print_prompt_help(

@@ -38,6 +38,52 @@ class DeliveryEngineTests(unittest.TestCase):
         persisted = {"SBIN.NS": {"side": "BUY"}}
         self.assertEqual(self.engine.reconcile_startup("PAPER", persisted), persisted)
 
+    def test_nifty_trend_guard_blocks_when_close_is_below_20dma(self) -> None:
+        closes = list(range(100, 150)) + [120]
+        index_df = pd.DataFrame(
+            {"Close": closes},
+            index=pd.date_range("2026-05-01", periods=len(closes), freq="D"),
+        )
+        trend_ok, reason = self.engine.passes_nifty_trend_guard(index_df)
+        self.assertFalse(trend_ok)
+        self.assertIn("downtrend filter active", reason)
+        self.assertIn("50DMA", reason)
+
+    def test_nifty_trend_guard_allows_when_close_is_above_20dma(self) -> None:
+        closes = list(range(100, 150)) + [160]
+        index_df = pd.DataFrame(
+            {"Close": closes},
+            index=pd.date_range("2026-05-01", periods=len(closes), freq="D"),
+        )
+        trend_ok, reason = self.engine.passes_nifty_trend_guard(index_df)
+        self.assertTrue(trend_ok)
+        self.assertIn("uptrend confirmed", reason)
+        self.assertIn("50DMA", reason)
+
+    def test_get_time_exit_reason_uses_five_business_day_limit(self) -> None:
+        reason = self.engine.get_time_exit_reason(
+            {"entry_time": "2026-05-18T09:15:00"},
+            datetime(2026, 5, 25, 10, 0, 0),
+        )
+        self.assertEqual(reason, "TIME_BASED")
+
+    def test_delivery_target_does_not_force_exit(self) -> None:
+        exit_reason = self.engine.evaluate_position_exit(
+            {
+                "symbol": "SBIN.NS",
+                "side": "BUY",
+                "quantity": 1,
+                "entry_price": 100.0,
+                "stop_loss": 95.0,
+                "target": 110.0,
+                "trailing_stop": 96.0,
+                "trailing_active": False,
+                "trailing_activation_distance": 10.0,
+            },
+            {"High": 111.0, "Low": 109.0},
+        )
+        self.assertIsNone(exit_reason)
+
 
 class FuturesEngineTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -360,7 +406,7 @@ class IntradayOptionsEngineTests(unittest.TestCase):
         )
         self.assertGreater(premium_volatility_distance, 0.0)
 
-    def test_get_runner_partial_exit_returns_none_for_two_lot_runner(self) -> None:
+    def test_get_runner_partial_exit_uses_adaptive_level_for_two_lot_runner(self) -> None:
         position = self.engine.build_trend_adaptive_position(
             symbol="NFO:NIFTYTESTCE",
             side="BUY",
@@ -379,7 +425,49 @@ class IntradayOptionsEngineTests(unittest.TestCase):
         )
         action = self.engine.get_runner_partial_exit(
             position,
-            {"latest_candle": {"High": position["runner_level1_target"] + 0.1}},
+            {
+                "latest_close": float(position["runner_level1_target"]) + 0.1,
+                "latest_candle": {
+                    "High": float(position["runner_level1_target"]) + 0.1,
+                    "Low": 100.0,
+                },
+                "analytics": {"volatility_regime": "NORMAL"},
+            },
+            datetime(2026, 4, 29, 10, 5, 0),
+        )
+        self.assertIsNotNone(action)
+        self.assertEqual(action["reason"], "RUNNER_LEVEL1_8PCT")
+        self.assertEqual(action["quantity"], 50)
+
+    def test_one_lot_runner_never_scales_out_in_fractional_chunks(self) -> None:
+        position = self.engine.build_trend_adaptive_position(
+            symbol="BFO:SENSEXTESTCE",
+            side="BUY",
+            quantity=65,
+            entry_price=100.0,
+            atr=4.0,
+            signal_score=0.8,
+            analytics={"volatility_regime": "NORMAL"},
+            lot_size=65,
+            now=datetime(2026, 4, 29, 10, 0, 0),
+            entry_analytics={"underlying": "SENSEX"},
+            engine_name=self.engine.name,
+            execution_mode="PAPER",
+            order_product="MIS",
+            extra_fields={},
+        )
+        self.assertEqual(position["runner_exit_quantities"], [0, 0, 65])
+        self.assertFalse(position["runner_partial_exit_enabled"])
+        action = self.engine.get_runner_partial_exit(
+            position,
+            {
+                "latest_close": float(position["runner_level2_target"]) + 1.0,
+                "latest_candle": {
+                    "High": float(position["runner_level2_target"]) + 1.0,
+                    "Low": 99.0,
+                },
+                "analytics": {"volatility_regime": "NORMAL"},
+            },
             datetime(2026, 4, 29, 10, 5, 0),
         )
         self.assertIsNone(action)
@@ -434,6 +522,51 @@ class IntradayOptionsEngineTests(unittest.TestCase):
         )
         self.assertEqual(action["reason"], "RUNNER_LEVEL1_8PCT")
         self.assertEqual(action["quantity"], 20)
+
+    def test_apply_runner_partial_exit_tightens_short_runner_stops(self) -> None:
+        position = self.engine.build_trend_adaptive_position(
+            symbol="NFO:NIFTYTESTPE",
+            side="SELL",
+            quantity=195,
+            entry_price=100.0,
+            atr=4.0,
+            signal_score=0.8,
+            analytics={"volatility_regime": "NORMAL"},
+            lot_size=65,
+            now=datetime(2026, 4, 29, 10, 0, 0),
+            entry_analytics={"underlying": "NIFTY"},
+            engine_name=self.engine.name,
+            execution_mode="PAPER",
+            order_product="MIS",
+            extra_fields={},
+        )
+
+        self.engine.apply_runner_partial_exit(
+            position,
+            {"level_index": 0, "quantity": 65, "reason": "RUNNER_LEVEL1_8PCT"},
+            92.0,
+            {
+                "latest_close": 92.0,
+                "latest_candle": {"High": 94.0, "Low": 91.5},
+                "analytics": {"volatility_regime": "NORMAL"},
+            },
+        )
+        self.assertEqual(position["stop_loss"], 100.0)
+        self.assertEqual(position["trailing_stop"], 100.0)
+
+        self.engine.apply_runner_partial_exit(
+            position,
+            {"level_index": 1, "quantity": 65, "reason": "RUNNER_LEVEL2_15PCT"},
+            85.0,
+            {
+                "latest_close": 85.0,
+                "latest_candle": {"High": 86.0, "Low": 84.0},
+                "analytics": {"volatility_regime": "NORMAL"},
+            },
+        )
+        self.assertLessEqual(position["stop_loss"], float(position["runner_level1_target"]))
+        self.assertLessEqual(position["trailing_stop"], float(position["runner_level1_target"]))
+        self.assertEqual(position["target"], float(position["runner_level3_target"]))
 
     def test_evaluate_position_exit_ignores_runner_target_for_trailing_only_position(self) -> None:
         position = self.engine.build_trend_adaptive_position(

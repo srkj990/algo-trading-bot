@@ -87,6 +87,21 @@ class PositionModelTests(unittest.TestCase):
             ExitReason.TARGET,
         )
 
+    def test_evaluate_exit_ignores_trailing_stop_until_trailing_is_active(self):
+        position = Position(
+            symbol="SBIN.NS",
+            side=PositionSide.BUY,
+            quantity=5,
+            entry_price=100.0,
+            stop_loss=95.0,
+            target=110.0,
+            trailing_stop=99.0,
+            trailing_distance=2.0,
+            trailing_activation_distance=5.0,
+            trailing_active=False,
+        )
+        self.assertIsNone(position.evaluate_exit(latest_high=101.0, latest_low=98.5))
+
     def test_update_trailing_stop_advances_for_long_position(self):
         position = Position(
             symbol="SBIN.NS",

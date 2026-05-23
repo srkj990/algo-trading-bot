@@ -21,6 +21,35 @@ from trade_store import TradeStore
 from transaction_costs import estimate_intraday_equity_round_trip_cost
 
 
+def normalize_partial_exit_quantity(
+    position: dict[str, Any],
+    requested_exit_quantity: int,
+) -> int:
+    current_qty = max(0, int(position_quantity(position)))
+    exit_qty = max(0, min(int(requested_exit_quantity or 0), current_qty))
+    if exit_qty <= 0:
+        return 0
+
+    lot_size = max(1, int(position.get("lot_size") or 1))
+    if position.get("engine_name") != "intraday_options" or lot_size <= 1:
+        return exit_qty
+
+    if current_qty % lot_size != 0:
+        return current_qty if exit_qty >= current_qty else 0
+
+    exit_qty = (exit_qty // lot_size) * lot_size
+    if exit_qty <= 0:
+        return 0
+
+    remaining_qty = current_qty - exit_qty
+    if remaining_qty == 0:
+        return exit_qty
+    if remaining_qty < lot_size:
+        adjusted_exit_qty = current_qty - lot_size
+        return adjusted_exit_qty if adjusted_exit_qty >= lot_size else 0
+    return exit_qty
+
+
 def get_pair_symbols(positions: dict[str, dict[str, Any]], pair_id: str) -> list[str]:
     return [
         symbol
@@ -207,7 +236,7 @@ def execute_partial_position_exit(
     transaction_cost_model_enabled: bool,
     slippage_pct_per_side: float,
 ) -> float:
-    exit_qty = max(0, min(int(exit_quantity), position_quantity(position)))
+    exit_qty = normalize_partial_exit_quantity(position, exit_quantity)
     if exit_qty <= 0:
         return float(exit_price)
     order_result = place_order(
@@ -422,6 +451,7 @@ def save_runtime_state(
     active_trade_day: date,
     last_entry_time: float,
     regime_cache: dict[str, Any],
+    session_runtime_state: dict[str, Any],
     engine_runtime_state: dict[str, Any],
     save_engine_state: Callable[..., Any],
 ) -> None:
@@ -433,6 +463,7 @@ def save_runtime_state(
         active_trade_day=active_trade_day,
         last_entry_time=last_entry_time,
         regime_cache=regime_cache,
+        session_runtime_state=session_runtime_state,
         engine_runtime_state=engine_runtime_state,
     )
 

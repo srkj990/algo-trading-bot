@@ -1,5 +1,6 @@
 from datetime import time
 
+from config import ENGINE_DEFAULTS
 from engines.common import build_position
 from executor_fno import get_futures_positions
 from fno_data_fetcher import get_contract_lot_size
@@ -9,6 +10,7 @@ from .futures_equity import FuturesEquityEngine
 
 
 class IntradayFuturesEngine(FuturesEquityEngine):
+    settings = ENGINE_DEFAULTS["intraday_futures"]
     name = "intraday_futures"
     data_period = "15d"
     data_interval = "3m"
@@ -19,7 +21,7 @@ class IntradayFuturesEngine(FuturesEquityEngine):
     market_close = time(15, 30)
     sleep_seconds = 60
     cooldown_seconds = 180
-    max_symbol_allocation = 0.35
+    max_symbol_allocation = float(settings["max_symbol_allocation"])
 
     def get_cycle_state(self, now):
         if now.weekday() >= 5:

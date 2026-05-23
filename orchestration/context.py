@@ -36,9 +36,11 @@ class TradingContext:
     active_trade_day: date
     last_entry_time: float
     regime_cache: dict[str, Any]
+    session_runtime_state: dict[str, Any]
     trade_store: TradeStore
     cycle_data_cache: dict[tuple[str, str, str, str], Any] = field(default_factory=dict)
     trade_book: list[dict[str, Any]] = field(default_factory=list)
+    recent_live_order_timestamps: list[float] = field(default_factory=list)
     previous_cycle_started_at: datetime | None = None
 
 
@@ -74,6 +76,7 @@ def build_trading_context(config: SessionConfig) -> TradingContext:
         active_trade_day=parse_trade_day(saved_state["active_trade_day"]),
         last_entry_time=float(saved_state["last_entry_time"]),
         regime_cache=saved_state["regime_cache"],
+        session_runtime_state=dict(saved_state.get("session_runtime_state", {})),
         trade_store=trade_store,
         trade_book=trade_store.load_trade_book(),
     )
@@ -120,7 +123,54 @@ def _build_context_order_placer(context: TradingContext) -> Callable[..., Any]:
         kwargs.setdefault("trade_store", context.trade_store)
         kwargs.setdefault("execution_provider", context.config.execution_provider)
         kwargs.setdefault("execution_mode", context.config.execution_mode)
-        return place_order(*args, **kwargs)
+        resolved_mode = str(kwargs.get("execution_mode") or context.config.execution_mode or "PAPER").upper()
+        risk_cfg = context.runtime_config.risk_controls
+        if resolved_mode == "LIVE" and int(risk_cfg.max_orders_per_minute or 0) > 0:
+            cutoff = datetime.now().timestamp() - 60.0
+            context.recent_live_order_timestamps = [
+                ts for ts in context.recent_live_order_timestamps if float(ts) >= cutoff
+            ]
+            if len(context.recent_live_order_timestamps) >= int(risk_cfg.max_orders_per_minute):
+                raise RuntimeError(
+                    "Risk control blocked order: max_orders_per_minute limit reached."
+                )
+
+        reference_price = kwargs.get("price")
+        if reference_price is None:
+            reference_price = kwargs.get("entry_price")
+        result = place_order(*args, **kwargs)
+
+        if resolved_mode == "LIVE":
+            context.recent_live_order_timestamps.append(datetime.now().timestamp())
+
+        if (
+            resolved_mode == "LIVE"
+            and result is not None
+            and int(result.filled_quantity or 0) > 0
+            and reference_price is not None
+            and float(reference_price) > 0
+        ):
+            actual_price = float(result.average_price or reference_price)
+            slippage_pct = abs(actual_price - float(reference_price)) / float(reference_price) * 100.0
+            max_slippage_pct = float(risk_cfg.abnormal_slippage_pause_pct or 0.0)
+            if max_slippage_pct > 0 and slippage_pct >= max_slippage_pct:
+                pause_minutes = int(risk_cfg.api_failure_pause_minutes or 0)
+                if pause_minutes > 0:
+                    pause_until = datetime.now().timestamp() + (pause_minutes * 60)
+                    context.session_runtime_state["risk_pause_until"] = datetime.fromtimestamp(pause_until).isoformat()
+                    context.session_runtime_state["risk_pause_reason"] = (
+                        f"Abnormal slippage detected on {kwargs.get('order_type', 'MARKET')} order "
+                        f"for {args[2] if len(args) > 2 else kwargs.get('symbol', 'UNKNOWN')}: "
+                        f"{slippage_pct:.2f}% >= {max_slippage_pct:.2f}%"
+                    )
+                    persist_runtime_state(context)
+                context.log_event(
+                    f"[RISK] Abnormal slippage detected: {slippage_pct:.2f}% "
+                    f"(threshold {max_slippage_pct:.2f}%)",
+                    "warning",
+                )
+
+        return result
 
     return submit_order
 
@@ -137,6 +187,7 @@ def persist_runtime_state(context: TradingContext) -> None:
         context.active_trade_day,
         context.last_entry_time,
         context.regime_cache,
+        context.session_runtime_state,
         engine_runtime_state,
         context.save_engine_state,
     )

@@ -281,6 +281,36 @@ class PositionWorkflowHelperTests(unittest.TestCase):
         self.assertEqual(positions["NFO:NIFTYTESTCE"]["quantity"], 130)
         self.assertEqual(len(trade_book), 1)
 
+    def test_normalize_partial_exit_quantity_blocks_invalid_one_lot_scale_out(self) -> None:
+        position = build_position(
+            "NFO:NIFTYTESTCE",
+            "BUY",
+            65,
+            100.0,
+            sl_pct=5.0,
+            target_pct=10.0,
+            trailing_pct=4.0,
+            lot_size=65,
+            engine_name="intraday_options",
+        )
+        normalized = position_flow.normalize_partial_exit_quantity(position, 20)
+        self.assertEqual(normalized, 0)
+
+    def test_normalize_partial_exit_quantity_keeps_valid_lot_multiple(self) -> None:
+        position = build_position(
+            "NFO:NIFTYTESTCE",
+            "BUY",
+            195,
+            100.0,
+            sl_pct=5.0,
+            target_pct=10.0,
+            trailing_pct=4.0,
+            lot_size=65,
+            engine_name="intraday_options",
+        )
+        normalized = position_flow.normalize_partial_exit_quantity(position, 80)
+        self.assertEqual(normalized, 65)
+
     def test_force_square_off_positions_returns_false_when_flat(self) -> None:
         changed = position_flow.force_square_off_positions(
             engine=Mock(),

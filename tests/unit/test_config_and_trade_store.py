@@ -20,6 +20,11 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertGreaterEqual(runtime_config.fno.intraday_options_max_entry_cost_ratio, 0.0)
         self.assertGreaterEqual(runtime_config.fno.intraday_options_max_spread_pct, 0.0)
         self.assertGreaterEqual(runtime_config.fno.intraday_options_min_open_interest, 0)
+        self.assertGreaterEqual(runtime_config.risk_controls.daily_max_loss_pct, 0.0)
+        self.assertGreaterEqual(runtime_config.risk_controls.consecutive_loss_limit, 0)
+        self.assertGreaterEqual(runtime_config.risk_controls.api_failure_pause_minutes, 0)
+        self.assertGreaterEqual(runtime_config.risk_controls.max_orders_per_minute, 0)
+        self.assertGreaterEqual(runtime_config.risk_controls.abnormal_slippage_pause_pct, 0.0)
 
 
 class TradeStoreTests(unittest.TestCase):

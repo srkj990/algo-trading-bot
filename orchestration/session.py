@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from config import (
     COST_EDGE_BUFFER_RUPEES,
@@ -132,6 +132,95 @@ def _calculate_session_pnl(trade_book, trade_day):
             continue
         session_pnl += float(trade.get("net_pnl", trade.get("pnl", 0.0)) or 0.0)
     return session_pnl
+
+
+def _calculate_consecutive_losses(trade_book, trade_day):
+    trade_day_text = trade_day.isoformat()
+    closed_today = []
+    for trade in trade_book or []:
+        exit_time = trade.get("exit_time")
+        if not exit_time:
+            continue
+        exit_day = None
+        if isinstance(exit_time, datetime):
+            exit_day = exit_time.date().isoformat()
+            sort_key = exit_time
+        else:
+            try:
+                parsed_exit = datetime.fromisoformat(str(exit_time))
+                exit_day = parsed_exit.date().isoformat()
+                sort_key = parsed_exit
+            except ValueError:
+                exit_day = str(exit_time)[:10]
+                sort_key = datetime.min
+        if exit_day != trade_day_text:
+            continue
+        closed_today.append((sort_key, trade))
+
+    consecutive_losses = 0
+    for _, trade in sorted(closed_today, key=lambda item: item[0], reverse=True):
+        net_pnl = float(trade.get("net_pnl", trade.get("pnl", 0.0)) or 0.0)
+        if net_pnl < 0:
+            consecutive_losses += 1
+            continue
+        break
+    return consecutive_losses
+
+
+def _set_risk_pause(context, now, pause_minutes, reason):
+    if int(pause_minutes or 0) <= 0:
+        return
+    pause_until = now + timedelta(minutes=int(pause_minutes))
+    context.session_runtime_state["risk_pause_until"] = pause_until.isoformat()
+    context.session_runtime_state["risk_pause_reason"] = str(reason)
+    context.log_event(
+        f"[RISK] Trading paused until {pause_until.strftime('%H:%M:%S')} | {reason}",
+        "warning",
+    )
+    persist_runtime_state(context)
+
+
+def _get_risk_pause_status(context, now):
+    raw_pause_until = context.session_runtime_state.get("risk_pause_until")
+    if not raw_pause_until:
+        return False, None
+    try:
+        pause_until = datetime.fromisoformat(str(raw_pause_until))
+    except ValueError:
+        context.session_runtime_state.pop("risk_pause_until", None)
+        context.session_runtime_state.pop("risk_pause_reason", None)
+        persist_runtime_state(context)
+        return False, None
+    if pause_until <= now:
+        context.session_runtime_state.pop("risk_pause_until", None)
+        context.session_runtime_state.pop("risk_pause_reason", None)
+        persist_runtime_state(context)
+        return False, None
+    return True, context.session_runtime_state.get("risk_pause_reason")
+
+
+def _sync_exit_only_live_positions(context):
+    if str(getattr(context.config, "execution_mode", "")).upper() != "LIVE":
+        return False
+    if not bool(getattr(context.config, "exit_only_mode", False)):
+        return False
+
+    existing_positions = dict(context.positions)
+    reconciled_positions = context.engine.reconcile_startup(
+        execution_mode=context.config.execution_mode,
+        persisted_positions=existing_positions,
+    )
+    if reconciled_positions == existing_positions:
+        return False
+
+    added = sorted(set(reconciled_positions) - set(existing_positions))
+    removed = sorted(set(existing_positions) - set(reconciled_positions))
+    for symbol in added:
+        context.log_event(f"[RECON] Exit-only sync added live broker position: {symbol}")
+    for symbol in removed:
+        context.log_event(f"[RECON] Exit-only sync removed broker-flat position: {symbol}")
+    context.positions = reconciled_positions
+    return True
 
 
 def _build_intraday_option_position_from_roll(context, current_position, symbol, qty, entry_price, analytics, now):
@@ -342,6 +431,9 @@ def run_trading_session(context):
             context.active_trade_day = current_trade_day
             context.traded_symbols_today.clear()
             context.trade_counts_today.clear()
+            context.session_runtime_state.pop("risk_pause_until", None)
+            context.session_runtime_state.pop("risk_pause_reason", None)
+            context.recent_live_order_timestamps.clear()
             context.log_event("[MAIN] New day detected, reset traded symbol tracker")
             if engine.order_product == "MIS" and context.positions:
                 context.log_event("[MAIN] Clearing stale intraday positions for new day", "warning")
@@ -350,6 +442,8 @@ def run_trading_session(context):
             persist_runtime_state(context)
 
         cycle_state = engine.get_cycle_state(now)
+        if _sync_exit_only_live_positions(context):
+            persist_runtime_state(context)
         context.log_event("\n==============================")
         context.log_event("New Cycle Started")
         context.log_event("==============================")
@@ -378,15 +472,39 @@ def run_trading_session(context):
             time.sleep(engine.sleep_seconds)
             continue
 
-        scan_result = scan_symbols(context, now)
+        try:
+            scan_result = scan_symbols(context, now)
+        except Exception as exc:
+            context.log_event(f"[ERROR] Scan cycle failed: {type(exc).__name__}: {exc}", "error")
+            pause_minutes = int(context.runtime_config.risk_controls.api_failure_pause_minutes or 0)
+            _set_risk_pause(
+                context,
+                now,
+                pause_minutes,
+                f"API or scan failure: {type(exc).__name__}",
+            )
+            time.sleep(engine.sleep_seconds)
+            continue
         symbol_snapshots = scan_result.symbol_snapshots
         ranked_candidates = scan_result.ranked_candidates
         position_flow.log_ranked_candidates(ranked_candidates, context.log_event)
 
         if not symbol_snapshots and context.positions:
             context.log_event("[ERROR] No symbol data available for open positions", "error")
+            _set_risk_pause(
+                context,
+                now,
+                int(context.runtime_config.risk_controls.api_failure_pause_minutes or 0),
+                "No symbol data available for open positions",
+            )
         elif not symbol_snapshots:
             context.log_event("[ERROR] No symbol data available in this cycle", "error")
+            _set_risk_pause(
+                context,
+                now,
+                int(context.runtime_config.risk_controls.api_failure_pause_minutes or 0),
+                "No symbol data available in this cycle",
+            )
             time.sleep(engine.sleep_seconds)
             continue
 
@@ -416,12 +534,25 @@ def run_trading_session(context):
         current_time = time.time()
         cooldown_active = engine.cooldown_seconds > 0 and current_time - context.last_entry_time < engine.cooldown_seconds
 
-        if not cycle_state["allow_entries"]:
+        if getattr(cfg, "exit_only_mode", False):
+            context.log_event("[SESSION] Exit-only mode active - new entries disabled")
+        elif not cycle_state["allow_entries"]:
             context.log_event("[SESSION] New entries disabled in current window")
         elif cooldown_active:
             context.log_event("[COOLDOWN] Skipping new entries")
         else:
-            max_daily_loss_pct = float(getattr(cfg, "max_daily_loss_pct", 0.0) or 0.0)
+            paused, pause_reason = _get_risk_pause_status(context, now)
+            if paused:
+                context.log_event(
+                    f"[RISK] New entries paused by risk controls | Reason={pause_reason}",
+                    "warning",
+                )
+                log_positions(context.positions, context.log_event)
+                time.sleep(engine.sleep_seconds)
+                continue
+
+            risk_cfg = context.runtime_config.risk_controls
+            max_daily_loss_pct = float(risk_cfg.daily_max_loss_pct or 0.0)
             session_pnl = _calculate_session_pnl(context.trade_book, current_trade_day)
             if check_daily_loss_limit(session_pnl, cfg.capital, max_daily_loss_pct):
                 context.log_event(
@@ -431,18 +562,60 @@ def run_trading_session(context):
                 log_positions(context.positions, context.log_event)
                 time.sleep(engine.sleep_seconds)
                 continue
+            consecutive_loss_limit = int(risk_cfg.consecutive_loss_limit or 0)
+            if consecutive_loss_limit > 0:
+                consecutive_losses = _calculate_consecutive_losses(
+                    context.trade_book,
+                    current_trade_day,
+                )
+                if consecutive_losses >= consecutive_loss_limit:
+                    context.log_event(
+                        f"[RISK] Consecutive loss limit reached | Losses={consecutive_losses} | "
+                        f"Limit={consecutive_loss_limit} | New entries blocked",
+                        "warning",
+                    )
+                    log_positions(context.positions, context.log_event)
+                    time.sleep(engine.sleep_seconds)
+                    continue
             planned_entries = ranked_candidates[:1] if cfg.entry_selection_mode == "TOP1" else ranked_candidates[:cfg.top_n_count]
 
             for candidate in planned_entries:
                 if candidate.get("is_pair"):
-                    entered = _execute_pair_entry(context, candidate, now, deployed_capital)
+                    try:
+                        entered = _execute_pair_entry(context, candidate, now, deployed_capital)
+                    except Exception as exc:
+                        context.log_event(
+                            f"[ERROR] Pair entry failed: {type(exc).__name__}: {exc}",
+                            "error",
+                        )
+                        _set_risk_pause(
+                            context,
+                            now,
+                            int(risk_cfg.api_failure_pause_minutes or 0),
+                            f"Entry failure: {type(exc).__name__}",
+                        )
+                        break
                     if entered:
                         deployed_capital = get_deployed_capital(context.positions)
                         if cfg.entry_selection_mode == "TOP1":
                             break
                     continue
 
-                entered = _execute_single_entry(context, candidate, now, deployed_capital, cycle_state)
+                try:
+                    entered = _execute_single_entry(context, candidate, now, deployed_capital, cycle_state)
+                except Exception as exc:
+                    context.log_event(
+                        f"[ERROR] Entry failed for {candidate.get('symbol', 'UNKNOWN')}: "
+                        f"{type(exc).__name__}: {exc}",
+                        "error",
+                    )
+                    _set_risk_pause(
+                        context,
+                        now,
+                        int(risk_cfg.api_failure_pause_minutes or 0),
+                        f"Entry failure: {type(exc).__name__}",
+                    )
+                    break
                 if entered:
                     deployed_capital = get_deployed_capital(context.positions)
                     if cfg.entry_selection_mode == "TOP1":
@@ -806,6 +979,17 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
         context.log_event(f"[RISK] Quantity is 0 for {symbol} after applying risk and capital limits, skipping", "warning")
         return False
 
+    if engine.name == "delivery_equity" and candidate["signal"] == "BUY":
+        nifty_history = context.fetch_data(
+            engine.nifty_trend_symbol,
+            period=engine.data_period,
+            interval="1d",
+        )
+        trend_ok, trend_reason = engine.passes_nifty_trend_guard(nifty_history, now)
+        if not trend_ok:
+            context.log_event(f"[FILTER] Skipping {symbol}: {trend_reason}")
+            return False
+
     if not should_enter_trade(
         candidate,
         context,
@@ -953,6 +1137,12 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
         signal_strength=float(candidate.get("score") or 0.5),
         side=candidate["signal"],
     )
+    if engine.name == "delivery_equity":
+        trailing_activation_distance = engine.get_trailing_activation_distance(
+            actual_entry_price,
+            actual_targets["target"],
+            atr_value,
+        )
     context.log_event(
         f"[ORDER] Entry accepted | Symbol={symbol} | OrderId={order_result.order_id} | Filled={qty}/{requested_qty}"
     )

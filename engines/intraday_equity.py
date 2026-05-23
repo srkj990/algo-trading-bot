@@ -6,6 +6,7 @@ from engines.common import build_position, evaluate_exit
 from executor import get_intraday_positions
 from logger import log_event
 from config import (
+    ENGINE_DEFAULTS,
     INTRADAY_EQUITY_AUTO_NORMAL_MIN_CONFIRMATIONS,
     INTRADAY_EQUITY_ENTRY_CUTOFF_MINUTES_BEFORE_SQUAREOFF,
     REVERSAL_EXIT_CONFIRMATION_CANDLES,
@@ -13,6 +14,7 @@ from config import (
 
 
 class IntradayEquityEngine(TradingEngine):
+    settings = ENGINE_DEFAULTS["intraday_equity"]
     name = "intraday_equity"
     data_period = "1d"
     data_interval = "1m"
@@ -29,9 +31,9 @@ class IntradayEquityEngine(TradingEngine):
     market_close = time(15, 30)
     sleep_seconds = 60
     cooldown_seconds = 300
-    gap_threshold_percent = 1.0
-    opening_range_candles = 15
-    breakout_volume_multiplier = 1.2
+    gap_threshold_percent = float(settings["gap_threshold_percent"])
+    opening_range_candles = int(settings["opening_range_candles"])
+    breakout_volume_multiplier = float(settings["breakout_volume_multiplier"])
 
     def __init__(self, sl_percent, target_percent, trailing_percent):
         self.sl_percent = sl_percent

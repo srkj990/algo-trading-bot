@@ -2,72 +2,196 @@
 # Supported format: simple nested YAML mappings + scalars and lists.
 
 execution_safety:
-  min_ranked_candidate_score: 0.008
-  intraday_equity_auto_normal_min_confirmations: 2
-  reversal_exit_confirmation_candles: 2
-  trailing_activation_stop_distance_multiplier: 0.5
-  intraday_equity_entry_cutoff_minutes_before_squareoff: 30
+  min_ranked_candidate_score: 0.008 # used: minimum score required before a candidate can be ranked/actioned
+  intraday_equity_auto_normal_min_confirmations: 2 # used: confirmations required in intraday-equity auto-adaptive mode
+  reversal_exit_confirmation_candles: 2 # used: opposite-signal candles needed before reversal exit
+  trailing_activation_stop_distance_multiplier: 0.5 # used: minimum multiple of stop distance before trailing can activate
+  intraday_equity_entry_cutoff_minutes_before_squareoff: 30 # used: blocks fresh intraday-equity entries this many minutes before square-off
 
 transaction_costs:
-  enabled: true
-  slippage_pct_per_side: 0.0002
-  expected_edge_score_multiplier: 1.0
-  min_edge_to_cost_ratio: 1.2
-  cost_edge_buffer_rupees: 5.0
+  enabled: true # used: enables transaction-cost-aware profitability checks and reporting
+  slippage_pct_per_side: 0.0002 # used: assumed slippage per side in cost models
+  expected_edge_score_multiplier: 1.0 # used: scales expected edge during intraday-equity edge-vs-cost filtering
+  min_edge_to_cost_ratio: 1.2 # used: minimum expected-edge-to-cost ratio for intraday-equity entries
+  cost_edge_buffer_rupees: 5.0 # used: extra rupee buffer added to required expected edge
 
 data_cache:
-  enabled: true
-  ttl_seconds: 20
-  max_entries: 512
-  per_cycle_enabled: true
+  enabled: true # used: enables provider-level response caching
+  ttl_seconds: 3 # used: cache time-to-live for market-data responses
+  max_entries: 512 # used: max number of cached market-data entries retained
+  per_cycle_enabled: true # used: enables one-cycle in-memory reuse of fetched datasets
+
+risk_controls:
+  daily_max_loss_pct: 0.03 # used: blocks new entries after realized daily loss exceeds 3% of capital
+  consecutive_loss_limit: 4 # used: blocks new entries after this many losing closed trades in a row
+  api_failure_pause_minutes: 5 # used: pause duration after scan/entry/API-style failures and abnormal slippage events
+  max_orders_per_minute: 10 # used: live-order rate cap enforced in the shared order wrapper
+  abnormal_slippage_pause_pct: 0.5 # used: pauses new entries when a filled live order slips by at least this percent
 
 orders:
-  enabled: true
-  allowed_products: ["MIS", "CNC", "NRML"]
-  allowed_order_types: ["MARKET", "LIMIT", "SL", "SL-M"]
-  min_quantity: 1
-  max_live_order_notional: 0
-  reconcile_attempts: 3
-  reconcile_delay_seconds: 1.5
-  fill_confirmation_required: true
-  default_entry_order_type: "MARKET"
-  entry_limit_price_buffer_pct: 0
-  max_spread_pct: 0.05
-  margin_check_enabled: true
-  margin_buffer_pct: 0.05
-  partial_fill_retry_enabled: true
-  partial_fill_retry_attempts: 1
-  rejection_retry_enabled: true
-  rejection_retry_attempts: 2
-  rejection_retry_reduce_quantity_pct: 0.25
-  rejection_retry_price_buffer_pct: 0.002
+  enabled: true # used: enables runtime order validation and safety checks
+  allowed_products: ["MIS", "CNC", "NRML"] # used: permitted broker products for submitted orders
+  allowed_order_types: ["MARKET", "LIMIT", "SL", "SL-M"] # used: permitted broker order types
+  min_quantity: 1 # used: minimum allowed order quantity
+  max_live_order_notional: 100000 # used: hard cap on live order notional value
+  reconcile_attempts: 3 # used: broker order-status polling attempts after submission
+  reconcile_delay_seconds: 1.5 # used: delay between broker reconcile polls
+  fill_confirmation_required: true # used: rejects unresolved live orders that never confirm fill state
+  default_entry_order_type: "LIMIT" # used: default entry order type when the session builds orders
+  entry_limit_price_buffer_pct: 0.0015 # used: buffer applied when synthesizing entry limit prices
+  max_spread_pct: 0.015 # used: global spread guard before live order placement
+  margin_check_enabled: true # used: enables pre-order available-margin checks
+  margin_buffer_pct: 0.05 # used: extra margin cushion applied to estimated required margin
+  partial_fill_retry_enabled: true # used: enables retry flow for partially filled live orders
+  partial_fill_retry_attempts: 1 # used: max retry attempts for partial fills
+  rejection_retry_enabled: true # used: enables retry flow for rejected/cancelled live orders
+  rejection_retry_attempts: 2 # used: max retry attempts after rejection/cancel
+  rejection_retry_reduce_quantity_pct: 0.25 # used: size reduction applied when retrying rejected orders
+  rejection_retry_price_buffer_pct: 0.002 # used: limit-price adjustment when retrying rejected orders
 
 trade_store:
-  enabled: true
-  base_dir: "state/trade_store"
-  include_paper_trades: true
+  enabled: true # used: enables JSONL persistence for trades and order-audit records
+  base_dir: "state/trade_store" # used: directory where trade-store files are written
+  include_paper_trades: true # used: persists paper-mode trades/orders in the trade store too
 
 fno:
-  intraday_options_max_trades_per_underlying: 4
-  intraday_options_expiry_warning_days: 2
-  intraday_options_vega_crush_block_percent: 20
-  intraday_options_min_range_pct: 0.35
-  intraday_options_min_signal_score: 0.03
-  intraday_options_max_hold_minutes: 60
-  intraday_options_time_exit_cutoff: "14:45"
-  intraday_options_iv_expansion_max_iv_percentile: 20
-  intraday_options_sideways_vwap_band_pct: 0.0015
-  intraday_options_sideways_lookback_candles: 8
-  intraday_options_regime_expansion_range_pct: 1.1
-  intraday_options_regime_sideways_range_pct: 0.55
-  intraday_options_regime_sideways_vwap_dev_pct: 0.0025
-  intraday_options_regime_expansion_iv_change_pct: 2.0
-  intraday_options_lot_mode: "CAPITAL_BASED"
-  intraday_options_entry_mode: "LIVE_STAGED"
-  intraday_options_max_entry_cost_ratio: 0.30
-  intraday_options_max_spread_pct: 0.02
-  intraday_options_min_open_interest: 1000
-  intraday_options_roll_trigger_pct: 2.0
-  intraday_options_theta_exit_ratio: 0.08
-  intraday_options_theta_exit_min_minutes: 10
+  intraday_options_max_trades_per_underlying: 2 # used: max filled intraday-option entries per underlying per day
+  intraday_options_expiry_warning_days: 2 # used: blocks/warns near-expiry option setups based on days to expiry
+  intraday_options_vega_crush_block_percent: 20 # used: filters setups when implied-volatility crush risk is too high
+  intraday_options_min_range_pct: 0.35 # used: minimum underlying range percent for intraday-options regime checks
+  intraday_options_min_signal_score: 0.03 # used: minimum score for intraday-options signals
+  intraday_options_max_hold_minutes: 30 # used: max holding time before intraday-options time exit
+  intraday_options_time_exit_cutoff: "14:45" # used: hard intraday-options time-based exit cutoff
+  intraday_options_iv_expansion_max_iv_percentile: 20 # used: IV-expansion entry ceiling for IV percentile
+  intraday_options_sideways_vwap_band_pct: 0.0015 # used: VWAP deviation band for sideways-regime classification
+  intraday_options_sideways_lookback_candles: 8 # used: lookback window for sideways-regime checks
+  intraday_options_regime_expansion_range_pct: 1.1 # used: range threshold for expansion-regime classification
+  intraday_options_regime_sideways_range_pct: 0.55 # used: range threshold for sideways-regime classification
+  intraday_options_regime_sideways_vwap_dev_pct: 0.0025 # used: VWAP-deviation threshold for sideways-regime classification
+  intraday_options_regime_expansion_iv_change_pct: 2.0 # used: IV-change threshold for expansion-regime classification
+  intraday_options_lot_mode: "CAPITAL_BASED" # used: default lot-sizing mode offered to intraday-options sessions/backtests
+  intraday_options_entry_mode: "LIVE_STAGED" # used: default intraday-options entry mode for sessions/backtests
+  intraday_options_max_entry_cost_ratio: 0.30 # used: blocks intraday-option entries when expected costs consume too much profit
+  intraday_options_max_spread_pct: 0.015 # used: intraday-options-specific live spread guard
+  intraday_options_min_open_interest: 10000 # used: minimum open interest for live intraday-options entry
+  intraday_options_roll_trigger_pct: 2.0 # used: underlying-move threshold for dynamic ATM strike rolling
+  intraday_options_theta_exit_ratio: 0.08 # used: theta-decay ratio threshold for intraday-options exit
+  intraday_options_theta_exit_min_minutes: 10 # used: minimum hold before theta-decay exit logic can trigger
 
+engine_defaults:
+  delivery_equity:
+    max_symbol_allocation: 0.25 # used: max capital allocation per delivery symbol
+    nifty_trend_symbol: "NSE:NIFTY 50" # used: index symbol for delivery trend guard
+    nifty_trend_ma_window: 50 # used: moving-average window for delivery trend guard
+    max_hold_days: 5 # used: max business days to hold delivery positions
+  intraday_equity:
+    gap_threshold_percent: 1.0 # used: classifies gap-up/gap-down context in intraday equity
+    opening_range_candles: 15 # used: opening-range window size for intraday equity
+    breakout_volume_multiplier: 1.2 # used: volume threshold for intraday-equity breakout filter
+  futures_equity:
+    max_symbol_allocation: 0.25 # used: max capital allocation per futures-equity position
+  options_equity:
+    max_symbol_allocation: 0.25 # used: max capital allocation per options-equity position
+  intraday_futures:
+    max_symbol_allocation: 0.35 # used: max capital allocation per intraday-futures position
+  intraday_options:
+    max_symbol_allocation: 0.2 # used: max capital allocation per intraday-options structure
+    min_contract_price: 8.0 # used: blocks too-cheap option premiums
+    min_abs_delta: 0.2 # used: minimum absolute delta for intraday-options entries
+    max_buy_iv_percentile: 75.0 # used: buy-side IV percentile ceiling
+    min_sell_iv_percentile: 15.0 # used: sell-side IV percentile floor
+    momentum_volume_multiplier: 1.5 # used: momentum-entry volume-spike threshold
+    momentum_spike_multiplier: 1.6 # used: max allowed candle-range spike for momentum entries
+    momentum_min_body_ratio: 0.6 # used: minimum candle body ratio for momentum entries
+    momentum_quality_lookback: 20 # used: lookback window for momentum quality stats
+    momentum_fast_ema_span: 9 # used: fast EMA span for momentum staging
+    momentum_confirmation_timeout_candles: 3 # used: timeout for momentum follow-through confirmation
+    momentum_pullback_timeout_candles: 5 # used: timeout while waiting for momentum pullback entry
+    momentum_pullback_band_pct: 0.0035 # used: EMA/VWAP pullback band for staged momentum entries
+    mean_reversion_max_body_ratio: 0.55 # used: max candle body ratio for mean-reversion entries
+    mean_reversion_spike_multiplier: 1.4 # used: max candle-range spike for mean-reversion entries
+    mean_reversion_retest_band_pct: 0.0035 # used: VWAP retest band for mean-reversion entries
+    mean_reversion_quality_lookback: 20 # used: lookback window for mean-reversion quality stats
+    volatility_min_body_ratio: 0.45 # used: minimum body ratio for volatility-expansion entries
+    volatility_range_multiplier: 1.2 # used: range-expansion threshold for volatility entries and trailing distance
+    volatility_quality_lookback: 20 # used: lookback window for volatility quality stats
+    runner_level_exit_fractions: [0.3, 0.4, 0.3] # used: lot split for smaller runner-style exits
+    runner_partial_exit_lot_threshold: 2 # used: when total lots exceed this threshold, intraday-options runner exits switch to the larger multi-lot branch
+    runner_level1_premium_target_pct: 8.0 # used: first premium target for larger multi-lot runner exits
+    runner_level2_premium_target_pct: 15.0 # used: second premium target for larger multi-lot runner exits
+    runner_partial_exit_fraction: 0.2 # used: first and second scale-out fraction for the larger multi-lot runner branch
+
+backtest_defaults:
+  risk_styles:
+    "1":
+      name: "CONSERVATIVE" # used: display name for backtest risk-style selection
+      atr_stop_multiplier: 1.5 # used: ATR stop multiple for conservative backtests
+      trailing_atr_multiplier: 1.0 # used: ATR trailing-stop multiple for conservative backtests
+      target_risk_reward: 1.8 # used: risk-reward target for conservative backtests
+      sl_percent: 0.4 # used: fallback stop-loss percent for conservative backtests
+      target_percent: 0.8 # used: fallback target percent for conservative backtests
+      trailing_percent: 0.25 # used: fallback trailing percent for conservative backtests
+      risk_percent: 0.005 # used: capital-at-risk percent for conservative backtests
+    "2":
+      name: "BALANCED" # used: display name for backtest risk-style selection
+      atr_stop_multiplier: 2.0 # used: ATR stop multiple for balanced backtests
+      trailing_atr_multiplier: 1.25 # used: ATR trailing-stop multiple for balanced backtests
+      target_risk_reward: 2.0 # used: risk-reward target for balanced backtests
+      sl_percent: 0.5 # used: fallback stop-loss percent for balanced backtests
+      target_percent: 1.0 # used: fallback target percent for balanced backtests
+      trailing_percent: 0.35 # used: fallback trailing percent for balanced backtests
+      risk_percent: 0.01 # used: capital-at-risk percent for balanced backtests
+    "3":
+      name: "AGGRESSIVE" # used: display name for backtest risk-style selection
+      atr_stop_multiplier: 2.5 # used: ATR stop multiple for aggressive backtests
+      trailing_atr_multiplier: 1.5 # used: ATR trailing-stop multiple for aggressive backtests
+      target_risk_reward: 2.2 # used: risk-reward target for aggressive backtests
+      sl_percent: 0.7 # used: fallback stop-loss percent for aggressive backtests
+      target_percent: 1.4 # used: fallback target percent for aggressive backtests
+      trailing_percent: 0.5 # used: fallback trailing percent for aggressive backtests
+      risk_percent: 0.015 # used: capital-at-risk percent for aggressive backtests
+  default_data:
+    intraday_equity:
+      period: "5d" # used: default backtest lookback period for intraday equity
+      interval: "5m" # used: default backtest candle interval for intraday equity
+    delivery_equity:
+      period: "6mo" # used: default backtest lookback period for delivery equity
+      interval: "1d" # used: default backtest candle interval for delivery equity
+    futures_equity:
+      period: "2mo" # used: default backtest lookback period for futures equity
+      interval: "15m" # used: default backtest candle interval for futures equity
+    options_equity:
+      period: "2mo" # used: default backtest lookback period for options equity
+      interval: "15m" # used: default backtest candle interval for options equity
+    intraday_futures:
+      period: "5d" # used: default backtest lookback period for intraday futures
+      interval: "5m" # used: default backtest candle interval for intraday futures
+    intraday_options:
+      period: "30d" # used: default backtest lookback period for intraday options
+      interval: "1m" # used: default backtest candle interval for intraday options
+  engine_sl_target_defaults:
+    sl_percent: 0.5 # used: fallback stop-loss percent when backtest engine does not override it
+    target_percent: 1.0 # used: fallback target percent when backtest engine does not override it
+    trailing_percent: 0.35 # used: fallback trailing percent when backtest engine does not override it
+  prompt_defaults:
+    engine_choice: 1 # used: default engine selection for backtest CLI prompt
+    capital: 100000 # used: default starting capital for backtest CLI prompt
+    symbol_mode: 3 # used: default symbol-universe mode for backtest CLI prompt
+    single_symbol_key: "1" # used: default single-symbol table selection for backtest CLI prompt
+    fno_futures_base_symbol: 3 # used: default futures underlying choice for backtest CLI prompt
+    fno_options_base_symbol: 1 # used: default options underlying choice for backtest CLI prompt
+    expiry_choice: 1 # used: default expiry selection for backtest CLI prompt
+    intraday_options_structure_mode: 1 # used: default intraday-options structure selection for backtest CLI prompt
+    intraday_options_strike_mode: 2 # used: default ATM strike-mode selection for backtest CLI prompt
+    fno_contract_confirm: 1 # used: default F&O contract confirmation choice for backtest CLI prompt
+    intraday_options_strategy: 4 # used: default intraday-options strategy choice for backtest CLI prompt
+    intraday_equity_strategy_mode: 1 # used: default intraday-equity strategy-mode choice for backtest CLI prompt
+    default_strategy_mode: 1 # used: default generic strategy-mode choice for backtest CLI prompt
+    single_strategy_key: "1" # used: default single-strategy selection for backtest CLI prompt
+    risk_style: 2 # used: default risk-style selection for backtest CLI prompt
+    max_positions: 1 # used: default max-open-positions value for backtest CLI prompt
+    one_trade_per_symbol_per_day: 1 # used: default one-trade-per-symbol flag for backtest CLI prompt
+    entry_selection_mode: 1 # used: default entry-selection mode for backtest CLI prompt
+    top_n: 2 # used: default top-N entry count for backtest CLI prompt
+    intraday_options_lot_mode: 2 # used: default intraday-options lot-sizing prompt choice in backtests
+    intraday_options_entry_mode: 1 # used: default intraday-options entry-mode prompt choice in backtests
