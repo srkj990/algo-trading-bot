@@ -3,6 +3,7 @@ import unittest
 from brokers.base import BrokerClient, OrderRequest, OrderResult, OrderStatus, Quote
 from engines.common import build_position, evaluate_exit, update_trailing_stop
 from models.position import ExitReason, Position, PositionSide
+from risk_manager import atr_position_size, check_daily_loss_limit
 
 
 class PositionModelTests(unittest.TestCase):
@@ -186,6 +187,25 @@ class BrokerInterfaceTests(unittest.TestCase):
         quote = Quote(symbol="SBIN.NS", last_price=100.0, bid_price=99.0, ask_price=101.0)
         self.assertEqual(quote.spread, 2.0)
         self.assertEqual(quote.spread_pct, 0.02)
+
+
+class RiskManagerTests(unittest.TestCase):
+    def test_atr_position_size_uses_atr_stop_distance(self):
+        sizing = atr_position_size(
+            capital=100000.0,
+            entry_price=100.0,
+            atr_value=5.0,
+            atr_multiplier=2.0,
+            risk_percent=0.01,
+        )
+        self.assertEqual(sizing["stop_distance"], 10.0)
+        self.assertGreater(sizing["quantity"], 0)
+
+    def test_check_daily_loss_limit_trips_when_loss_exceeds_threshold(self):
+        self.assertTrue(check_daily_loss_limit(-2500.0, 100000.0, 0.02))
+
+    def test_check_daily_loss_limit_ignores_disabled_threshold(self):
+        self.assertFalse(check_daily_loss_limit(-2500.0, 100000.0, 0.0))
 
 
 if __name__ == "__main__":

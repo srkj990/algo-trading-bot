@@ -31,7 +31,7 @@ def test_kite_auth():
         client = KiteBrokerClient()
         # Trigger auth by calling a read-only method
         positions = client.get_positions()
-        logger.info(f"[OK] Auth OK: {len(positions)} positions loaded")
+        logger.info("[OK] Auth OK: %s positions loaded", len(positions))
         return True
     except Exception as e:
         logger.error(f"[FAILED] Auth FAILED: {e}")
@@ -44,7 +44,7 @@ def test_instruments_cache():
     try:
         from network_utils import get_cached_kite_instruments
         instruments = get_cached_kite_instruments("NFO", lambda: None)
-        logger.info(f"[OK] Cache OK: {len(instruments):,} NFO instruments")
+        logger.info("[OK] Cache OK: %s NFO instruments", f"{len(instruments):,}")
         return True
     except Exception as e:
         logger.error(f"[FAILED] Cache FAILED: {e}")
@@ -57,7 +57,7 @@ def test_underlying_fetch():
     try:
         from fno_data_fetcher import get_underlying_spot_price
         spot = get_underlying_spot_price("NIFTY")
-        logger.info(f"[OK] NIFTY spot: Rs{spot:,.2f}")
+        logger.info("[OK] NIFTY spot: Rs%.2f", spot)
         return True
     except Exception as e:
         logger.error(f"[FAILED] Underlying FAILED: {e}")
@@ -76,7 +76,7 @@ def test_atm_resolution():
         next_expiry = expiries[0]
         exchange = get_fno_derivatives_exchange("NIFTY")
         atm_strike = get_atm_option_strike("NIFTY", next_expiry)
-        logger.info(f"[OK] ATM OK: {next_expiry} strike {atm_strike} (exchange: {exchange})")
+        logger.info("[OK] ATM OK: %s strike %s (exchange: %s)", next_expiry, atm_strike, exchange)
         return True
     except Exception as e:
         logger.error(f"[FAILED] ATM FAILED: {e}")
@@ -95,7 +95,7 @@ def test_quote_path():
         client = KiteBrokerClient()
         spot_symbol = "NSE:NIFTY 50"
         spot_quote = client.get_quote(spot_symbol)
-        logger.info(f"[OK] Spot quote OK: NIFTY {spot_quote.last_price:.2f}")
+        logger.info("[OK] Spot quote OK: NIFTY %.2f", spot_quote.last_price)
         
         expiries = get_available_expiries("NIFTY")
         if not expiries:
@@ -108,7 +108,13 @@ def test_quote_path():
         
         ce_quote = client.get_quote(ce_symbol)
         pe_quote = client.get_quote(pe_symbol)
-        logger.info(f"[OK] ATM Quotes OK: CE {ce_symbol} Rs{ce_quote.last_price:.2f}, PE {pe_symbol} Rs{pe_quote.last_price:.2f}")
+        logger.info(
+            "[OK] ATM Quotes OK: CE %s Rs%.2f, PE %s Rs%.2f",
+            ce_symbol,
+            ce_quote.last_price,
+            pe_symbol,
+            pe_quote.last_price,
+        )
         return True
     except Exception as e:
         logger.error(f"[FAILED] Quotes FAILED: {e}")
@@ -116,7 +122,7 @@ def test_quote_path():
 
 def main():
     start_time = datetime.now()
-    logger.info(f"[START] Preflight check started at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("[START] Preflight check started at %s", start_time.strftime('%Y-%m-%d %H:%M:%S'))
     
     tests = [
         test_kite_auth,
@@ -136,7 +142,7 @@ def main():
     total = len(results)
     
     logger.info("\n=== SUMMARY ===")
-    logger.info(f"{passed}/{total} tests passed")
+    logger.info("%s/%s tests passed", passed, total)
     if passed == total:
         logger.info("[CLEAR] ALL CLEAR - Ready for live trading!")
     else:
@@ -144,7 +150,7 @@ def main():
     
     end_time = datetime.now()
     duration = (end_time - start_time).total_seconds()
-    logger.info(f"Completed in {duration:.1f}s")
+    logger.info("Completed in %.1fs", duration)
     
     sys.exit(0 if passed == total else 1)
 

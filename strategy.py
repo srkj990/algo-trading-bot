@@ -35,6 +35,16 @@ def _clip_strength(value):
     return max(0.0, min(1.0, float(value)))
 
 
+def _normalize_component(value, scale=1.0):
+    scale = max(float(scale or 0.0), 1e-9)
+    return _clip_strength(float(value or 0.0) / scale)
+
+
+def _normalize_ratio_component(value, baseline=1.0, span=1.0):
+    span = max(float(span or 0.0), 1e-9)
+    return _clip_strength((float(value or 0.0) - float(baseline)) / span)
+
+
 def _build_signal_payload(signal, strength, reason, strategy_name, **extra):
     option_type = None
     if signal == "BUY_CE":
@@ -69,7 +79,6 @@ def has_enough_data(df, strategy_name):
     available = len(df)
 
     logger.info("%s -> Required: %s, Available: %s", strategy_name, required, available)
-    print(f"{strategy_name} -> Required: {required}, Available: {available}")
 
     if available < required:
         logger.warning("Not enough data for %s", strategy_name)
@@ -81,8 +90,11 @@ def has_enough_data(df, strategy_name):
 def _get_session_df(df):
     if df.empty:
         return df
-    trade_date = df.index[-1].date()
-    return df.loc[df.index.date == trade_date].copy()
+    session_df = df.copy()
+    if getattr(session_df.index, "tz", None) is not None:
+        session_df.index = session_df.index.tz_convert("Asia/Kolkata")
+    trade_date = session_df.index[-1].date()
+    return session_df.loc[session_df.index.date == trade_date].copy()
 
 
 def _no_trade(reason, strategy_name, **extra):
@@ -223,11 +235,16 @@ def strategy_momentum(
         return _no_trade("RSI or VWAP not available yet", strategy_name)
 
     if close > vwap and rsi > bullish_rsi and close > breakout_high:
-        strength = (
-            ((rsi - bullish_rsi) / 40.0)
-            + ((close - vwap) / max(abs(vwap), 1.0))
-            + ((close - breakout_high) / max(abs(close), 1.0))
+        rsi_component = _normalize_component(rsi - bullish_rsi, max(100 - bullish_rsi, 1.0))
+        vwap_component = _normalize_component(
+            (close - vwap) / max(abs(vwap), 1.0),
+            0.01,
         )
+        breakout_component = _normalize_component(
+            (close - breakout_high) / max(abs(close), 1.0),
+            0.01,
+        )
+        strength = rsi_component + vwap_component + breakout_component
         return _build_signal_payload(
             signal="BUY_CE",
             strength=strength,
@@ -239,11 +256,16 @@ def strategy_momentum(
         )
 
     if close < vwap and rsi < bearish_rsi and close < breakout_low:
-        strength = (
-            ((bearish_rsi - rsi) / 40.0)
-            + ((vwap - close) / max(abs(vwap), 1.0))
-            + ((breakout_low - close) / max(abs(close), 1.0))
+        rsi_component = _normalize_component(bearish_rsi - rsi, max(bearish_rsi, 1.0))
+        vwap_component = _normalize_component(
+            (vwap - close) / max(abs(vwap), 1.0),
+            0.01,
         )
+        breakout_component = _normalize_component(
+            (breakout_low - close) / max(abs(close), 1.0),
+            0.01,
+        )
+        strength = rsi_component + vwap_component + breakout_component
         return _build_signal_payload(
             signal="BUY_PE",
             strength=strength,
@@ -496,11 +518,21 @@ def strategy_breakout_expansion(
     atr_expanding = current_atr > 0 and prior_atr > 0 and current_atr >= (prior_atr * atr_expansion_multiplier)
 
     if close > high and compression_ok and volume_spike and atr_expanding:
-        strength = (
-            ((close - high) / max(abs(close), 1.0))
-            + (latest_volume / max(average_volume, 1.0) / 10.0)
-            + (current_atr / max(prior_atr, 1e-6) / 10.0)
+        breakout_component = _normalize_component(
+            (close - high) / max(abs(close), 1.0),
+            0.01,
         )
+        volume_component = _normalize_ratio_component(
+            latest_volume / max(average_volume, 1.0),
+            baseline=1.0,
+            span=max(volume_spike_multiplier - 1.0, 1.0),
+        )
+        atr_component = _normalize_ratio_component(
+            current_atr / max(prior_atr, 1e-6),
+            baseline=1.0,
+            span=max(atr_expansion_multiplier - 1.0, 0.1),
+        )
+        strength = breakout_component + volume_component + atr_component
         return _build_signal_payload(
             signal="BUY_CE",
             strength=strength,
@@ -513,11 +545,21 @@ def strategy_breakout_expansion(
         )
 
     if close < low and compression_ok and volume_spike and atr_expanding:
-        strength = (
-            ((low - close) / max(abs(close), 1.0))
-            + (latest_volume / max(average_volume, 1.0) / 10.0)
-            + (current_atr / max(prior_atr, 1e-6) / 10.0)
+        breakout_component = _normalize_component(
+            (low - close) / max(abs(close), 1.0),
+            0.01,
         )
+        volume_component = _normalize_ratio_component(
+            latest_volume / max(average_volume, 1.0),
+            baseline=1.0,
+            span=max(volume_spike_multiplier - 1.0, 1.0),
+        )
+        atr_component = _normalize_ratio_component(
+            current_atr / max(prior_atr, 1e-6),
+            baseline=1.0,
+            span=max(atr_expansion_multiplier - 1.0, 0.1),
+        )
+        strength = breakout_component + volume_component + atr_component
         return _build_signal_payload(
             signal="BUY_PE",
             strength=strength,
@@ -573,11 +615,17 @@ def strategy_iv_expansion(
     bearish_momentum = close < recent_low and candle_body >= (avg_body * body_expansion_multiplier) and rsi <= 45
 
     if bullish_momentum:
-        strength = (
-            ((close - recent_high) / max(abs(close), 1.0))
-            + (candle_body / max(avg_body, 1e-6) / 10.0)
-            + max(0.0, (rsi - 55) / 100.0)
+        breakout_component = _normalize_component(
+            (close - recent_high) / max(abs(close), 1.0),
+            0.01,
         )
+        body_component = _normalize_ratio_component(
+            candle_body / max(avg_body, 1e-6),
+            baseline=1.0,
+            span=max(body_expansion_multiplier - 1.0, 1.0),
+        )
+        rsi_component = _normalize_component(rsi - 55, 45.0)
+        strength = breakout_component + body_component + rsi_component
         return _build_signal_payload(
             signal="BUY_CE",
             strength=strength,
@@ -589,11 +637,17 @@ def strategy_iv_expansion(
         )
 
     if bearish_momentum:
-        strength = (
-            ((recent_low - close) / max(abs(close), 1.0))
-            + (candle_body / max(avg_body, 1e-6) / 10.0)
-            + max(0.0, (45 - rsi) / 100.0)
+        breakout_component = _normalize_component(
+            (recent_low - close) / max(abs(close), 1.0),
+            0.01,
         )
+        body_component = _normalize_ratio_component(
+            candle_body / max(avg_body, 1e-6),
+            baseline=1.0,
+            span=max(body_expansion_multiplier - 1.0, 1.0),
+        )
+        rsi_component = _normalize_component(45 - rsi, 45.0)
+        strength = breakout_component + body_component + rsi_component
         return _build_signal_payload(
             signal="BUY_PE",
             strength=strength,
@@ -651,10 +705,16 @@ def strategy_trap_reversal(
     )
 
     if seller_trap:
-        strength = (
-            ((float(latest["Close"]) - support) / max(abs(float(latest["Close"])), 1.0))
-            + (latest_body / max(avg_body, 1e-6) / 10.0)
+        recovery_component = _normalize_component(
+            (float(latest["Close"]) - support) / max(abs(float(latest["Close"])), 1.0),
+            0.01,
         )
+        body_component = _normalize_ratio_component(
+            latest_body / max(avg_body, 1e-6),
+            baseline=1.0,
+            span=max(reversal_body_multiplier - 1.0, 1.0),
+        )
+        strength = recovery_component + body_component
         return _build_signal_payload(
             signal="BUY_CE",
             strength=strength,
@@ -666,10 +726,16 @@ def strategy_trap_reversal(
         )
 
     if buyer_trap:
-        strength = (
-            ((resistance - float(latest["Close"])) / max(abs(float(latest["Close"])), 1.0))
-            + (latest_body / max(avg_body, 1e-6) / 10.0)
+        rejection_component = _normalize_component(
+            (resistance - float(latest["Close"])) / max(abs(float(latest["Close"])), 1.0),
+            0.01,
         )
+        body_component = _normalize_ratio_component(
+            latest_body / max(avg_body, 1e-6),
+            baseline=1.0,
+            span=max(reversal_body_multiplier - 1.0, 1.0),
+        )
+        strength = rejection_component + body_component
         return _build_signal_payload(
             signal="BUY_PE",
             strength=strength,
@@ -702,13 +768,11 @@ def _evaluate_legacy_signal(df, strategy_name):
         signal = confirm_signal(df, orb_strategy)
     else:
         logger.info("[STRATEGY] Invalid strategy")
-        print("[STRATEGY] Invalid strategy")
         signal = "HOLD"
     return _legacy_payload(signal, strategy_name, f"Legacy strategy result: {signal}")
 
 
 def generate_signal_payload(df, strategy_name):
-    print(f"\n[STRATEGY] Using: {strategy_name}")
     logger.info("\n[STRATEGY] Using: %s", strategy_name)
 
     if not has_enough_data(df, strategy_name):
@@ -743,36 +807,27 @@ def get_signal(df, strategy_type):
 
 
 def confirm_signal(df, strategy_func):
-    signals = []
-
-    confirmation_windows = [3, 2, 1]
-    for candles_to_trim in confirmation_windows:
-        if candles_to_trim == 1:
-            sub_df = df
-        else:
-            sub_df = df.iloc[:-candles_to_trim + 1]
-
-        if len(sub_df) < 5:
-            continue
-
-        signal = strategy_func(sub_df)
-        signals.append(signal)
-
-    logger.info("Confirmation signals: %s", signals)
-    print(f"Confirmation signals: {signals}")
-
-    if len(signals) < 2:
+    previous_window_df = df.iloc[:-1]
+    current_window_df = df
+    if len(previous_window_df) < 5 or len(current_window_df) < 5:
         return "HOLD"
 
-    if signals[-1] == signals[-2]:
-        return signals[-1]
+    previous_signal = strategy_func(previous_window_df)
+    current_signal = strategy_func(current_window_df)
+    logger.info(
+        "Confirmation signals: previous_window=%s, current_window=%s",
+        previous_signal,
+        current_signal,
+    )
+
+    if current_signal == previous_signal:
+        return current_signal
 
     return "HOLD"
 
 
 def multi_strategy_signal(df, strategies, min_confirmations=2):
     logger.info("Multi-strategy mode: %s", strategies)
-    print(f"Multi-strategy mode: {strategies}")
 
     signals = {}
 
@@ -784,13 +839,11 @@ def multi_strategy_signal(df, strategies, min_confirmations=2):
         signals[strat] = generate_signal(df, strat)
 
     logger.info("Signals: %s", signals)
-    print(f"Signals: {signals}")
 
     buy_count = list(signals.values()).count("BUY")
     sell_count = list(signals.values()).count("SELL")
 
     logger.info("BUY: %s, SELL: %s", buy_count, sell_count)
-    print(f"BUY: {buy_count}, SELL: {sell_count}")
 
     if buy_count >= min_confirmations and buy_count > sell_count:
         return "BUY"

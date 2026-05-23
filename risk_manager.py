@@ -46,18 +46,12 @@ def position_size(
         affordable_qty = int(capital / entry_price) if entry_price > 0 else 0
         qty = min(risk_based_qty, affordable_qty)
 
-    print(f"\n[RISK] Capital: {capital}")
-    print(f"[RISK] Risk %: {risk_percent * 100:.2f}")
-    print(f"[RISK] Entry price: {entry_price:.2f}")
-    print(f"[RISK] Stop-loss price: {stop_loss_price:.2f}")
-    print(f"[RISK] Per share risk: {per_share_risk:.2f}")
-    print(f"[RISK] Quantity decided: {qty}")
-    logger.info(f"[RISK] Capital: {capital}")
-    logger.info(f"[RISK] Risk %: {risk_percent * 100:.2f}")
-    logger.info(f"[RISK] Entry price: {entry_price:.2f}")
-    logger.info(f"[RISK] Stop-loss price: {stop_loss_price:.2f}")
-    logger.info(f"[RISK] Per share risk: {per_share_risk:.2f}")
-    logger.info(f"[RISK] Quantity decided: {qty}")
+    logger.info("[RISK] Capital: %s", capital)
+    logger.info("[RISK] Risk %%: %.2f", risk_percent * 100)
+    logger.info("[RISK] Entry price: %.2f", entry_price)
+    logger.info("[RISK] Stop-loss price: %.2f", stop_loss_price)
+    logger.info("[RISK] Per share risk: %.2f", per_share_risk)
+    logger.info("[RISK] Quantity decided: %s", qty)
 
     return qty
 
@@ -102,3 +96,10 @@ def atr_position_size(
         "atr": float(atr_value),
         "stop_distance": stop_distance,
     }
+
+
+def check_daily_loss_limit(session_pnl, capital, max_loss_pct):
+    max_loss_pct = float(max_loss_pct or 0.0)
+    if max_loss_pct <= 0 or float(capital or 0.0) <= 0:
+        return False
+    return float(session_pnl or 0.0) <= -(float(capital) * max_loss_pct)

@@ -31,6 +31,7 @@ from risk_manager import (
     atr_position_size,
     atr_stop_from_value,
     calculate_target_price,
+    check_daily_loss_limit,
     position_size,
 )
 from transaction_costs import estimate_intraday_equity_round_trip_cost
@@ -110,6 +111,27 @@ def _validate_intraday_options_live_entry(context, symbol, quantity, entry_price
                 return False
 
     return True
+
+
+def _calculate_session_pnl(trade_book, trade_day):
+    session_pnl = 0.0
+    trade_day_text = trade_day.isoformat()
+    for trade in trade_book or []:
+        exit_time = trade.get("exit_time")
+        if not exit_time:
+            continue
+        exit_day = None
+        if isinstance(exit_time, datetime):
+            exit_day = exit_time.date().isoformat()
+        else:
+            try:
+                exit_day = datetime.fromisoformat(str(exit_time)).date().isoformat()
+            except ValueError:
+                exit_day = str(exit_time)[:10]
+        if exit_day != trade_day_text:
+            continue
+        session_pnl += float(trade.get("net_pnl", trade.get("pnl", 0.0)) or 0.0)
+    return session_pnl
 
 
 def _build_intraday_option_position_from_roll(context, current_position, symbol, qty, entry_price, analytics, now):
@@ -399,6 +421,16 @@ def run_trading_session(context):
         elif cooldown_active:
             context.log_event("[COOLDOWN] Skipping new entries")
         else:
+            max_daily_loss_pct = float(getattr(cfg, "max_daily_loss_pct", 0.0) or 0.0)
+            session_pnl = _calculate_session_pnl(context.trade_book, current_trade_day)
+            if check_daily_loss_limit(session_pnl, cfg.capital, max_daily_loss_pct):
+                context.log_event(
+                    f"[RISK] Daily loss limit reached | SessionPnL={session_pnl:+.2f} | "
+                    f"MaxLossPct={max_daily_loss_pct * 100:.2f}% | New entries blocked"
+                )
+                log_positions(context.positions, context.log_event)
+                time.sleep(engine.sleep_seconds)
+                continue
             planned_entries = ranked_candidates[:1] if cfg.entry_selection_mode == "TOP1" else ranked_candidates[:cfg.top_n_count]
 
             for candidate in planned_entries:
