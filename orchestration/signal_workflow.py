@@ -5,8 +5,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
-from config import resolve_asset_class
-from executor import calculate_cost_aware_targets
+from engines.common import resolve_trade_targets
 from fno_data_fetcher import (
     get_atm_option_strike,
     get_available_option_strikes,
@@ -34,23 +33,25 @@ def should_enter_trade(
 ) -> bool:
     resolved_entry_price = float(entry_price if entry_price is not None else signal["latest_close"])
     resolved_quantity = int(quantity if quantity is not None else signal["quantity"])
-    asset_class = resolve_asset_class(context.engine.name)
-    risk_profile = context.config.risk_style_name
-    signal_strength = float(signal.get("score", signal.get("strength", 0.5)) or 0.5)
-    targets = calculate_cost_aware_targets(
+    targets = resolve_trade_targets(
+        engine_name=context.engine.name,
         entry_price=resolved_entry_price,
         quantity=resolved_quantity,
-        asset_class=asset_class,
-        risk_profile=risk_profile,
-        signal_strength=signal_strength,
+        risk_style_name=context.config.risk_style_name,
+        signal_strength=float(signal.get("score", signal.get("strength", 0.5)) or 0.5),
         side=str(signal.get("signal") or "BUY"),
+        atr=float(signal.get("atr") or 0.0),
+        trailing_atr_multiplier=float(getattr(context.config, "trailing_atr_multiplier", 0.0) or 0.0),
+        engine_helper=context.engine,
     )
 
-    signal["asset_class"] = asset_class
+    signal["asset_class"] = targets["asset_class"]
     signal["cost_aware_targets"] = targets
     signal["stop_loss"] = targets["stop_loss"]
     signal["target"] = targets["target"]
     signal["trailing_stop"] = targets["trailing_stop"]
+    signal["trailing_distance"] = targets["trailing_distance"]
+    signal["trailing_activation_distance"] = targets["trailing_activation_distance"]
 
     if not targets["is_profitable"]:
         context.log_event(
@@ -66,7 +67,7 @@ def should_enter_trade(
             "intraday_options_max_entry_cost_ratio",
             0.30,
         )
-        if asset_class == "INTRADAY_OPTIONS"
+        if targets["asset_class"] == "INTRADAY_OPTIONS"
         else 0.35
     )
     if targets["cost_to_profit_ratio"] > max_cost_ratio:

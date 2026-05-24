@@ -451,10 +451,16 @@ def save_runtime_state(
     active_trade_day: date,
     last_entry_time: float,
     regime_cache: dict[str, Any],
-    session_runtime_state: dict[str, Any],
-    engine_runtime_state: dict[str, Any],
-    save_engine_state: Callable[..., Any],
+    session_runtime_state: dict[str, Any] | None = None,
+    engine_runtime_state: dict[str, Any] | Callable[..., Any] | None = None,
+    save_engine_state: Callable[..., Any] | None = None,
 ) -> None:
+    if save_engine_state is None and callable(engine_runtime_state):
+        save_engine_state = engine_runtime_state
+        engine_runtime_state = {}
+    if save_engine_state is None:
+        raise TypeError("save_engine_state callback is required")
+
     save_engine_state(
         engine_name=engine_name,
         positions=positions,
@@ -463,8 +469,8 @@ def save_runtime_state(
         active_trade_day=active_trade_day,
         last_entry_time=last_entry_time,
         regime_cache=regime_cache,
-        session_runtime_state=session_runtime_state,
-        engine_runtime_state=engine_runtime_state,
+        session_runtime_state=session_runtime_state or {},
+        engine_runtime_state=engine_runtime_state or {},
     )
 
 
@@ -760,6 +766,24 @@ def manage_open_positions(
                 if not action:
                     break
                 exit_price = float(snapshot["latest_close"])
+                exit_quantities = list(position.get("runner_exit_quantities") or [0, 0, 0])
+                current_qty = int(position.get("quantity") or 0)
+                two_lot_trailing_only_runner = (
+                    position.get("engine_name") == "intraday_options"
+                    and int(action.get("level_index", -1)) == 0
+                    and int(exit_quantities[0] or 0) > 0
+                    and int(exit_quantities[1] or 0) == 0
+                    and current_qty == int(exit_quantities[0] or 0) + int(exit_quantities[2] or 0)
+                )
+                if two_lot_trailing_only_runner:
+                    log_event(
+                        f"[RUNNER] {symbol} {action['reason']} reached at {exit_price:.2f} | "
+                        "promoting protection without scaling out the final two-lot runner"
+                    )
+                    if hasattr(engine, "apply_runner_partial_exit"):
+                        engine.apply_runner_partial_exit(position, action, exit_price, snapshot)
+                    state_changed = True
+                    continue
                 log_event(
                     f"[RUNNER] {symbol} {action['reason']} triggered at {exit_price:.2f} | "
                     f"Qty={action['quantity']} | Entry={position_entry_price(position):.2f}"

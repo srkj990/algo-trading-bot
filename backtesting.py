@@ -22,7 +22,6 @@ from config import (
     SINGLE_SYMBOL_TABLE,
     get_runtime_config,
     get_risk_style_presets,
-    resolve_asset_class,
     TRANSACTION_COST_MODEL_ENABLED,
     TRANSACTION_SLIPPAGE_PCT_PER_SIDE,
 )
@@ -34,8 +33,7 @@ from engines import (
     IntradayOptionsEngine,
     OptionsEquityEngine,
 )
-from engines.common import build_position, evaluate_exit, update_trailing_stop
-from executor import calculate_cost_aware_targets
+from engines.common import build_position, evaluate_exit, resolve_trade_targets, update_trailing_stop
 from fno_data_fetcher import (
     get_available_expiries,
     get_available_option_strikes,
@@ -743,26 +741,20 @@ class BacktestEngine:
                 continue
 
             entry_price = candidate["latest_close"]
-            actual_targets = calculate_cost_aware_targets(
+            actual_targets = resolve_trade_targets(
+                engine_name=self.config.engine_name,
                 entry_price=entry_price,
                 quantity=qty,
-                asset_class=resolve_asset_class(self.config.engine_name),
-                risk_profile=self.config.risk_style_name,
+                risk_style_name=self.config.risk_style_name,
                 signal_strength=float(candidate.get("score") or 0.5),
                 side=candidate["signal"],
+                atr=float(candidate["atr"]),
+                trailing_atr_multiplier=self.config.trailing_atr_multiplier,
+                engine_helper=self.engine_helper,
             )
-            trailing_distance = candidate["atr"] * self.config.trailing_atr_multiplier
-            stop_distance = abs(float(entry_price) - float(actual_targets["stop_loss"]))
-            trailing_activation_distance = max(
-                float(trailing_distance),
-                float(stop_distance),
-            )
-            if self.config.engine_name == "delivery_equity":
-                trailing_activation_distance = self.engine_helper.get_trailing_activation_distance(
-                    entry_price,
-                    actual_targets["target"],
-                    candidate["atr"],
-                )
+            trailing_distance = float(actual_targets["trailing_distance"])
+            stop_distance = float(actual_targets["stop_distance"])
+            trailing_activation_distance = float(actual_targets["trailing_activation_distance"])
             if self.config.engine_name == "intraday_options":
                 try:
                     self.positions[candidate["symbol"]] = self.engine_helper.build_trend_adaptive_position(

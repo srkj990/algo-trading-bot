@@ -110,6 +110,9 @@ class SessionEntrySizingTests(unittest.TestCase):
             "stop_loss": 90.0,
             "target": 120.0,
             "trailing_stop": 92.0,
+            "trailing_distance": 62.5,
+            "trailing_activation_distance": 62.5,
+            "stop_distance": 10.0,
             "min_breakeven_price": 101.0,
             "expected_costs": 25.0,
             "expected_net_profit": 100.0,
@@ -122,7 +125,7 @@ class SessionEntrySizingTests(unittest.TestCase):
              patch("engines.intraday_options.get_contract_lot_size", return_value=75), \
              patch("engines.options_equity.get_contract_lot_size", return_value=75), \
              patch("orchestration.session.should_enter_trade", return_value=True), \
-             patch("orchestration.session.calculate_cost_aware_targets", return_value=actual_targets), \
+             patch("orchestration.session.resolve_trade_targets", return_value=actual_targets), \
              patch("orchestration.session.persist_runtime_state"):
             entered = _execute_single_entry(
                 context,
@@ -206,6 +209,9 @@ class SessionEntrySizingTests(unittest.TestCase):
             "stop_loss": 90.0,
             "target": 120.0,
             "trailing_stop": 92.0,
+            "trailing_distance": 6.25,
+            "trailing_activation_distance": 10.0,
+            "stop_distance": 10.0,
             "min_breakeven_price": 101.0,
             "expected_costs": 25.0,
             "expected_net_profit": 100.0,
@@ -220,7 +226,7 @@ class SessionEntrySizingTests(unittest.TestCase):
              patch("orchestration.session.position_size", return_value=450), \
              patch("orchestration.session.apply_capital_limits_to_quantity", side_effect=lambda qty, *_args: qty), \
              patch("orchestration.session.should_enter_trade", return_value=True), \
-             patch("orchestration.session.calculate_cost_aware_targets", return_value=actual_targets), \
+             patch("orchestration.session.resolve_trade_targets", return_value=actual_targets), \
              patch("orchestration.session.persist_runtime_state"):
             entered = _execute_single_entry(
                 context,
@@ -300,12 +306,15 @@ class SessionEntrySizingTests(unittest.TestCase):
              patch("engines.intraday_options.get_contract_lot_size", return_value=75), \
              patch("engines.options_equity.get_contract_lot_size", return_value=75), \
              patch("orchestration.session.should_enter_trade", return_value=True), \
-             patch("orchestration.session.calculate_cost_aware_targets", return_value={
+             patch("orchestration.session.resolve_trade_targets", return_value={
                  "asset_class": "INTRADAY_OPTIONS",
                  "risk_profile": "BALANCED",
                  "stop_loss": 90.0,
                  "target": 120.0,
                  "trailing_stop": 92.0,
+                 "trailing_distance": 6.25,
+                 "trailing_activation_distance": 10.0,
+                 "stop_distance": 10.0,
                  "min_breakeven_price": 101.0,
                  "expected_costs": 25.0,
                  "expected_net_profit": 100.0,

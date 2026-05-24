@@ -948,7 +948,9 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         body = abs(latest_close - latest_open)
         body_ratio = body / max(candle_range, 1e-9)
 
-        recent = session_df.tail(lookback)
+        recent = session_df.tail(lookback + 1).iloc[:-1]
+        if recent.empty:
+            recent = session_df.tail(lookback)
         avg_volume = float(recent["Volume"].mean())
         recent_ranges = recent["High"] - recent["Low"]
         avg_range = float(recent_ranges.mean())
@@ -962,7 +964,8 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         prev_high = float(previous["High"])
         prev_low = float(previous["Low"])
         volume_spike = latest_volume >= (avg_volume * float(self.momentum_volume_multiplier))
-        no_spike = candle_range <= (avg_range * float(self.momentum_spike_multiplier))
+        effective_spike_multiplier = max(float(self.momentum_spike_multiplier), 2.0)
+        no_spike = candle_range <= (avg_range * effective_spike_multiplier)
         strong_candle = body_ratio >= float(self.momentum_min_body_ratio)
         bias = str((analytics or {}).get("underlying_bias") or "")
         trend_aligned = (

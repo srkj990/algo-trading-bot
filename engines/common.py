@@ -5,6 +5,63 @@ from typing import Any, Callable
 from models import Position
 
 
+def resolve_trade_targets(
+    *,
+    engine_name: str,
+    entry_price: float,
+    quantity: int,
+    risk_style_name: str,
+    signal_strength: float,
+    side: str,
+    atr: float,
+    trailing_atr_multiplier: float,
+    engine_helper,
+) -> dict[str, Any]:
+    """
+    Single source of truth for stop, target, trailing, and activation distance.
+    Called by both backtesting._enter_ranked_candidates and the live entry path
+    in orchestration/signal_workflow.py (should_enter_trade / entry orchestration).
+    """
+    from executor import calculate_cost_aware_targets
+
+    asset_class_map = {
+        "intraday_equity": "INTRADAY_EQUITY",
+        "delivery_equity": "DELIVERY_EQUITY",
+        "futures_equity": "FUTURES_EQUITY",
+        "options_equity": "OPTIONS_EQUITY",
+        "intraday_futures": "INTRADAY_FUTURES",
+        "intraday_options": "INTRADAY_OPTIONS",
+    }
+    asset_class = asset_class_map.get(engine_name, "INTRADAY_EQUITY")
+
+    targets = calculate_cost_aware_targets(
+        entry_price=entry_price,
+        quantity=quantity,
+        asset_class=asset_class,
+        risk_profile=risk_style_name,
+        signal_strength=float(signal_strength),
+        side=side,
+    )
+
+    trailing_distance = atr * trailing_atr_multiplier
+    stop_distance = abs(float(entry_price) - float(targets["stop_loss"]))
+
+    if engine_name == "delivery_equity":
+        trailing_activation_distance = engine_helper.get_trailing_activation_distance(
+            entry_price,
+            targets["target"],
+            atr,
+        )
+    else:
+        trailing_activation_distance = max(float(trailing_distance), float(stop_distance))
+
+    targets["trailing_distance"] = trailing_distance
+    targets["trailing_activation_distance"] = trailing_activation_distance
+    targets["stop_distance"] = stop_distance
+
+    return targets
+
+
 def build_position(
     symbol: str,
     side: str,

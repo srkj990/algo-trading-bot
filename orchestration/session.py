@@ -19,6 +19,7 @@ from engines.common import (
     count_open_structures,
     get_deployed_capital,
     log_positions,
+    resolve_trade_targets,
 )
 from fno_data_fetcher import (
     get_atm_option_strike,
@@ -1165,20 +1166,19 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
         )
     actual_entry_price = float(order_result.average_price or entry_price)
     estimated_trade_capital = actual_entry_price * qty
-    actual_targets = calculate_cost_aware_targets(
+    actual_targets = resolve_trade_targets(
+        engine_name=engine.name,
         entry_price=actual_entry_price,
         quantity=qty,
-        asset_class=str(candidate.get("asset_class") or "INTRADAY_EQUITY"),
-        risk_profile=cfg.risk_style_name,
+        risk_style_name=cfg.risk_style_name,
         signal_strength=float(candidate.get("score") or 0.5),
         side=candidate["signal"],
+        atr=float(atr_value or 0.0),
+        trailing_atr_multiplier=cfg.trailing_atr_multiplier,
+        engine_helper=engine,
     )
-    if engine.name == "delivery_equity":
-        trailing_activation_distance = engine.get_trailing_activation_distance(
-            actual_entry_price,
-            actual_targets["target"],
-            atr_value,
-        )
+    trailing_distance = float(actual_targets["trailing_distance"])
+    trailing_activation_distance = float(actual_targets["trailing_activation_distance"])
     context.log_event(
         f"[ORDER] Entry accepted | Symbol={symbol} | OrderId={order_result.order_id} | Filled={qty}/{requested_qty}"
     )
@@ -1229,7 +1229,7 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
             trailing_activation_distance=trailing_activation_distance,
             trailing_active=False,
             atr=atr_value,
-            stop_distance=abs(float(actual_entry_price) - float(actual_targets["stop_loss"])),
+            stop_distance=float(actual_targets["stop_distance"]),
             lot_size=get_contract_lot_size(symbol) if ":" in symbol else 1,
             entry_analytics=candidate.get("analytics"),
             entry_time=now.isoformat(),

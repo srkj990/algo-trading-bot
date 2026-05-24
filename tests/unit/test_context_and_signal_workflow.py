@@ -53,6 +53,7 @@ class ContextTests(unittest.TestCase):
             active_trade_day=date(2026, 4, 29),
             last_entry_time=0.0,
             regime_cache={},
+            session_runtime_state={},
             engine_runtime_state={"runtime_flag": True},
             save_engine_state=Mock(),
         )
@@ -71,7 +72,7 @@ class SignalWorkflowHelperTests(unittest.TestCase):
         }
         context = SimpleNamespace(
             engine=SimpleNamespace(name="intraday_equity"),
-            config=SimpleNamespace(risk_style_name="BALANCED"),
+            config=SimpleNamespace(risk_style_name="BALANCED", trailing_atr_multiplier=1.25),
             log_event=Mock(),
         )
         allowed = should_enter_trade(signal, context, quantity=100)
@@ -89,13 +90,16 @@ class SignalWorkflowHelperTests(unittest.TestCase):
         }
         context = SimpleNamespace(
             engine=SimpleNamespace(name="intraday_options"),
-            config=SimpleNamespace(risk_style_name="CONSERVATIVE"),
+            config=SimpleNamespace(risk_style_name="CONSERVATIVE", trailing_atr_multiplier=1.25),
             log_event=Mock(),
         )
-        with patch("orchestration.signal_workflow.calculate_cost_aware_targets", return_value={
+        with patch("orchestration.signal_workflow.resolve_trade_targets", return_value={
             "stop_loss": 9.5,
             "target": 10.2,
             "trailing_stop": 9.8,
+            "trailing_distance": 0.5,
+            "trailing_activation_distance": 0.5,
+            "asset_class": "INTRADAY_OPTIONS",
             "expected_gross_profit": 20.0,
             "expected_costs": 30.0,
             "expected_net_profit": -10.0,
@@ -115,16 +119,19 @@ class SignalWorkflowHelperTests(unittest.TestCase):
         }
         context = SimpleNamespace(
             engine=SimpleNamespace(name="intraday_options"),
-            config=SimpleNamespace(risk_style_name="BALANCED"),
+            config=SimpleNamespace(risk_style_name="BALANCED", trailing_atr_multiplier=1.25),
             runtime_config=SimpleNamespace(
                 fno=SimpleNamespace(intraday_options_max_entry_cost_ratio=0.30)
             ),
             log_event=Mock(),
         )
-        with patch("orchestration.signal_workflow.calculate_cost_aware_targets", return_value={
+        with patch("orchestration.signal_workflow.resolve_trade_targets", return_value={
             "stop_loss": 95.0,
             "target": 110.0,
             "trailing_stop": 97.0,
+            "trailing_distance": 3.0,
+            "trailing_activation_distance": 5.0,
+            "asset_class": "INTRADAY_OPTIONS",
             "expected_gross_profit": 1000.0,
             "expected_costs": 320.0,
             "expected_net_profit": 680.0,

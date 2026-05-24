@@ -273,17 +273,28 @@ class BacktestWorkflowTests(unittest.TestCase):
             "risk_profile": "BALANCED",
         }
 
+        actual_targets.update(
+            {
+                "trailing_distance": 2.5,
+                "trailing_activation_distance": 2.5,
+                "stop_distance": 0.8,
+            }
+        )
+
         with patch("backtesting.should_enter_trade", return_value=True), \
-             patch("backtesting.calculate_cost_aware_targets", return_value=actual_targets) as mock_targets:
+             patch("backtesting.resolve_trade_targets", return_value=actual_targets) as mock_targets:
             engine._enter_ranked_candidates([candidate], pd.Timestamp("2026-05-18 10:00:00+05:30"))
 
         mock_targets.assert_called_once_with(
+            engine_name="intraday_equity",
             entry_price=100.0,
-            quantity=500,
-            asset_class="INTRADAY_EQUITY",
-            risk_profile="BALANCED",
+            quantity=250,
+            risk_style_name="BALANCED",
             signal_strength=0.7,
             side="BUY",
+            atr=2.0,
+            trailing_atr_multiplier=1.25,
+            engine_helper=engine.engine_helper,
         )
         position = engine.positions["SBIN.NS"]
         self.assertEqual(position["stop_loss"], 99.2)
