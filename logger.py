@@ -78,6 +78,6 @@ def finalize_session_logger():
 
 
 def log_event(message, level="info"):
-    print(message)
+    print(message, flush=True)
     logger = get_logger()
     getattr(logger, level.lower())(message)

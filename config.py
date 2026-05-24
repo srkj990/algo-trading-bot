@@ -365,6 +365,16 @@ class DataCacheConfig:
 
 
 @dataclass(frozen=True)
+class SessionDefaultsConfig:
+    exit_only_default: bool
+    live_broker_resync_interval_seconds: int
+
+    def validate(self) -> None:
+        if self.live_broker_resync_interval_seconds < 0:
+            raise ValueError("session_defaults.live_broker_resync_interval_seconds must be >= 0")
+
+
+@dataclass(frozen=True)
 class RiskControlsConfig:
     daily_max_loss_pct: float
     consecutive_loss_limit: int
@@ -555,6 +565,7 @@ class RuntimeConfig:
     execution_safety: ExecutionSafetyConfig
     transaction_costs: TransactionCostConfig
     data_cache: DataCacheConfig
+    session_defaults: SessionDefaultsConfig
     risk_controls: RiskControlsConfig
     orders: OrderValidationConfig
     trade_store: TradeStoreConfig
@@ -569,6 +580,7 @@ class RuntimeConfig:
         self.execution_safety.validate()
         self.transaction_costs.validate()
         self.data_cache.validate()
+        self.session_defaults.validate()
         self.risk_controls.validate()
         self.orders.validate()
         self.trade_store.validate()
@@ -608,7 +620,7 @@ def _default_runtime_config_map() -> dict[str, Any]:
                 os.getenv("REVERSAL_EXIT_CONFIRMATION_CANDLES", "2")
             ),
             "trailing_activation_stop_distance_multiplier": float(
-                os.getenv("TRAILING_ACTIVATION_STOP_DISTANCE_MULTIPLIER", "0.5")
+                os.getenv("TRAILING_ACTIVATION_STOP_DISTANCE_MULTIPLIER", "1.0")
             ),
             "intraday_equity_entry_cutoff_minutes_before_squareoff": int(
                 os.getenv(
@@ -642,6 +654,15 @@ def _default_runtime_config_map() -> dict[str, Any]:
             "per_cycle_enabled": _parse_bool(
                 os.getenv("DATA_CACHE_PER_CYCLE_ENABLED", "1"),
                 default=True,
+            ),
+        },
+        "session_defaults": {
+            "exit_only_default": _parse_bool(
+                os.getenv("EXIT_ONLY_DEFAULT", "0"),
+                default=False,
+            ),
+            "live_broker_resync_interval_seconds": int(
+                os.getenv("LIVE_BROKER_RESYNC_INTERVAL_SECONDS", "60")
             ),
         },
         "risk_controls": {
@@ -950,35 +971,69 @@ def _default_runtime_config_map() -> dict[str, Any]:
         },
         "backtest_defaults": {
             "risk_styles": {
-                "1": {
-                    "name": "CONSERVATIVE",
-                    "atr_stop_multiplier": 1.5,
-                    "trailing_atr_multiplier": 1.0,
-                    "target_risk_reward": 1.8,
-                    "sl_percent": 0.4,
-                    "target_percent": 0.8,
-                    "trailing_percent": 0.25,
-                    "risk_percent": 0.005,
+                "intraday": {
+                    "1": {
+                        "name": "CONSERVATIVE",
+                        "atr_stop_multiplier": 1.2,
+                        "trailing_atr_multiplier": 0.8,
+                        "target_risk_reward": 1.4,
+                        "sl_percent": 0.4,
+                        "target_percent": 0.8,
+                        "trailing_percent": 0.25,
+                        "risk_percent": 0.005,
+                    },
+                    "2": {
+                        "name": "BALANCED",
+                        "atr_stop_multiplier": 1.35,
+                        "trailing_atr_multiplier": 0.9,
+                        "target_risk_reward": 1.5,
+                        "sl_percent": 0.5,
+                        "target_percent": 1.0,
+                        "trailing_percent": 0.35,
+                        "risk_percent": 0.01,
+                    },
+                    "3": {
+                        "name": "AGGRESSIVE",
+                        "atr_stop_multiplier": 1.5,
+                        "trailing_atr_multiplier": 1.0,
+                        "target_risk_reward": 1.6,
+                        "sl_percent": 0.7,
+                        "target_percent": 1.4,
+                        "trailing_percent": 0.5,
+                        "risk_percent": 0.015,
+                    },
                 },
-                "2": {
-                    "name": "BALANCED",
-                    "atr_stop_multiplier": 2.0,
-                    "trailing_atr_multiplier": 1.25,
-                    "target_risk_reward": 2.0,
-                    "sl_percent": 0.5,
-                    "target_percent": 1.0,
-                    "trailing_percent": 0.35,
-                    "risk_percent": 0.01,
-                },
-                "3": {
-                    "name": "AGGRESSIVE",
-                    "atr_stop_multiplier": 2.5,
-                    "trailing_atr_multiplier": 1.5,
-                    "target_risk_reward": 2.2,
-                    "sl_percent": 0.7,
-                    "target_percent": 1.4,
-                    "trailing_percent": 0.5,
-                    "risk_percent": 0.015,
+                "positional": {
+                    "1": {
+                        "name": "CONSERVATIVE",
+                        "atr_stop_multiplier": 1.5,
+                        "trailing_atr_multiplier": 1.0,
+                        "target_risk_reward": 1.8,
+                        "sl_percent": 0.4,
+                        "target_percent": 0.8,
+                        "trailing_percent": 0.25,
+                        "risk_percent": 0.005,
+                    },
+                    "2": {
+                        "name": "BALANCED",
+                        "atr_stop_multiplier": 1.65,
+                        "trailing_atr_multiplier": 1.25,
+                        "target_risk_reward": 2.0,
+                        "sl_percent": 0.5,
+                        "target_percent": 1.0,
+                        "trailing_percent": 0.35,
+                        "risk_percent": 0.01,
+                    },
+                    "3": {
+                        "name": "AGGRESSIVE",
+                        "atr_stop_multiplier": 1.8,
+                        "trailing_atr_multiplier": 1.5,
+                        "target_risk_reward": 2.2,
+                        "sl_percent": 0.7,
+                        "target_percent": 1.4,
+                        "trailing_percent": 0.5,
+                        "risk_percent": 0.015,
+                    },
                 },
             },
             "default_data": {
@@ -1028,6 +1083,7 @@ def _build_runtime_config() -> RuntimeConfig:
         execution_safety=ExecutionSafetyConfig(**merged["execution_safety"]),
         transaction_costs=TransactionCostConfig(**merged["transaction_costs"]),
         data_cache=DataCacheConfig(**merged["data_cache"]),
+        session_defaults=SessionDefaultsConfig(**merged["session_defaults"]),
         risk_controls=RiskControlsConfig(**merged["risk_controls"]),
         orders=OrderValidationConfig(
             allowed_products=tuple(merged["orders"]["allowed_products"]),
@@ -1259,6 +1315,27 @@ ASSET_CLASS_RISK_PROFILES = {
 def resolve_asset_class(engine_name: str) -> str:
     normalized_engine_name = str(engine_name or "").strip().lower()
     return ENGINE_TO_ASSET_CLASS.get(normalized_engine_name, "INTRADAY_EQUITY")
+
+
+INTRADAY_ENGINE_NAMES = frozenset(
+    {
+        "intraday_equity",
+        "intraday_futures",
+        "intraday_options",
+    }
+)
+
+
+def is_intraday_engine_name(engine_name: str | None) -> bool:
+    return str(engine_name or "").strip().lower() in INTRADAY_ENGINE_NAMES
+
+
+def get_risk_style_presets(engine_name: str | None = None) -> dict[str, dict[str, Any]]:
+    risk_styles = BACKTEST_DEFAULTS["risk_styles"]
+    if "intraday" not in risk_styles or "positional" not in risk_styles:
+        return risk_styles
+    bucket = "intraday" if is_intraday_engine_name(engine_name) else "positional"
+    return risk_styles[bucket]
 
 
 API_KEY = _get_first_env_value(get_broker_env_names("KITE", "API_KEY"))

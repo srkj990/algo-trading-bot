@@ -21,6 +21,8 @@ from config import (
     NIFTY50_SYMBOLS,
     SINGLE_SYMBOL_TABLE,
     get_runtime_config,
+    get_risk_style_presets,
+    resolve_asset_class,
     TRANSACTION_COST_MODEL_ENABLED,
     TRANSACTION_SLIPPAGE_PCT_PER_SIDE,
 )
@@ -53,7 +55,7 @@ from models.position_adapter import (
 )
 from orchestration.positions import normalize_partial_exit_quantity
 from orchestration.signal_workflow import scan_symbols, should_enter_trade
-from risk_manager import atr_position_size, atr_stop_from_value, calculate_target_price
+from risk_manager import atr_position_size
 from signal_scoring import get_atr_value
 from transaction_costs import estimate_intraday_equity_round_trip_cost
 from transaction_costs import (
@@ -61,9 +63,6 @@ from transaction_costs import (
     estimate_futures_round_trip_cost,
     estimate_options_round_trip_cost,
 )
-
-
-RISK_STYLES = BACKTEST_DEFAULTS["risk_styles"]
 
 ENGINE_OPTIONS = {
     "1": IntradayEquityEngine,
@@ -387,7 +386,8 @@ class BacktestEngine:
                     )
                 else:
                     position = self.positions[symbol]
-                    update_trailing_stop(position, latest_prices[symbol], 0)
+                    trailing_distance = float(position.get("trailing_distance") or 0.0)
+                    update_trailing_stop(position, latest_prices[symbol], trailing_distance)
                     exit_reason = self.engine_helper.evaluate_position_exit(position, latest_candle)
                     if exit_reason:
                         exit_fill_price = self._resolve_exit_fill_price(
@@ -743,43 +743,19 @@ class BacktestEngine:
                 continue
 
             entry_price = candidate["latest_close"]
-            stop_data = atr_stop_from_value(
-                candidate["signal"],
-                entry_price,
-                candidate["atr"],
-                self.config.atr_stop_multiplier,
+            actual_targets = calculate_cost_aware_targets(
+                entry_price=entry_price,
+                quantity=qty,
+                asset_class=resolve_asset_class(self.config.engine_name),
+                risk_profile=self.config.risk_style_name,
+                signal_strength=float(candidate.get("score") or 0.5),
+                side=candidate["signal"],
             )
-            actual_targets = dict(candidate.get("cost_aware_targets") or {})
-            if not actual_targets:
-                actual_targets = {
-                    "stop_loss": stop_data["stop_loss_price"],
-                    "target": calculate_target_price(
-                        candidate["signal"],
-                        entry_price,
-                        stop_data["stop_distance"] * self.config.target_risk_reward,
-                    ),
-                    "trailing_stop": (
-                        entry_price - (candidate["atr"] * self.config.trailing_atr_multiplier)
-                        if candidate["signal"] == "BUY"
-                        else entry_price + (candidate["atr"] * self.config.trailing_atr_multiplier)
-                    ),
-                    "multi_level_targets": [],
-                    "cost_to_profit_ratio": 0.0,
-                    "expected_costs": 0.0,
-                    "expected_net_profit": 0.0,
-                    "min_breakeven_price": entry_price,
-                    "asset_class": self.config.engine_name.upper(),
-                    "risk_profile": self.config.risk_style_name,
-                }
             trailing_distance = candidate["atr"] * self.config.trailing_atr_multiplier
-            trailing_stop = (
-                entry_price - trailing_distance
-                if candidate["signal"] == "BUY"
-                else entry_price + trailing_distance
-            )
+            stop_distance = abs(float(entry_price) - float(actual_targets["stop_loss"]))
             trailing_activation_distance = max(
                 float(trailing_distance),
-                float(stop_data["stop_distance"]),
+                float(stop_distance),
             )
             if self.config.engine_name == "delivery_equity":
                 trailing_activation_distance = self.engine_helper.get_trailing_activation_distance(
@@ -788,14 +764,6 @@ class BacktestEngine:
                     candidate["atr"],
                 )
             if self.config.engine_name == "intraday_options":
-                actual_targets = calculate_cost_aware_targets(
-                    entry_price=entry_price,
-                    quantity=qty,
-                    asset_class="INTRADAY_OPTIONS",
-                    risk_profile=self.config.risk_style_name,
-                    signal_strength=float(candidate.get("score") or 0.5),
-                    side=candidate["signal"],
-                )
                 try:
                     self.positions[candidate["symbol"]] = self.engine_helper.build_trend_adaptive_position(
                         symbol=candidate["symbol"],
@@ -842,7 +810,7 @@ class BacktestEngine:
                     trailing_activation_distance=trailing_activation_distance,
                     trailing_active=False,
                     atr=candidate["atr"],
-                    stop_distance=abs(float(entry_price) - float(actual_targets["stop_loss"])),
+                    stop_distance=stop_distance,
                     entry_time=pd.Timestamp(timestamp).isoformat(),
                     engine_name=self.config.engine_name,
                     execution_mode="PAPER",
@@ -936,7 +904,8 @@ class BacktestEngine:
             self._exit_position(symbol, exit_fill_price, timestamp, str(exit_reason))
             return
 
-        update_trailing_stop(position, float(latest_close), 0)
+        trailing_distance = float(position.get("trailing_distance") or 0.0)
+        update_trailing_stop(position, float(latest_close), trailing_distance)
 
     def _partial_exit_position(self, *, symbol, exit_price, timestamp, action, snapshot):
         position = self.positions.get(symbol)
@@ -1654,7 +1623,8 @@ def prompt_backtest_config():
         "Choose the risk style that controls ATR stop, trailing stop, and capital risk.",
         "2 for BALANCED",
     )
-    risk_style = RISK_STYLES[
+    risk_styles = get_risk_style_presets(engine_class.name)
+    risk_style = risk_styles[
         prompt_choice(
             f"Risk style: CONSERVATIVE(1), BALANCED(2), AGGRESSIVE(3)? [default {_prompt_default_int('risk_style', 2)}]: ",
             [

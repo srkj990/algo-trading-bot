@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -14,6 +15,7 @@ class SessionEntrySizingTests(unittest.TestCase):
             config=SimpleNamespace(
                 execution_mode="LIVE",
                 exit_only_mode=True,
+                live_broker_resync_interval_seconds=60,
             ),
             engine=SimpleNamespace(
                 reconcile_startup=Mock(
@@ -28,10 +30,11 @@ class SessionEntrySizingTests(unittest.TestCase):
                 )
             ),
             positions={},
+            session_runtime_state={},
             log_event=Mock(),
         )
 
-        changed = _sync_exit_only_live_positions(context)
+        changed = _sync_exit_only_live_positions(context, datetime(2026, 5, 24, 10, 0, 0))
 
         self.assertTrue(changed)
         self.assertIn("NFO:MANUALCE", context.positions)

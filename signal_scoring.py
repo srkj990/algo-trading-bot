@@ -1,7 +1,7 @@
 from config import MIN_CANDLES
 from config import MIN_RANKED_CANDIDATE_SCORE
 from indicators import compute_atr, compute_rsi, compute_vwap
-from strategy import generate_signal_payload
+from strategy import generate_signal_payload, get_breakout_reference_levels
 
 
 def get_strategy_score(strategy_name, df, signal_payload):
@@ -31,9 +31,8 @@ def get_strategy_score(strategy_name, df, signal_payload):
             score = max(0.0, (30 - rsi) / 100) if signal == "BUY" else max(0.0, (rsi - 70) / 100)
 
     elif strategy_name == "BREAKOUT" and len(df) >= MIN_CANDLES["BREAKOUT"]:
-        prev_high = float(df["High"].rolling(20).max().iloc[-2])
-        prev_low = float(df["Low"].rolling(20).min().iloc[-2])
-        if close > 0:
+        prev_high, prev_low = get_breakout_reference_levels(df, lookback=20)
+        if prev_high is not None and prev_low is not None and close > 0:
             score = max(0.0, (close - prev_high) / close) if signal == "BUY" else max(0.0, (prev_low - close) / close)
 
     elif strategy_name == "VWAP":

@@ -199,17 +199,30 @@ def _get_risk_pause_status(context, now):
     return True, context.session_runtime_state.get("risk_pause_reason")
 
 
-def _sync_exit_only_live_positions(context):
+def _sync_exit_only_live_positions(context, now):
     if str(getattr(context.config, "execution_mode", "")).upper() != "LIVE":
         return False
     if not bool(getattr(context.config, "exit_only_mode", False)):
         return False
+    resync_interval_seconds = int(
+        getattr(context.config, "live_broker_resync_interval_seconds", 0) or 0
+    )
+    last_resync_at = context.session_runtime_state.get("last_live_broker_resync_at")
+    if resync_interval_seconds > 0 and last_resync_at:
+        try:
+            last_resync_dt = datetime.fromisoformat(str(last_resync_at))
+        except ValueError:
+            last_resync_dt = None
+        if last_resync_dt is not None:
+            if (now - last_resync_dt).total_seconds() < resync_interval_seconds:
+                return False
 
     existing_positions = dict(context.positions)
     reconciled_positions = context.engine.reconcile_startup(
         execution_mode=context.config.execution_mode,
         persisted_positions=existing_positions,
     )
+    context.session_runtime_state["last_live_broker_resync_at"] = now.isoformat()
     if reconciled_positions == existing_positions:
         return False
 
@@ -412,6 +425,20 @@ def _maybe_roll_dynamic_atm_positions(context, symbol_snapshots, now) -> bool:
 def run_trading_session(context):
     cfg = context.config
     engine = context.engine
+    context.log_event("[MAIN] Trading session initialized")
+    context.log_event(
+        f"[MAIN] Engine={engine.name} | Mode={cfg.execution_mode} | ExitOnly={bool(getattr(cfg, 'exit_only_mode', False))} | "
+        f"OpenPositions={len(context.positions)} | Sleep={int(getattr(engine, 'sleep_seconds', 60))}s"
+    )
+    if str(getattr(cfg, "execution_mode", "")).upper() == "LIVE":
+        context.log_event(
+            f"[MAIN] Live execution provider={getattr(cfg, 'execution_provider', 'KITE')} | "
+            f"Broker resync interval={int(getattr(cfg, 'live_broker_resync_interval_seconds', 0) or 0)}s"
+        )
+    if context.positions:
+        context.log_event(f"[MAIN] Restored {len(context.positions)} persisted/open position(s) at startup")
+    else:
+        context.log_event("[MAIN] No persisted/open positions at startup")
 
     while True:
         context.cycle_data_cache.clear()
@@ -442,7 +469,7 @@ def run_trading_session(context):
             persist_runtime_state(context)
 
         cycle_state = engine.get_cycle_state(now)
-        if _sync_exit_only_live_positions(context):
+        if _sync_exit_only_live_positions(context, now):
             persist_runtime_state(context)
         context.log_event("\n==============================")
         context.log_event("New Cycle Started")
@@ -450,6 +477,7 @@ def run_trading_session(context):
         context.log_event(f"[SESSION] {cycle_state['reason']}")
 
         if cycle_state["force_square_off"]:
+            context.log_event("[SESSION] Force square-off path active")
             if position_flow.force_square_off_positions(
                 engine,
                 context.positions,
@@ -468,11 +496,19 @@ def run_trading_session(context):
             continue
 
         if not cycle_state["allow_scan"] and not (cycle_state["manage_positions"] and context.positions):
+            context.log_event(
+                f"[SESSION] Idle: {cycle_state['reason']} | OpenPositions={len(context.positions)} | "
+                f"Sleeping {int(getattr(engine, 'sleep_seconds', 60))}s"
+            )
             log_positions(context.positions, context.log_event)
             time.sleep(engine.sleep_seconds)
             continue
 
         try:
+            context.log_event(
+                f"[SCAN] Starting scan cycle | Symbols={len(getattr(cfg, 'selected_symbols', []) or [])} | "
+                f"ManagePositions={bool(cycle_state['manage_positions'])} | AllowEntries={bool(cycle_state['allow_entries'])}"
+            )
             scan_result = scan_symbols(context, now)
         except Exception as exc:
             context.log_event(f"[ERROR] Scan cycle failed: {type(exc).__name__}: {exc}", "error")

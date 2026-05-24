@@ -155,10 +155,23 @@ def rsi_strategy(df):
     return "HOLD"
 
 
+def get_breakout_reference_levels(df, lookback=20):
+    required_candles = int(lookback) + 1
+    if len(df) < required_candles:
+        return None, None
+
+    reference_window = df.iloc[-required_candles:-1]
+    prev_high = float(reference_window["High"].max())
+    prev_low = float(reference_window["Low"].min())
+    return prev_high, prev_low
+
+
 def breakout_strategy(df):
+    prev_high, prev_low = get_breakout_reference_levels(df, lookback=20)
+    if prev_high is None or prev_low is None:
+        return "HOLD"
+
     latest = df.iloc[-1]
-    prev_high = df["High"].rolling(20).max().iloc[-2]
-    prev_low = df["Low"].rolling(20).min().iloc[-2]
     close = float(latest["Close"])
 
     if close > prev_high:

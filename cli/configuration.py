@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from config import get_broker_ip_mode, get_runtime_config, get_upstox_static_ip
+from config import (
+    get_broker_ip_mode,
+    get_risk_style_presets,
+    get_runtime_config,
+    get_upstox_static_ip,
+)
 from data_fetcher import set_data_provider
 from engines.base import TradingEngine
 from engines import (
@@ -30,39 +35,6 @@ from fno_data_fetcher import (
 from logger import log_event
 
 from . import interactive_input as cli_input
-
-RISK_STYLES = {
-    "1": {
-        "name": "CONSERVATIVE",
-        "atr_stop_multiplier": 1.5,
-        "trailing_atr_multiplier": 1.0,
-        "target_risk_reward": 1.8,
-        "sl_percent": 0.4,
-        "target_percent": 0.8,
-        "trailing_percent": 0.25,
-        "risk_percent": 0.005,
-    },
-    "2": {
-        "name": "BALANCED",
-        "atr_stop_multiplier": 2.0,
-        "trailing_atr_multiplier": 1.25,
-        "target_risk_reward": 2.0,
-        "sl_percent": 0.5,
-        "target_percent": 1.0,
-        "trailing_percent": 0.35,
-        "risk_percent": 0.01,
-    },
-    "3": {
-        "name": "AGGRESSIVE",
-        "atr_stop_multiplier": 2.5,
-        "trailing_atr_multiplier": 1.5,
-        "target_risk_reward": 2.2,
-        "sl_percent": 0.7,
-        "target_percent": 1.4,
-        "trailing_percent": 0.5,
-        "risk_percent": 0.015,
-    },
-}
 
 DEFAULT_CONFIRMATIONS = {
     2: 2,
@@ -93,6 +65,7 @@ class SessionConfig:
     engine: TradingEngine
     execution_mode: str
     exit_only_mode: bool
+    live_broker_resync_interval_seconds: int
     data_provider: str
     execution_provider: str
     capital: float
@@ -148,6 +121,8 @@ def validate_session_config(config: SessionConfig) -> SessionConfig:
     if config.execution_mode == "LIVE" and runtime_config.orders.enabled:
         if config.execution_provider not in {"KITE", "UPSTOX"}:
             raise ValueError("Live execution provider must be KITE or UPSTOX")
+    if config.live_broker_resync_interval_seconds < 0:
+        raise ValueError("Live broker resync interval must be >= 0")
     if config.intraday_options_lot_mode not in {None, "ONE_LOT", "CAPITAL_BASED"}:
         raise ValueError("Intraday options lot mode must be ONE_LOT or CAPITAL_BASED")
     if config.intraday_options_entry_mode not in {None, "LIVE_STAGED", "LEGACY_IMMEDIATE"}:
@@ -576,22 +551,18 @@ def collect_session_configuration() -> SessionConfig:
     set_execution_mode(execution_mode)
     log_event(f"[MAIN] Execution mode selected: {execution_mode}")
 
-    log_event("[SETUP] Session behavior - choose whether the bot may open new entries")
-    log_event("[SETUP]   NORMAL: manage open positions and allow fresh entries")
-    log_event("[SETUP]   EXIT ONLY: reconcile broker positions and manage exits, but never open new entries")
-    log_help("Choose EXIT ONLY if you want the engine to manage manually-opened same-day positions without taking new trades. Example: 2 for EXIT ONLY")
-    exit_only_mode = cli_input.prompt_choice(
-        "Session behavior: NORMAL(1) or EXIT ONLY(2)? [default 1]: ",
-        [
-            {"label": "NORMAL", "key": 1, "value": "NORMAL"},
-            {"label": "EXIT ONLY", "key": 2, "value": "EXIT_ONLY"},
-        ],
-        default=1,
-    ) == "EXIT_ONLY"
+    exit_only_mode = bool(runtime_config.session_defaults.exit_only_default)
+    live_broker_resync_interval_seconds = int(
+        runtime_config.session_defaults.live_broker_resync_interval_seconds
+    )
     log_event(
-        "[MAIN] Session behavior selected: "
+        "[MAIN] Session behavior from config: "
         + ("EXIT ONLY - no new entries will be placed" if exit_only_mode else "NORMAL")
     )
+    if execution_mode == "LIVE":
+        log_event(
+            f"[MAIN] Live broker resync interval from config: {live_broker_resync_interval_seconds}s"
+        )
 
     if is_fno_engine:
         data_provider = "KITE"
@@ -656,10 +627,11 @@ def collect_session_configuration() -> SessionConfig:
     else:
         selected_symbols, symbol_mode = cli_input.prompt_symbol_selection()
 
+    risk_styles = get_risk_style_presets(ENGINE_OPTIONS[engine_choice].name)
     log_event("[SETUP] Choose risk style - affects stop-loss distance and position sizing")
-    log_event("[SETUP]   CONSERVATIVE: 1.5x ATR stops, 0.5% risk per trade, safer but fewer trades")
-    log_event("[SETUP]   BALANCED: 2.0x ATR stops, 1.0% risk per trade, good balance")
-    log_event("[SETUP]   AGGRESSIVE: 2.5x ATR stops, 1.5% risk per trade, higher risk/reward")
+    log_event("[SETUP]   CONSERVATIVE: tight stops, 0.5% risk per trade, lower reward expectations")
+    log_event("[SETUP]   BALANCED: moderate stops, 1.0% risk per trade, general-purpose default")
+    log_event("[SETUP]   AGGRESSIVE: wider stops, 1.5% risk per trade, higher reward expectations")
     log_help("Choose how aggressive the stop-loss and position sizing should be. Example: 2 for BALANCED")
 
     risk_style_key = cli_input.prompt_choice(
@@ -671,7 +643,7 @@ def collect_session_configuration() -> SessionConfig:
         ],
         default=2,
     )
-    risk_style = RISK_STYLES[risk_style_key]
+    risk_style = risk_styles[risk_style_key]
     atr_stop_multiplier = risk_style["atr_stop_multiplier"]
     trailing_atr_multiplier = risk_style["trailing_atr_multiplier"]
     target_risk_reward = risk_style["target_risk_reward"]
@@ -843,6 +815,7 @@ def collect_session_configuration() -> SessionConfig:
         engine=engine,
         execution_mode=execution_mode,
         exit_only_mode=exit_only_mode,
+        live_broker_resync_interval_seconds=live_broker_resync_interval_seconds,
         data_provider=data_provider,
         execution_provider=execution_provider,
         capital=capital,

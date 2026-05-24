@@ -228,6 +228,117 @@ class BacktestWorkflowTests(unittest.TestCase):
         self.assertFalse(engine.positions)
         self.assertEqual(engine.trades, [])
 
+    def test_enter_ranked_candidates_uses_cost_aware_targets_for_runtime_parity(self) -> None:
+        config = BacktestConfig(
+            engine_name="intraday_equity",
+            capital=100000.0,
+            period="5d",
+            interval="5m",
+            strategy_mode="SINGLE",
+            strategy_name="MA",
+            strategies=("MA",),
+            min_confirmations=1,
+            risk_percent=0.01,
+            atr_stop_multiplier=2.0,
+            trailing_atr_multiplier=1.25,
+            target_risk_reward=2.0,
+            risk_style_name="BALANCED",
+            top_n=1,
+            max_positions=1,
+            max_capital_per_trade=100000.0,
+            max_capital_deployed=100000.0,
+            universe=("SBIN.NS",),
+        )
+        engine = BacktestEngine(config)
+        candidate = {
+            "symbol": "SBIN.NS",
+            "signal": "BUY",
+            "agreement_count": 1,
+            "score": 0.7,
+            "latest_close": 100.0,
+            "atr": 2.0,
+            "strategy": "MA",
+            "reason": "test",
+        }
+        actual_targets = {
+            "stop_loss": 99.2,
+            "target": 101.5,
+            "trailing_stop": 99.65,
+            "multi_level_targets": [],
+            "cost_to_profit_ratio": 0.1,
+            "expected_costs": 5.0,
+            "expected_net_profit": 10.0,
+            "min_breakeven_price": 100.2,
+            "asset_class": "INTRADAY_EQUITY",
+            "risk_profile": "BALANCED",
+        }
+
+        with patch("backtesting.should_enter_trade", return_value=True), \
+             patch("backtesting.calculate_cost_aware_targets", return_value=actual_targets) as mock_targets:
+            engine._enter_ranked_candidates([candidate], pd.Timestamp("2026-05-18 10:00:00+05:30"))
+
+        mock_targets.assert_called_once_with(
+            entry_price=100.0,
+            quantity=500,
+            asset_class="INTRADAY_EQUITY",
+            risk_profile="BALANCED",
+            signal_strength=0.7,
+            side="BUY",
+        )
+        position = engine.positions["SBIN.NS"]
+        self.assertEqual(position["stop_loss"], 99.2)
+        self.assertEqual(position["target"], 101.5)
+        self.assertEqual(position["trailing_stop"], 99.65)
+
+    def test_process_timestamp_uses_position_trailing_distance_in_backtest_loop(self) -> None:
+        config = BacktestConfig(
+            engine_name="intraday_equity",
+            capital=100000.0,
+            period="5d",
+            interval="5m",
+            strategy_mode="SINGLE",
+            strategy_name="MA",
+            strategies=("MA",),
+            min_confirmations=1,
+            risk_percent=0.01,
+            atr_stop_multiplier=2.0,
+            trailing_atr_multiplier=1.25,
+            target_risk_reward=2.0,
+            risk_style_name="BALANCED",
+            top_n=1,
+            max_positions=1,
+            max_capital_per_trade=100000.0,
+            max_capital_deployed=100000.0,
+            universe=("SBIN.NS",),
+        )
+        engine = BacktestEngine(config)
+        engine.positions["SBIN.NS"] = {
+            "symbol": "SBIN.NS",
+            "side": "BUY",
+            "quantity": 10,
+            "entry_price": 100.0,
+            "stop_loss": 95.0,
+            "target": 110.0,
+            "trailing_stop": 97.0,
+            "trailing_distance": 3.5,
+            "best_price": 100.0,
+            "trailing_active": False,
+        }
+        history = {
+            "SBIN.NS": pd.DataFrame(
+                [{"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.5, "Volume": 0}],
+                index=[pd.Timestamp("2026-05-18 10:00:00+05:30")],
+            )
+        }
+
+        with patch("backtesting.update_trailing_stop") as mock_trail, \
+             patch.object(engine.engine_helper, "evaluate_position_exit", return_value=None), \
+             patch("backtesting.scan_symbols", return_value=SimpleNamespace(ranked_candidates=[], symbol_snapshots={})), \
+             patch.object(engine, "_mark_equity"):
+            engine._process_timestamp(history, pd.Timestamp("2026-05-18 10:00:00+05:30"))
+
+        mock_trail.assert_called_once_with(engine.positions["SBIN.NS"], 100.5, 3.5)
+
 
 if __name__ == "__main__":
     unittest.main()
