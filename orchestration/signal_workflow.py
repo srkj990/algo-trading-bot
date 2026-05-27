@@ -477,6 +477,11 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
                         if hasattr(engine, "get_premium_volatility_trailing_distance")
                         else 0.0
                     ),
+                    "equity_volatility_distance": (
+                        engine.get_equity_volatility_trailing_distance(contract_data)
+                        if hasattr(engine, "get_equity_volatility_trailing_distance")
+                        else 0.0
+                    ),
                     "trade_identity": trade_identity,
                     "strategy": evaluation.get("strategy"),
                     "option_signal": evaluation.get("option_signal"),

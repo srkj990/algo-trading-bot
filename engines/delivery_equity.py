@@ -21,7 +21,9 @@ class DeliveryEquityEngine(TradingEngine):
     supported_strategies = {
         "1": "MA",
         "2": "RSI",
-        "3": "BREAKOUT",
+        "3": "VWAP",
+        "4": "BREAKOUT",
+        "5": "ORB",
     }
     market_open = time(9, 15)
     market_close = time(15, 30)

@@ -53,7 +53,7 @@ from models.position_adapter import (
 )
 from orchestration.positions import normalize_partial_exit_quantity
 from orchestration.signal_workflow import scan_symbols, should_enter_trade
-from risk_manager import atr_position_size
+from risk_manager import atr_position_size, position_size
 from signal_scoring import get_atr_value
 from transaction_costs import estimate_intraday_equity_round_trip_cost
 from transaction_costs import (
@@ -87,8 +87,12 @@ BACKTEST_DEFAULT_DATA = {
     )
     for engine_name, values in BACKTEST_DEFAULTS["default_data"].items()
 }
-BACKTEST_ENGINE_SL_TARGET_DEFAULTS = BACKTEST_DEFAULTS["engine_sl_target_defaults"]
 BACKTEST_PROMPT_DEFAULTS = BACKTEST_DEFAULTS["prompt_defaults"]
+ENGINE_FALLBACK_LEVELS = {
+    "sl_percent": 0.5,
+    "target_percent": 1.0,
+    "trailing_percent": 0.35,
+}
 RESULTS_DIR = Path("Results") / "BackTest"
 VALID_BACKTEST_PERIODS = (
     "1d",
@@ -172,9 +176,9 @@ class BacktestEngine:
         self.engine_helper = self._build_engine_helper()
 
     def _build_engine_helper(self):
-        sl_percent = float(BACKTEST_ENGINE_SL_TARGET_DEFAULTS["sl_percent"])
-        target_percent = float(BACKTEST_ENGINE_SL_TARGET_DEFAULTS["target_percent"])
-        trailing_percent = float(BACKTEST_ENGINE_SL_TARGET_DEFAULTS["trailing_percent"])
+        sl_percent = float(ENGINE_FALLBACK_LEVELS["sl_percent"])
+        target_percent = float(ENGINE_FALLBACK_LEVELS["target_percent"])
+        trailing_percent = float(ENGINE_FALLBACK_LEVELS["trailing_percent"])
         if self.config.engine_name == "intraday_equity":
             return IntradayEquityEngine(sl_percent, target_percent, trailing_percent)
         if self.config.engine_name == "delivery_equity":
@@ -211,7 +215,7 @@ class BacktestEngine:
             if hasattr(data.columns, "levels"):
                 data.columns = [col[0] for col in data.columns]
             if not data.empty:
-                history[symbol] = data.sort_index()
+                history[symbol] = self._normalize_history_frame(data)
         if self.config.engine_name == "delivery_equity":
             index_data = yf.download(
                 "^NSEI",
@@ -223,8 +227,20 @@ class BacktestEngine:
             if hasattr(index_data.columns, "levels"):
                 index_data.columns = [col[0] for col in index_data.columns]
             if not index_data.empty:
-                history[self.engine_helper.nifty_trend_symbol] = index_data.sort_index()
+                history[self.engine_helper.nifty_trend_symbol] = self._normalize_history_frame(
+                    index_data
+                )
         return history
+
+    @staticmethod
+    def _normalize_history_frame(dataframe):
+        normalized = dataframe.copy()
+        normalized.index = pd.to_datetime(normalized.index)
+        if getattr(normalized.index, "tz", None) is not None:
+            normalized.index = (
+                normalized.index.tz_convert("Asia/Kolkata").tz_localize(None)
+            )
+        return normalized.sort_index()
 
     def _fetch_intraday_options_history(self):
         settings = dict(self.config.option_backtest_settings or {})
@@ -252,7 +268,7 @@ class BacktestEngine:
                 f"No underlying historical data fetched for {base_symbol} ({underlying_symbol})."
             )
 
-        underlying_data = underlying_data.sort_index()
+        underlying_data = self._normalize_history_frame(underlying_data)
         strikes = get_available_option_strikes(base_symbol, expiry)
         if not strikes:
             raise RuntimeError(
@@ -296,7 +312,7 @@ class BacktestEngine:
                     option_data.columns = [col[0] for col in option_data.columns]
                 if option_data.empty:
                     continue
-                history[contract_symbol] = option_data.sort_index()
+                history[contract_symbol] = self._normalize_history_frame(option_data)
                 contracts[(int(strike), option_type)] = contract_symbol
 
         if not contracts:
@@ -695,6 +711,23 @@ class BacktestEngine:
                         float(remaining_deployable),
                     )
                     qty = int(available_capital / candidate["latest_close"])
+            elif (
+                self.config.engine_name == "intraday_equity"
+                and hasattr(self.engine_helper, "get_trend_adaptive_level_spec")
+            ):
+                level_spec = self.engine_helper.get_trend_adaptive_level_spec(
+                    entry_price=float(candidate["latest_close"]),
+                    side=candidate["signal"],
+                    atr=float(candidate["atr"] or 0.0),
+                    signal_score=float(candidate.get("score") or 0.0),
+                    volatility_distance=float(candidate.get("equity_volatility_distance") or 0.0),
+                )
+                qty = position_size(
+                    current_equity,
+                    float(candidate["latest_close"]),
+                    float(level_spec["stop_loss_price"]),
+                    self.config.risk_percent,
+                )
             else:
                 sizing = atr_position_size(
                     capital=current_equity,
@@ -789,6 +822,32 @@ class BacktestEngine:
                 except ValueError:
                     continue
                 self.positions[candidate["symbol"]]["min_breakeven_price"] = float(actual_targets["min_breakeven_price"])
+            elif (
+                self.config.engine_name == "intraday_equity"
+                and hasattr(self.engine_helper, "build_trend_adaptive_position")
+            ):
+                self.positions[candidate["symbol"]] = self.engine_helper.build_trend_adaptive_position(
+                    symbol=candidate["symbol"],
+                    side=candidate["signal"],
+                    quantity=qty,
+                    entry_price=entry_price,
+                    atr=float(candidate["atr"] or 0.0),
+                    signal_score=float(candidate.get("score") or 0.0),
+                    now=pd.Timestamp(timestamp).to_pydatetime(),
+                    engine_name=self.config.engine_name,
+                    execution_mode="PAPER",
+                    order_product=getattr(self.engine_helper, "order_product", "MIS"),
+                    volatility_distance=float(candidate.get("equity_volatility_distance") or 0.0),
+                    extra_fields={
+                        "trade_identity": trade_identity,
+                        "asset_class": actual_targets["asset_class"],
+                        "risk_profile": actual_targets["risk_profile"],
+                        "min_breakeven_price": actual_targets["min_breakeven_price"],
+                        "expected_costs": actual_targets["expected_costs"],
+                        "expected_net_profit": actual_targets["expected_net_profit"],
+                        "cost_to_profit_ratio": actual_targets["cost_to_profit_ratio"],
+                    },
+                )
             else:
                 self.positions[candidate["symbol"]] = build_position(
                     symbol=candidate["symbol"],
@@ -843,8 +902,12 @@ class BacktestEngine:
 
     def _build_entry_context(self):
         return SimpleNamespace(
-            engine=SimpleNamespace(name=self.config.engine_name),
-            config=SimpleNamespace(risk_style_name=self.config.risk_style_name),
+            engine=self.engine_helper,
+            config=SimpleNamespace(
+                risk_style_name=self.config.risk_style_name,
+                trailing_atr_multiplier=self.config.trailing_atr_multiplier,
+            ),
+            runtime_config=get_runtime_config(),
             log_event=lambda *args, **kwargs: None,
         )
 
@@ -1458,12 +1521,16 @@ def prompt_multi_strategy_selection(strategy_options):
         print(f"{key}. {value}")
     print_prompt_help(
         "Enter one or more strategy numbers separated by commas.",
-        "1,3,5",
+        "1,2,4 for MA, RSI, BREAKOUT",
     )
     raw = input("Enter comma-separated strategy numbers: ").strip()
     selected_keys = [item.strip() for item in raw.split(",") if item.strip()]
     if not selected_keys:
-        selected_keys = [next(iter(strategy_options))]
+        selected_keys = [
+            key
+            for key, value in strategy_options.items()
+            if value in {"MA", "RSI", "BREAKOUT"}
+        ] or [next(iter(strategy_options))]
     selected = []
     for key in selected_keys:
         value = strategy_options.get(key)
@@ -1496,16 +1563,16 @@ def prompt_strategy_setup(engine_class):
     if engine_class.name == "intraday_equity":
         print_prompt_help(
             "Choose whether to run one strategy, a combination, or auto-adaptive intraday equity mode.",
-            "3 for Auto Adaptive",
+            "2 for Multi",
         )
         mode = prompt_choice(
-            f"Strategy mode: Single(1), Multi(2), Auto Adaptive(3) [default {_prompt_default_int('intraday_equity_strategy_mode', 1)}]: ",
+            f"Strategy mode: Single(1), Multi(2), Auto Adaptive(3) [default {_prompt_default_int('intraday_equity_strategy_mode', 2)}]: ",
             [
                 {"key": 1, "value": "SINGLE"},
                 {"key": 2, "value": "MULTI"},
                 {"key": 3, "value": "AUTO_ADAPTIVE"},
             ],
-            default=_prompt_default_int("intraday_equity_strategy_mode", 1),
+            default=_prompt_default_int("intraday_equity_strategy_mode", 2),
         )
         if mode == "AUTO_ADAPTIVE":
             return (
@@ -1517,15 +1584,15 @@ def prompt_strategy_setup(engine_class):
     else:
         print_prompt_help(
             "Choose whether to run one strategy or combine multiple strategies.",
-            "1 for Single",
+            "2 for Multi",
         )
         mode = prompt_choice(
-            f"Strategy mode: Single(1) or Multi(2) [default {_prompt_default_int('default_strategy_mode', 1)}]: ",
+            f"Strategy mode: Single(1) or Multi(2) [default {_prompt_default_int('default_strategy_mode', 2)}]: ",
             [
                 {"key": 1, "value": "SINGLE"},
                 {"key": 2, "value": "MULTI"},
             ],
-            default=_prompt_default_int("default_strategy_mode", 1),
+            default=_prompt_default_int("default_strategy_mode", 2),
         )
 
     if mode == "SINGLE":

@@ -5,6 +5,7 @@ from engines.base import TradingEngine
 from engines.common import build_position, evaluate_exit
 from executor import get_intraday_positions
 from logger import log_event
+from risk_manager import calculate_target_price
 from config import (
     ENGINE_DEFAULTS,
     INTRADAY_EQUITY_AUTO_NORMAL_MIN_CONFIRMATIONS,
@@ -132,6 +133,169 @@ class IntradayEquityEngine(TradingEngine):
         capital,
     ):
         return quantity
+
+    @staticmethod
+    def _adaptive_regime_label(signal_score, range_distance, entry_price, atr):
+        entry_price = max(float(entry_price or 0.0), 0.01)
+        score = min(1.0, max(0.0, float(signal_score or 0.0)))
+        range_ratio = float(range_distance or 0.0) / entry_price
+        atr_ratio = float(atr or 0.0) / entry_price
+        if score >= 0.035 or range_ratio >= 0.006:
+            return "EXPANSION"
+        if score <= 0.008 and atr_ratio <= 0.003:
+            return "SIDEWAYS"
+        return "NORMAL"
+
+    def get_equity_volatility_trailing_distance(self, intraday_df):
+        if intraday_df is None or intraday_df.empty:
+            return 0.0
+        session_df = intraday_df.loc[
+            intraday_df.index.date == intraday_df.index[-1].date()
+        ]
+        if session_df.empty:
+            return 0.0
+        lookback = max(5, int(self.opening_range_candles))
+        recent = session_df.tail(lookback)
+        recent_ranges = recent["High"] - recent["Low"]
+        avg_range = float(recent_ranges.mean()) if not recent_ranges.empty else 0.0
+        if avg_range != avg_range:
+            return 0.0
+        return max(0.0, avg_range * float(self.breakout_volume_multiplier))
+
+    def get_trend_adaptive_level_spec(
+        self,
+        *,
+        entry_price,
+        side,
+        atr,
+        signal_score,
+        analytics=None,
+        volatility_distance=None,
+    ):
+        del analytics
+        regime = self._adaptive_regime_label(
+            signal_score,
+            volatility_distance,
+            entry_price,
+            atr,
+        )
+        base_atr = max(float(atr or 0.0), float(entry_price) * 0.0015)
+        normalized_score = min(1.0, max(0.0, float(signal_score or 0.0)))
+        conviction = 1.0 + (normalized_score * 0.5)
+
+        stop_multiplier = {
+            "SIDEWAYS": 1.6,
+            "NORMAL": 1.4,
+            "EXPANSION": 1.4,
+        }[regime]
+        target_multiplier = {
+            "SIDEWAYS": 1.1,
+            "NORMAL": 1.6,
+            "EXPANSION": 2.2,
+        }[regime]
+        trailing_multiplier = {
+            "SIDEWAYS": 0.8,
+            "NORMAL": 1.0,
+            "EXPANSION": 1.15,
+        }[regime]
+
+        stop_distance = max(float(entry_price) * 0.0025, base_atr * stop_multiplier)
+        target_distance = max(
+            float(entry_price) * 0.0045,
+            base_atr * target_multiplier * conviction,
+        )
+        atr_trailing_distance = max(
+            float(entry_price) * 0.002,
+            base_atr * trailing_multiplier,
+        )
+        range_distance = max(float(volatility_distance or 0.0), 0.0)
+        trailing_distance = max(atr_trailing_distance, range_distance)
+        level1_distance = target_distance * 0.5
+        level2_distance = target_distance
+        level3_distance = target_distance * 1.6
+        stop_loss_price = (
+            float(entry_price) - stop_distance
+            if side == "BUY"
+            else float(entry_price) + stop_distance
+        )
+        return {
+            "adaptive_regime": regime,
+            "adaptive_signal_score": normalized_score,
+            "stop_distance": stop_distance,
+            "stop_loss_price": max(0.01, stop_loss_price),
+            "atr_trailing_distance": atr_trailing_distance,
+            "range_volatility_distance": range_distance,
+            "trailing_distance": trailing_distance,
+            "level1_target": max(
+                0.01,
+                calculate_target_price(side, float(entry_price), level1_distance),
+            ),
+            "level2_target": max(
+                0.01,
+                calculate_target_price(side, float(entry_price), level2_distance),
+            ),
+            "level3_target": max(
+                0.01,
+                calculate_target_price(side, float(entry_price), level3_distance),
+            ),
+            "trailing_activation_distance": max(
+                float(trailing_distance),
+                float(level1_distance) * 0.8,
+            ),
+        }
+
+    def build_trend_adaptive_position(
+        self,
+        *,
+        symbol,
+        side,
+        quantity,
+        entry_price,
+        atr,
+        signal_score,
+        now,
+        engine_name,
+        execution_mode,
+        order_product,
+        volatility_distance=None,
+        extra_fields=None,
+    ):
+        level_spec = self.get_trend_adaptive_level_spec(
+            entry_price=entry_price,
+            side=side,
+            atr=atr,
+            signal_score=signal_score,
+            volatility_distance=volatility_distance,
+        )
+        payload = {
+            "symbol": symbol,
+            "side": side,
+            "quantity": quantity,
+            "entry_price": float(entry_price),
+            "stop_loss": level_spec["stop_loss_price"],
+            "target": level_spec["level3_target"],
+            "trailing_stop": level_spec["stop_loss_price"],
+            "trailing_distance": level_spec["trailing_distance"],
+            "trailing_activation_distance": level_spec["trailing_activation_distance"],
+            "trailing_active": False,
+            "atr": atr,
+            "stop_distance": level_spec["stop_distance"],
+            "entry_time": now.isoformat(),
+            "engine_name": engine_name,
+            "execution_mode": execution_mode,
+            "order_product": order_product,
+            "adaptive_levels_enabled": True,
+            "adaptive_regime": level_spec["adaptive_regime"],
+            "adaptive_signal_score": level_spec["adaptive_signal_score"],
+            "adaptive_level1_target": level_spec["level1_target"],
+            "adaptive_level2_target": level_spec["level2_target"],
+            "adaptive_level3_target": level_spec["level3_target"],
+            "range_volatility_distance": level_spec["range_volatility_distance"],
+            "atr_trailing_distance": level_spec["atr_trailing_distance"],
+        }
+        if extra_fields:
+            payload.update(extra_fields)
+        return build_position(**payload)
 
     def requires_extended_intraday_history(
         self,

@@ -177,3 +177,30 @@ Delivered in this pass:
 2. Start migrating more dict-heavy runtime payloads to typed domain objects and typed dictionaries.
 3. Add margin/notional previews to the interactive `LIVE` confirmation flow.
 4. Extend the synthetic bracket scaffold into fully managed OCO exit orchestration.
+
+
+Search for all occurrences of "09:20" and "9:20" across the entire repo 
+(orchestration/session.py, engines/intraday_options.py, and any other file).
+
+For each occurrence:
+
+1. In orchestration/session.py — options market open wait guard:
+   Replace hardcoded "09:20" with config-driven values:
+   - Add to FnoConfig and _default_runtime_config_map():
+     intraday_options_market_open_hour = int(os.getenv("INTRADAY_OPTIONS_MARKET_OPEN_HOUR", "9"))
+     intraday_options_market_open_minute = int(os.getenv("INTRADAY_OPTIONS_MARKET_OPEN_MINUTE", "15"))
+   - Use IST-aware datetime: now = datetime.now(pytz.timezone("Asia/Kolkata"))
+   - Build open time as: now.replace(hour=open_hour, minute=open_minute, second=0, microsecond=0)
+
+2. In engines/intraday_options.py — if 09:20 is used as session start for 
+   ORB or any candle slicing:
+   Replace with 09:15 directly or derive from config.
+   The ATM_ORB opening_range_minutes=15 in strategy.py already handles 
+   the correct candle count — just make sure session_df starts from 09:15.
+
+3. In strategy.py — strategy_orb() uses session_df.iloc[:opening_range_minutes] 
+   which is index-position based. Add a comment clarifying this requires 
+   session_df to start from 09:15 IST for the range to be correct.
+
+4. Do not change any business logic beyond replacing the hardcoded time 
+   and adding the two config fields.

@@ -24,6 +24,7 @@ The important design rule in the current codebase is:
 
 - backtesting should use the same entry/exit target logic as live trading wherever that logic exists in the live path
 - shared stop, target, trailing-distance, and activation-distance resolution now flows through `resolve_trade_targets(...)` in [engines/common.py](./engines/common.py)
+- live entry orchestration and backtesting are expected to stay on that same shared target-resolution path
 
 ## Current Engine Coverage
 

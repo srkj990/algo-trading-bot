@@ -308,6 +308,7 @@ def strategy_orb(df, opening_range_minutes=15):
             strategy_name,
         )
 
+    # ORB slices by row position, so session_df must begin at 09:15 IST.
     opening_range = session_df.iloc[:opening_range_minutes]
     latest = session_df.iloc[-1]
     orb_high = float(opening_range["High"].max())

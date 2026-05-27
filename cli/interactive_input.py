@@ -187,11 +187,22 @@ def prompt_multi_strategy_selection(strategy_options):
     log_event("Choose strategies:")
     for key, value in strategy_options.items():
         log_event(f"{key}. {value}")
-    log_help("Enter one or more strategy numbers separated by commas. Example: 1,3,5")
+    default_keys = [
+        key
+        for key, value in strategy_options.items()
+        if value in {"MA", "RSI", "BREAKOUT"}
+    ]
+    default_text = ",".join(default_keys)
+    log_help(
+        "Enter one or more strategy numbers separated by commas. "
+        f"Default: {default_text} for MA, RSI, BREAKOUT"
+    )
 
     while True:
-        raw = input("Enter numbers separated by commas: ").strip()
+        raw = input(f"Enter numbers separated by commas [default {default_text}]: ").strip()
         selected_keys = [item.strip() for item in raw.split(",") if item.strip()]
+        if not selected_keys and default_keys:
+            selected_keys = default_keys
 
         if not selected_keys:
             log_event("[INPUT] Select at least one strategy.", "warning")
@@ -240,29 +251,29 @@ def prompt_strategy_configuration(engine, default_confirmations):
 
     if engine.name == "intraday_equity":
         log_event("[SETUP] Strategy mode - choose how intraday equity signals are generated")
-        log_help("Choose whether intraday equity should use one strategy, multiple strategies, or adaptive selection. Example: 3 for AUTO ADAPTIVE")
+        log_help("Choose whether intraday equity should use one strategy, multiple strategies, or adaptive selection. Example: 2 for MULTI")
         mode = prompt_choice(
-            "Strategy mode: SINGLE(1), MULTI(2), AUTO ADAPTIVE(3) [default 3]: ",
+            "Strategy mode: SINGLE(1), MULTI(2), AUTO ADAPTIVE(3) [default 2]: ",
             [
                 {"label": "SINGLE", "key": 1, "value": "1"},
                 {"label": "MULTI", "key": 2, "value": "2"},
                 {"label": "AUTO ADAPTIVE", "key": 3, "value": "3"},
             ],
-            default=3,
+            default=2,
         )
         if mode == "3":
             log_event("[MAIN] Strategy mode selected: AUTO ADAPTIVE")
             return mode, None, None, None
     else:
         log_event("[SETUP] Strategy mode - choose how entries are generated for this engine")
-        log_help("Choose whether this engine should use one strategy or combine multiple strategies. Example: 1 for SINGLE")
+        log_help("Choose whether this engine should use one strategy or combine multiple strategies. Example: 2 for MULTI")
         mode = prompt_choice(
-            "Strategy mode: SINGLE(1) or MULTI(2) [default 1]: ",
+            "Strategy mode: SINGLE(1) or MULTI(2) [default 2]: ",
             [
                 {"label": "SINGLE", "key": 1, "value": "1"},
                 {"label": "MULTI", "key": 2, "value": "2"},
             ],
-            default=1,
+            default=2,
         )
 
     if mode == "1":

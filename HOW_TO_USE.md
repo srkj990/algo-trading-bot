@@ -54,6 +54,7 @@ This flow:
 - downloads or resolves historical data
 - runs the same signal and target logic wherever live logic exists
 - exports summary, trades, and equity curve under `Results/BackTest/`
+- should not keep a separate stop/target/trailing path when the live engine already owns that behavior
 
 ## Three Operating Modes
 

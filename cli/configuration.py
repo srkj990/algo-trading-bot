@@ -42,6 +42,11 @@ DEFAULT_CONFIRMATIONS = {
     4: 3,
     5: 3,
 }
+ENGINE_FALLBACK_LEVELS = {
+    "sl_percent": 0.5,
+    "target_percent": 1.0,
+    "trailing_percent": 0.35,
+}
 
 ENGINE_OPTIONS = {
     "1": IntradayEquityEngine,
@@ -628,11 +633,11 @@ def collect_session_configuration() -> SessionConfig:
         selected_symbols, symbol_mode = cli_input.prompt_symbol_selection()
 
     risk_styles = get_risk_style_presets(ENGINE_OPTIONS[engine_choice].name)
-    log_event("[SETUP] Choose risk style - affects stop-loss distance and position sizing")
+    log_event("[SETUP] Choose risk style - affects ATR/risk sizing and target selection")
     log_event("[SETUP]   CONSERVATIVE: tight stops, 0.5% risk per trade, lower reward expectations")
     log_event("[SETUP]   BALANCED: moderate stops, 1.0% risk per trade, general-purpose default")
     log_event("[SETUP]   AGGRESSIVE: wider stops, 1.5% risk per trade, higher reward expectations")
-    log_help("Choose how aggressive the stop-loss and position sizing should be. Example: 2 for BALANCED")
+    log_help("Choose how aggressive the ATR/risk sizing should be. Example: 2 for BALANCED")
 
     risk_style_key = cli_input.prompt_choice(
         "Risk style: CONSERVATIVE(1), BALANCED(2), AGGRESSIVE(3)? [default 2]: ",
@@ -647,9 +652,13 @@ def collect_session_configuration() -> SessionConfig:
     atr_stop_multiplier = risk_style["atr_stop_multiplier"]
     trailing_atr_multiplier = risk_style["trailing_atr_multiplier"]
     target_risk_reward = risk_style["target_risk_reward"]
-    sl_percent = risk_style["sl_percent"]
-    target_percent = risk_style["target_percent"]
-    trailing_percent = risk_style["trailing_percent"]
+    sl_percent = float(risk_style.get("sl_percent", ENGINE_FALLBACK_LEVELS["sl_percent"]))
+    target_percent = float(
+        risk_style.get("target_percent", ENGINE_FALLBACK_LEVELS["target_percent"])
+    )
+    trailing_percent = float(
+        risk_style.get("trailing_percent", ENGINE_FALLBACK_LEVELS["trailing_percent"])
+    )
     risk_percent = risk_style["risk_percent"]
 
     engine = ENGINE_OPTIONS[engine_choice](

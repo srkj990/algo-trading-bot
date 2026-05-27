@@ -133,27 +133,18 @@ backtest_defaults:
         atr_stop_multiplier: 1.2 # used: ATR stop multiple for conservative intraday engines/backtests
         trailing_atr_multiplier: 0.8 # used: ATR trailing-stop multiple for conservative intraday engines/backtests
         target_risk_reward: 1.4 # used: risk-reward target for conservative intraday engines/backtests
-        sl_percent: 0.4 # used: fallback stop-loss percent for conservative intraday engines/backtests
-        target_percent: 0.8 # used: fallback target percent for conservative intraday engines/backtests
-        trailing_percent: 0.25 # used: fallback trailing percent for conservative intraday engines/backtests
         risk_percent: 0.005 # used: capital-at-risk percent for conservative intraday engines/backtests
       "2":
         name: "BALANCED" # used: display name for intraday risk-style selection
         atr_stop_multiplier: 1.35 # used: ATR stop multiple for balanced intraday engines/backtests
         trailing_atr_multiplier: 0.9 # used: ATR trailing-stop multiple for balanced intraday engines/backtests
         target_risk_reward: 1.5 # used: risk-reward target for balanced intraday engines/backtests
-        sl_percent: 0.5 # used: fallback stop-loss percent for balanced intraday engines/backtests
-        target_percent: 1.0 # used: fallback target percent for balanced intraday engines/backtests
-        trailing_percent: 0.35 # used: fallback trailing percent for balanced intraday engines/backtests
         risk_percent: 0.01 # used: capital-at-risk percent for balanced intraday engines/backtests
       "3":
         name: "AGGRESSIVE" # used: display name for intraday risk-style selection
         atr_stop_multiplier: 1.5 # used: ATR stop multiple for aggressive intraday engines/backtests
         trailing_atr_multiplier: 1.0 # used: ATR trailing-stop multiple for aggressive intraday engines/backtests
         target_risk_reward: 1.6 # used: risk-reward target for aggressive intraday engines/backtests
-        sl_percent: 0.7 # used: fallback stop-loss percent for aggressive intraday engines/backtests
-        target_percent: 1.4 # used: fallback target percent for aggressive intraday engines/backtests
-        trailing_percent: 0.5 # used: fallback trailing percent for aggressive intraday engines/backtests
         risk_percent: 0.015 # used: capital-at-risk percent for aggressive intraday engines/backtests
     positional:
       "1":
@@ -161,27 +152,18 @@ backtest_defaults:
         atr_stop_multiplier: 1.5 # used: ATR stop multiple for conservative positional engines/backtests
         trailing_atr_multiplier: 1.0 # used: ATR trailing-stop multiple for conservative positional engines/backtests
         target_risk_reward: 1.8 # used: risk-reward target for conservative positional engines/backtests
-        sl_percent: 0.4 # used: fallback stop-loss percent for conservative positional engines/backtests
-        target_percent: 0.8 # used: fallback target percent for conservative positional engines/backtests
-        trailing_percent: 0.25 # used: fallback trailing percent for conservative positional engines/backtests
         risk_percent: 0.005 # used: capital-at-risk percent for conservative positional engines/backtests
       "2":
         name: "BALANCED" # used: display name for positional risk-style selection
         atr_stop_multiplier: 1.65 # used: ATR stop multiple for balanced positional engines/backtests
         trailing_atr_multiplier: 1.25 # used: ATR trailing-stop multiple for balanced positional engines/backtests
         target_risk_reward: 2.0 # used: risk-reward target for balanced positional engines/backtests
-        sl_percent: 0.5 # used: fallback stop-loss percent for balanced positional engines/backtests
-        target_percent: 1.0 # used: fallback target percent for balanced positional engines/backtests
-        trailing_percent: 0.35 # used: fallback trailing percent for balanced positional engines/backtests
         risk_percent: 0.01 # used: capital-at-risk percent for balanced positional engines/backtests
       "3":
         name: "AGGRESSIVE" # used: display name for positional risk-style selection
         atr_stop_multiplier: 1.8 # used: ATR stop multiple for aggressive positional engines/backtests
         trailing_atr_multiplier: 1.5 # used: ATR trailing-stop multiple for aggressive positional engines/backtests
         target_risk_reward: 2.2 # used: risk-reward target for aggressive positional engines/backtests
-        sl_percent: 0.7 # used: fallback stop-loss percent for aggressive positional engines/backtests
-        target_percent: 1.4 # used: fallback target percent for aggressive positional engines/backtests
-        trailing_percent: 0.5 # used: fallback trailing percent for aggressive positional engines/backtests
         risk_percent: 0.015 # used: capital-at-risk percent for aggressive positional engines/backtests
   default_data:
     intraday_equity:
@@ -194,18 +176,14 @@ backtest_defaults:
       period: "2mo" # used: default backtest lookback period for futures equity
       interval: "15m" # used: default backtest candle interval for futures equity
     options_equity:
-      period: "2mo" # used: default backtest lookback period for options equity
+      period: "1mo" # used: default backtest lookback period for options equity
       interval: "15m" # used: default backtest candle interval for options equity
     intraday_futures:
       period: "5d" # used: default backtest lookback period for intraday futures
       interval: "5m" # used: default backtest candle interval for intraday futures
     intraday_options:
-      period: "30d" # used: default backtest lookback period for intraday options
+      period: "5d" # used: default backtest lookback period for intraday options
       interval: "1m" # used: default backtest candle interval for intraday options
-  engine_sl_target_defaults:
-    sl_percent: 0.5 # used: fallback stop-loss percent when backtest engine does not override it
-    target_percent: 1.0 # used: fallback target percent when backtest engine does not override it
-    trailing_percent: 0.35 # used: fallback trailing percent when backtest engine does not override it
   prompt_defaults:
     engine_choice: 1 # used: default engine selection for backtest CLI prompt
     capital: 100000 # used: default starting capital for backtest CLI prompt
@@ -218,8 +196,8 @@ backtest_defaults:
     intraday_options_strike_mode: 2 # used: default ATM strike-mode selection for backtest CLI prompt
     fno_contract_confirm: 1 # used: default F&O contract confirmation choice for backtest CLI prompt
     intraday_options_strategy: 4 # used: default intraday-options strategy choice for backtest CLI prompt
-    intraday_equity_strategy_mode: 1 # used: default intraday-equity strategy-mode choice for backtest CLI prompt
-    default_strategy_mode: 1 # used: default generic strategy-mode choice for backtest CLI prompt
+    intraday_equity_strategy_mode: 2 # used: default intraday-equity strategy-mode choice for backtest CLI prompt
+    default_strategy_mode: 2 # used: default generic strategy-mode choice for backtest CLI prompt
     single_strategy_key: "1" # used: default single-strategy selection for backtest CLI prompt
     risk_style: 2 # used: default risk-style selection for backtest CLI prompt
     max_positions: 1 # used: default max-open-positions value for backtest CLI prompt

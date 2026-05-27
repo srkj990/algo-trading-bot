@@ -493,6 +493,8 @@ class FnoConfig:
     auto_rollover_days: int
     default_risk_free_rate: float
     greeks_history_period: str
+    intraday_options_market_open_hour: int
+    intraday_options_market_open_minute: int
     intraday_options_max_trades_per_underlying: int
     intraday_options_expiry_warning_days: int
     intraday_options_vega_crush_block_percent: float
@@ -523,6 +525,14 @@ class FnoConfig:
             raise ValueError("fno.auto_rollover_days must be >= 0")
         if self.default_risk_free_rate < 0:
             raise ValueError("fno.default_risk_free_rate must be >= 0")
+        if not 0 <= self.intraday_options_market_open_hour <= 23:
+            raise ValueError(
+                "fno.intraday_options_market_open_hour must be between 0 and 23"
+            )
+        if not 0 <= self.intraday_options_market_open_minute <= 59:
+            raise ValueError(
+                "fno.intraday_options_market_open_minute must be between 0 and 59"
+            )
         if self.intraday_options_max_trades_per_underlying < 1:
             raise ValueError(
                 "fno.intraday_options_max_trades_per_underlying must be >= 1"
@@ -850,6 +860,12 @@ def _default_runtime_config_map() -> dict[str, Any]:
                 os.getenv("FNO_DEFAULT_RISK_FREE_RATE", "0.06")
             ),
             "greeks_history_period": os.getenv("FNO_GREEKS_HISTORY_PERIOD", "1mo"),
+            "intraday_options_market_open_hour": int(
+                os.getenv("INTRADAY_OPTIONS_MARKET_OPEN_HOUR", "9")
+            ),
+            "intraday_options_market_open_minute": int(
+                os.getenv("INTRADAY_OPTIONS_MARKET_OPEN_MINUTE", "15")
+            ),
             "intraday_options_max_trades_per_underlying": int(
                 os.getenv("INTRADAY_OPTIONS_MAX_TRADES_PER_UNDERLYING", "4")
             ),
@@ -977,9 +993,6 @@ def _default_runtime_config_map() -> dict[str, Any]:
                         "atr_stop_multiplier": 1.2,
                         "trailing_atr_multiplier": 0.8,
                         "target_risk_reward": 1.4,
-                        "sl_percent": 0.4,
-                        "target_percent": 0.8,
-                        "trailing_percent": 0.25,
                         "risk_percent": 0.005,
                     },
                     "2": {
@@ -987,9 +1000,6 @@ def _default_runtime_config_map() -> dict[str, Any]:
                         "atr_stop_multiplier": 1.35,
                         "trailing_atr_multiplier": 0.9,
                         "target_risk_reward": 1.5,
-                        "sl_percent": 0.5,
-                        "target_percent": 1.0,
-                        "trailing_percent": 0.35,
                         "risk_percent": 0.01,
                     },
                     "3": {
@@ -997,9 +1007,6 @@ def _default_runtime_config_map() -> dict[str, Any]:
                         "atr_stop_multiplier": 1.5,
                         "trailing_atr_multiplier": 1.0,
                         "target_risk_reward": 1.6,
-                        "sl_percent": 0.7,
-                        "target_percent": 1.4,
-                        "trailing_percent": 0.5,
                         "risk_percent": 0.015,
                     },
                 },
@@ -1009,9 +1016,6 @@ def _default_runtime_config_map() -> dict[str, Any]:
                         "atr_stop_multiplier": 1.5,
                         "trailing_atr_multiplier": 1.0,
                         "target_risk_reward": 1.8,
-                        "sl_percent": 0.4,
-                        "target_percent": 0.8,
-                        "trailing_percent": 0.25,
                         "risk_percent": 0.005,
                     },
                     "2": {
@@ -1019,9 +1023,6 @@ def _default_runtime_config_map() -> dict[str, Any]:
                         "atr_stop_multiplier": 1.65,
                         "trailing_atr_multiplier": 1.25,
                         "target_risk_reward": 2.0,
-                        "sl_percent": 0.5,
-                        "target_percent": 1.0,
-                        "trailing_percent": 0.35,
                         "risk_percent": 0.01,
                     },
                     "3": {
@@ -1029,9 +1030,6 @@ def _default_runtime_config_map() -> dict[str, Any]:
                         "atr_stop_multiplier": 1.8,
                         "trailing_atr_multiplier": 1.5,
                         "target_risk_reward": 2.2,
-                        "sl_percent": 0.7,
-                        "target_percent": 1.4,
-                        "trailing_percent": 0.5,
                         "risk_percent": 0.015,
                     },
                 },
@@ -1043,11 +1041,6 @@ def _default_runtime_config_map() -> dict[str, Any]:
                 "options_equity": {"period": "2mo", "interval": "15m"},
                 "intraday_futures": {"period": "5d", "interval": "5m"},
                 "intraday_options": {"period": "1d", "interval": "1m"},
-            },
-            "engine_sl_target_defaults": {
-                "sl_percent": 0.5,
-                "target_percent": 1.0,
-                "trailing_percent": 0.35,
             },
             "prompt_defaults": {
                 "engine_choice": 1,
@@ -1061,8 +1054,8 @@ def _default_runtime_config_map() -> dict[str, Any]:
                 "intraday_options_strike_mode": 1,
                 "fno_contract_confirm": 1,
                 "intraday_options_strategy": 1,
-                "intraday_equity_strategy_mode": 1,
-                "default_strategy_mode": 1,
+                "intraday_equity_strategy_mode": 2,
+                "default_strategy_mode": 2,
                 "single_strategy_key": "1",
                 "risk_style": 2,
                 "max_positions": 1,
@@ -1404,6 +1397,12 @@ INTRADAY_OPTIONS_MIN_SIGNAL_SCORE = (
 )
 INTRADAY_OPTIONS_MAX_HOLD_MINUTES = (
     RUNTIME_CONFIG.fno.intraday_options_max_hold_minutes
+)
+INTRADAY_OPTIONS_MARKET_OPEN_HOUR = (
+    RUNTIME_CONFIG.fno.intraday_options_market_open_hour
+)
+INTRADAY_OPTIONS_MARKET_OPEN_MINUTE = (
+    RUNTIME_CONFIG.fno.intraday_options_market_open_minute
 )
 INTRADAY_OPTIONS_TIME_EXIT_CUTOFF = (
     RUNTIME_CONFIG.fno.intraday_options_time_exit_cutoff

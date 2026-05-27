@@ -6,6 +6,8 @@ from config import (
     INTRADAY_OPTIONS_IV_EXPANSION_MAX_IV_PERCENTILE,
     INTRADAY_OPTIONS_MAX_TRADES_PER_UNDERLYING,
     INTRADAY_OPTIONS_MAX_HOLD_MINUTES,
+    INTRADAY_OPTIONS_MARKET_OPEN_HOUR,
+    INTRADAY_OPTIONS_MARKET_OPEN_MINUTE,
     INTRADAY_OPTIONS_MIN_RANGE_PCT,
     INTRADAY_OPTIONS_MIN_SIGNAL_SCORE,
     INTRADAY_OPTIONS_REGIME_EXPANSION_IV_CHANGE_PCT,
@@ -53,7 +55,10 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         "ATM_IV_EXPANSION": "VOLATILITY",
         "ATM_MULTI": "HYBRID",
     }
-    market_open = time(9, 20)
+    market_open = time(
+        INTRADAY_OPTIONS_MARKET_OPEN_HOUR,
+        INTRADAY_OPTIONS_MARKET_OPEN_MINUTE,
+    )
     entry_cutoff = time(15, 10)
     square_off_time = time(15, 15)
     market_close = time(15, 30)
@@ -459,7 +464,10 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                 "allow_entries": False,
                 "force_square_off": False,
                 "allow_scan": False,
-                "reason": "Waiting for options market open at 09:20",
+                "reason": (
+                    "Waiting for options market open at "
+                    f"{self.market_open.strftime('%H:%M')}"
+                ),
             }
 
         if current_time >= self.market_close:

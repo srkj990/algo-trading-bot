@@ -989,6 +989,25 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
                 float(remaining_deployable),
             )
             qty = int(available_capital / entry_price) if entry_price > 0 else 0
+    elif engine.name == "intraday_equity" and hasattr(engine, "get_trend_adaptive_level_spec"):
+        level_spec = engine.get_trend_adaptive_level_spec(
+            entry_price=entry_price,
+            side=candidate["signal"],
+            atr=atr_value,
+            signal_score=float(candidate.get("score") or 0.0),
+            volatility_distance=float(candidate.get("equity_volatility_distance") or 0.0),
+        )
+        stop_data = {
+            "atr": atr_value,
+            "stop_distance": float(level_spec["stop_distance"]),
+            "stop_loss_price": float(level_spec["stop_loss_price"]),
+        }
+        qty = position_size(
+            cfg.capital,
+            entry_price,
+            stop_data["stop_loss_price"],
+            cfg.risk_percent,
+        )
     else:
         stop_data = atr_stop_from_value(candidate["signal"], entry_price, atr_value, cfg.atr_stop_multiplier)
         if stop_data["stop_distance"] <= 0:
@@ -1058,6 +1077,18 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
                 float(trailing_distance or 0.0),
                 float(stop_data.get("stop_distance") or 0.0) * float(TRAILING_ACTIVATION_STOP_DISTANCE_MULTIPLIER or 0.0),
             )
+    elif engine.name == "intraday_equity" and hasattr(engine, "get_trend_adaptive_level_spec"):
+        level_spec = engine.get_trend_adaptive_level_spec(
+            entry_price=entry_price,
+            side=candidate["signal"],
+            atr=atr_value,
+            signal_score=float(candidate.get("score") or 0.0),
+            volatility_distance=float(candidate.get("equity_volatility_distance") or 0.0),
+        )
+        target_price = float(level_spec["level3_target"])
+        trailing_distance = float(level_spec["trailing_distance"])
+        trailing_stop = float(level_spec["stop_loss_price"])
+        trailing_activation_distance = float(level_spec["trailing_activation_distance"])
     else:
         target_distance = stop_data["stop_distance"] * cfg.target_risk_reward
         trailing_distance = atr_value * cfg.trailing_atr_multiplier
@@ -1214,6 +1245,21 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
             premium_volatility_distance=float(
                 candidate.get("premium_volatility_distance") or 0.0
             ),
+            extra_fields=position_extra_fields,
+        )
+    elif engine.name == "intraday_equity" and hasattr(engine, "build_trend_adaptive_position"):
+        context.positions[symbol] = engine.build_trend_adaptive_position(
+            symbol=symbol,
+            side=candidate["signal"],
+            quantity=qty,
+            entry_price=actual_entry_price,
+            atr=float(atr_value or 0.0),
+            signal_score=float(candidate.get("score") or 0.0),
+            now=now,
+            engine_name=engine.name,
+            execution_mode=context.config.execution_mode,
+            order_product=engine.order_product,
+            volatility_distance=float(candidate.get("equity_volatility_distance") or 0.0),
             extra_fields=position_extra_fields,
         )
     else:
