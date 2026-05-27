@@ -7,6 +7,7 @@ from engines.common import build_position, evaluate_exit, get_symbol_deployed_ca
 from engines.base import TradingEngine
 from executor import get_delivery_holdings
 from logger import log_event
+from risk_manager import calculate_target_price
 
 
 class DeliveryEquityEngine(TradingEngine):
@@ -100,6 +101,168 @@ class DeliveryEquityEngine(TradingEngine):
         target_profit_distance = max(0.0, target_price - entry_price)
         profit_buffer_distance = max(0.0, atr * 0.5)
         return max(target_profit_distance, profit_buffer_distance, 0.01)
+
+    @staticmethod
+    def _adaptive_regime_label(signal_score, swing_range_distance, entry_price, atr):
+        entry_price = max(float(entry_price or 0.0), 0.01)
+        score = min(1.0, max(0.0, float(signal_score or 0.0)))
+        range_ratio = float(swing_range_distance or 0.0) / entry_price
+        atr_ratio = float(atr or 0.0) / entry_price
+        if score >= 0.035 or range_ratio >= 0.035 or atr_ratio >= 0.025:
+            return "EXPANSION"
+        if score <= 0.010 and range_ratio <= 0.015 and atr_ratio <= 0.012:
+            return "SIDEWAYS"
+        return "NORMAL"
+
+    def get_equity_volatility_trailing_distance(self, daily_df):
+        if daily_df is None or daily_df.empty:
+            return 0.0
+        lookback = min(len(daily_df), 10)
+        recent = daily_df.tail(max(3, lookback))
+        recent_ranges = pd.to_numeric(recent["High"], errors="coerce") - pd.to_numeric(
+            recent["Low"],
+            errors="coerce",
+        )
+        avg_range = float(recent_ranges.dropna().mean()) if not recent_ranges.empty else 0.0
+        if avg_range != avg_range:
+            return 0.0
+        return max(0.0, avg_range * 1.2)
+
+    def get_trend_adaptive_level_spec(
+        self,
+        *,
+        entry_price,
+        side,
+        atr,
+        signal_score,
+        analytics=None,
+        volatility_distance=None,
+    ):
+        del analytics
+        regime = self._adaptive_regime_label(
+            signal_score,
+            volatility_distance,
+            entry_price,
+            atr,
+        )
+        base_atr = max(float(atr or 0.0), float(entry_price) * 0.006)
+        normalized_score = min(1.0, max(0.0, float(signal_score or 0.0)))
+        conviction = 1.0 + (normalized_score * 0.75)
+
+        stop_multiplier = {
+            "SIDEWAYS": 2.4,
+            "NORMAL": 2.0,
+            "EXPANSION": 1.8,
+        }[regime]
+        target_multiplier = {
+            "SIDEWAYS": 1.6,
+            "NORMAL": 2.6,
+            "EXPANSION": 3.4,
+        }[regime]
+        trailing_multiplier = {
+            "SIDEWAYS": 1.2,
+            "NORMAL": 1.5,
+            "EXPANSION": 1.8,
+        }[regime]
+
+        stop_distance = max(float(entry_price) * 0.018, base_atr * stop_multiplier)
+        target_distance = max(
+            float(entry_price) * 0.040,
+            base_atr * target_multiplier * conviction,
+        )
+        atr_trailing_distance = max(
+            float(entry_price) * 0.012,
+            base_atr * trailing_multiplier,
+        )
+        swing_volatility_distance = max(float(volatility_distance or 0.0), 0.0)
+        trailing_distance = max(atr_trailing_distance, swing_volatility_distance)
+        level1_distance = target_distance * 0.45
+        level2_distance = target_distance
+        level3_distance = target_distance * 1.5
+        stop_loss_price = (
+            float(entry_price) - stop_distance
+            if side == "BUY"
+            else float(entry_price) + stop_distance
+        )
+        return {
+            "adaptive_regime": regime,
+            "adaptive_signal_score": normalized_score,
+            "stop_distance": stop_distance,
+            "stop_loss_price": max(0.01, stop_loss_price),
+            "atr_trailing_distance": atr_trailing_distance,
+            "swing_volatility_distance": swing_volatility_distance,
+            "trailing_distance": trailing_distance,
+            "level1_target": max(
+                0.01,
+                calculate_target_price(side, float(entry_price), level1_distance),
+            ),
+            "level2_target": max(
+                0.01,
+                calculate_target_price(side, float(entry_price), level2_distance),
+            ),
+            "level3_target": max(
+                0.01,
+                calculate_target_price(side, float(entry_price), level3_distance),
+            ),
+            "trailing_activation_distance": max(
+                float(trailing_distance),
+                float(level1_distance),
+            ),
+        }
+
+    def build_trend_adaptive_position(
+        self,
+        *,
+        symbol,
+        side,
+        quantity,
+        entry_price,
+        atr,
+        signal_score,
+        now,
+        engine_name,
+        execution_mode,
+        order_product,
+        volatility_distance=None,
+        extra_fields=None,
+    ):
+        level_spec = self.get_trend_adaptive_level_spec(
+            entry_price=entry_price,
+            side=side,
+            atr=atr,
+            signal_score=signal_score,
+            volatility_distance=volatility_distance,
+        )
+        payload = {
+            "symbol": symbol,
+            "side": side,
+            "quantity": quantity,
+            "entry_price": float(entry_price),
+            "stop_loss": level_spec["stop_loss_price"],
+            "target": level_spec["level3_target"],
+            "trailing_stop": level_spec["stop_loss_price"],
+            "trailing_distance": level_spec["trailing_distance"],
+            "trailing_activation_distance": level_spec["trailing_activation_distance"],
+            "trailing_active": False,
+            "atr": atr,
+            "stop_distance": level_spec["stop_distance"],
+            "entry_time": now.isoformat(),
+            "engine_name": engine_name,
+            "execution_mode": execution_mode,
+            "order_product": order_product,
+            "adaptive_levels_enabled": True,
+            "adaptive_horizon": "SWING",
+            "adaptive_regime": level_spec["adaptive_regime"],
+            "adaptive_signal_score": level_spec["adaptive_signal_score"],
+            "adaptive_level1_target": level_spec["level1_target"],
+            "adaptive_level2_target": level_spec["level2_target"],
+            "adaptive_level3_target": level_spec["level3_target"],
+            "swing_volatility_distance": level_spec["swing_volatility_distance"],
+            "atr_trailing_distance": level_spec["atr_trailing_distance"],
+        }
+        if extra_fields:
+            payload.update(extra_fields)
+        return build_position(**payload)
 
     def passes_nifty_trend_guard(self, index_history, now=None):
         if index_history is None or index_history.empty or "Close" not in index_history.columns:

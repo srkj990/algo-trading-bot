@@ -173,6 +173,9 @@ class BacktestEngine:
         self.trades = []
         self.equity_curve = []
         self.traded_symbols_by_day = defaultdict(set)
+        self.trade_counts_by_day = defaultdict(dict)
+        self.regime_cache = {}
+        self.session_runtime_state = {}
         self.engine_helper = self._build_engine_helper()
 
     def _build_engine_helper(self):
@@ -378,6 +381,9 @@ class BacktestEngine:
 
     def _process_timestamp(self, history, timestamp):
         latest_prices = {}
+        cycle_state = self.engine_helper.get_cycle_state(
+            pd.Timestamp(timestamp).to_pydatetime(),
+        )
 
         for symbol, df in history.items():
             current_slice = df.loc[:timestamp]
@@ -388,6 +394,9 @@ class BacktestEngine:
             latest_prices[symbol] = float(latest_candle["Close"])
 
             if current_slice.index[-1] != timestamp:
+                continue
+
+            if cycle_state.get("force_square_off"):
                 continue
 
             if symbol in self.positions:
@@ -413,11 +422,21 @@ class BacktestEngine:
                         self._exit_position(symbol, exit_fill_price, timestamp, exit_reason)
                 continue
 
+        if cycle_state.get("force_square_off"):
+            self._square_off_open_positions(history, timestamp, latest_prices)
+            self._mark_equity(timestamp, latest_prices)
+            return
+
+        if not cycle_state.get("allow_scan", True):
+            self._mark_equity(timestamp, latest_prices)
+            return
+
         scan_result = scan_symbols(
             self._build_signal_context(history, timestamp),
             pd.Timestamp(timestamp).to_pydatetime(),
         )
-        self._enter_ranked_candidates(scan_result.ranked_candidates, timestamp, history)
+        if cycle_state.get("allow_entries", True):
+            self._enter_ranked_candidates(scan_result.ranked_candidates, timestamp, history)
         self._mark_equity(timestamp, latest_prices)
 
     def _can_enter_symbol(self, symbol, timestamp):
@@ -479,12 +498,16 @@ class BacktestEngine:
             ),
             engine=self.engine_helper,
             positions=self.positions,
-            regime_cache={},
+            regime_cache=self.regime_cache,
             fetch_data=fetch_data,
             log_event=lambda *args, **kwargs: None,
             logger=logger,
             traded_symbols_today=self.traded_symbols_by_day[trade_day],
-            trade_counts_today={},
+            trade_counts_today=self.trade_counts_by_day[trade_day],
+            active_trade_day=trade_day,
+            last_entry_time=0.0,
+            session_runtime_state=self.session_runtime_state,
+            save_engine_state=lambda **kwargs: None,
         )
 
     def _build_runtime_option_settings(self):
@@ -712,7 +735,7 @@ class BacktestEngine:
                     )
                     qty = int(available_capital / candidate["latest_close"])
             elif (
-                self.config.engine_name == "intraday_equity"
+                self.config.engine_name in {"intraday_equity", "delivery_equity"}
                 and hasattr(self.engine_helper, "get_trend_adaptive_level_spec")
             ):
                 level_spec = self.engine_helper.get_trend_adaptive_level_spec(
@@ -823,7 +846,7 @@ class BacktestEngine:
                     continue
                 self.positions[candidate["symbol"]]["min_breakeven_price"] = float(actual_targets["min_breakeven_price"])
             elif (
-                self.config.engine_name == "intraday_equity"
+                self.config.engine_name in {"intraday_equity", "delivery_equity"}
                 and hasattr(self.engine_helper, "build_trend_adaptive_position")
             ):
                 self.positions[candidate["symbol"]] = self.engine_helper.build_trend_adaptive_position(
@@ -1141,6 +1164,17 @@ class BacktestEngine:
                 continue
             exit_price = float(latest_df.iloc[-1]["Close"])
             self._exit_position(symbol, exit_price, timestamp, "END_OF_TEST")
+
+    def _square_off_open_positions(self, history, timestamp, latest_prices):
+        for symbol in list(self.positions):
+            if symbol in latest_prices:
+                exit_price = float(latest_prices[symbol])
+            else:
+                latest_df = history[symbol].loc[:timestamp]
+                if latest_df.empty:
+                    continue
+                exit_price = float(latest_df.iloc[-1]["Close"])
+            self._exit_position(symbol, exit_price, timestamp, "INTRADAY_SQUARE_OFF")
 
     def _current_equity(self, latest_prices):
         market_value = 0.0

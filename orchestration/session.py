@@ -989,7 +989,7 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
                 float(remaining_deployable),
             )
             qty = int(available_capital / entry_price) if entry_price > 0 else 0
-    elif engine.name == "intraday_equity" and hasattr(engine, "get_trend_adaptive_level_spec"):
+    elif engine.name in {"intraday_equity", "delivery_equity"} and hasattr(engine, "get_trend_adaptive_level_spec"):
         level_spec = engine.get_trend_adaptive_level_spec(
             entry_price=entry_price,
             side=candidate["signal"],
@@ -1077,7 +1077,7 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
                 float(trailing_distance or 0.0),
                 float(stop_data.get("stop_distance") or 0.0) * float(TRAILING_ACTIVATION_STOP_DISTANCE_MULTIPLIER or 0.0),
             )
-    elif engine.name == "intraday_equity" and hasattr(engine, "get_trend_adaptive_level_spec"):
+    elif engine.name in {"intraday_equity", "delivery_equity"} and hasattr(engine, "get_trend_adaptive_level_spec"):
         level_spec = engine.get_trend_adaptive_level_spec(
             entry_price=entry_price,
             side=candidate["signal"],
@@ -1247,7 +1247,7 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
             ),
             extra_fields=position_extra_fields,
         )
-    elif engine.name == "intraday_equity" and hasattr(engine, "build_trend_adaptive_position"):
+    elif engine.name in {"intraday_equity", "delivery_equity"} and hasattr(engine, "build_trend_adaptive_position"):
         context.positions[symbol] = engine.build_trend_adaptive_position(
             symbol=symbol,
             side=candidate["signal"],

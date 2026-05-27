@@ -84,6 +84,41 @@ class DeliveryEngineTests(unittest.TestCase):
         )
         self.assertIsNone(exit_reason)
 
+    def test_delivery_adaptive_position_uses_swing_levels(self) -> None:
+        position = self.engine.build_trend_adaptive_position(
+            symbol="SBIN.NS",
+            side="BUY",
+            quantity=10,
+            entry_price=100.0,
+            atr=2.0,
+            signal_score=0.04,
+            now=datetime(2026, 5, 28, 10, 0, 0),
+            engine_name=self.engine.name,
+            execution_mode="PAPER",
+            order_product="CNC",
+            volatility_distance=4.0,
+            extra_fields={},
+        )
+        self.assertTrue(position["adaptive_levels_enabled"])
+        self.assertEqual(position["adaptive_horizon"], "SWING")
+        self.assertEqual(position["adaptive_regime"], "EXPANSION")
+        self.assertEqual(position["trailing_stop"], position["stop_loss"])
+        self.assertGreater(position["target"], position["entry_price"])
+        self.assertGreaterEqual(position["trailing_distance"], 4.0)
+
+    def test_delivery_volatility_distance_uses_recent_daily_range(self) -> None:
+        df = pd.DataFrame(
+            [
+                {"High": 105.0, "Low": 100.0},
+                {"High": 108.0, "Low": 101.0},
+                {"High": 106.0, "Low": 102.0},
+            ]
+        )
+        self.assertAlmostEqual(
+            self.engine.get_equity_volatility_trailing_distance(df),
+            6.4,
+        )
+
 
 class FuturesEngineTests(unittest.TestCase):
     def setUp(self) -> None:
