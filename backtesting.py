@@ -143,7 +143,7 @@ class BacktestConfig:
     # Tick-entry simulation (opt-in).
     # When True, entry fills are simulated at an estimated intra-candle price
     # (rather than candle close) to model early breakout entry via ticks.
-    tick_entry_enabled: bool = False
+    tick_entry_enabled: bool = True
 
 
 def _prompt_default(key, fallback):
@@ -805,15 +805,19 @@ class BacktestEngine:
             # ── Tick-entry fill simulation ─────────────────────────────────
             # When tick_entry_enabled=True, model "we entered earlier in the
             # candle at the breakout level" rather than at the candle close.
-            # Uses the signal candle's OHLC to compute a conservative fill.
-            # Not applied to delivery_equity (daily candles) or intraday_options
-            # where the option premium candle is used directly.
+            # Not applied to delivery_equity (daily candles).
+            # For intraday_options, uses the option premium candle's OHLC so
+            # the simulated fill captures the intra-candle ORB entry price
+            # rather than the candle close (which overstates the entry cost).
             if (
                 self.config.tick_entry_enabled
-                and self.config.engine_name not in {"delivery_equity", "intraday_options"}
+                and self.config.engine_name not in {"delivery_equity"}
             ):
                 try:
-                    src_symbol = candidate.get("underlying_symbol") or candidate["symbol"]
+                    if self.config.engine_name == "intraday_options":
+                        src_symbol = candidate["symbol"]
+                    else:
+                        src_symbol = candidate.get("underlying_symbol") or candidate["symbol"]
                     candle_df = (history or {}).get(src_symbol)
                     if candle_df is not None:
                         slice_at = candle_df.loc[:timestamp]
@@ -1933,47 +1937,13 @@ def export_backtest_results(summary):
 
 
 def print_summary(summary):
-    config = summary["config"]
-    print("\nBacktest summary")
-    for line in config.summary_lines:
-        print(f"- {line}")
-    print(f"Ending equity: {summary['ending_equity']:.2f}")
-    print(f"Total return: {summary['total_return_percent']:.2f}%")
-    print(f"Closed trades: {summary['closed_trades']}")
-    print(f"Win rate: {summary['win_rate_percent']:.2f}%")
-    print(f"Max drawdown: {summary['max_drawdown_percent']:.2f}%")
-    print(f"Estimated charges: {summary['total_estimated_charges']:.2f}")
-    print(f"Estimated net P&L: {summary['total_net_pnl']:+.2f}")
-
-    trades = summary["trades"]
-    if not trades.empty:
-        preview_columns = [
-            "symbol",
-            "side",
-            "strategy",
-            "option_signal",
-            "entry_time",
-            "exit_time",
-            "entry_price",
-            "exit_price",
-            "quantity",
-            "pnl",
-            "estimated_charges",
-            "net_pnl",
-            "exit_reason",
-            "score",
-        ]
-        available_columns = [col for col in preview_columns if col in trades.columns]
-        print("\nRecent trades")
-        print(trades[available_columns].tail(10).to_string(index=False))
-
+    from display import backtest_summary as _backtest_summary, fmt_header
+    _backtest_summary(summary)
     summary_path, trades_path, equity_path = export_backtest_results(summary)
-    print("\nHow to check results")
-    print(f"- Summary: {summary_path}")
-    print(f"- Trades CSV: {trades_path}")
-    print(f"- Equity curve CSV: {equity_path}")
-    print("- Open the trades CSV in Excel to inspect each entry, exit, P&L, and exit reason.")
-    print("- Open the equity CSV to chart equity over time and review drawdowns.")
+    print(f"\n{fmt_header('  Results saved to:')}")
+    print(f"  Summary    {summary_path}")
+    print(f"  Trades CSV {trades_path}")
+    print(f"  Equity CSV {equity_path}")
 
 
 if __name__ == "__main__":

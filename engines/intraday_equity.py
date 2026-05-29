@@ -17,8 +17,8 @@ from config import (
 class IntradayEquityEngine(TradingEngine):
     settings = ENGINE_DEFAULTS["intraday_equity"]
     name = "intraday_equity"
-    data_period = "1d"
-    data_interval = "1m"
+    data_period = str(settings.get("data_period", "1d"))
+    data_interval = str(settings.get("data_interval", "1m"))
     order_product = "MIS"
     supported_strategies = {
         "1": "MA",
@@ -28,13 +28,32 @@ class IntradayEquityEngine(TradingEngine):
         "5": "ORB",
     }
     market_open = time(9, 15)
-    square_off_time = time(15, 15)
+    square_off_time = datetime.strptime(str(settings.get("square_off_time", "15:15")), "%H:%M").time()
     market_close = time(15, 30)
-    sleep_seconds = 60
-    cooldown_seconds = 300
+    sleep_seconds = int(settings.get("sleep_seconds", 60))
+    cooldown_seconds = int(settings.get("cooldown_seconds", 300))
     gap_threshold_percent = float(settings["gap_threshold_percent"])
     opening_range_candles = int(settings["opening_range_candles"])
     breakout_volume_multiplier = float(settings["breakout_volume_multiplier"])
+    _adaptive_stop = {
+        "SIDEWAYS": float(settings.get("adaptive_stop_multiplier_sideways", 1.6)),
+        "NORMAL": float(settings.get("adaptive_stop_multiplier_normal", 1.4)),
+        "EXPANSION": float(settings.get("adaptive_stop_multiplier_expansion", 1.4)),
+    }
+    _adaptive_target = {
+        "SIDEWAYS": float(settings.get("adaptive_target_multiplier_sideways", 1.1)),
+        "NORMAL": float(settings.get("adaptive_target_multiplier_normal", 1.6)),
+        "EXPANSION": float(settings.get("adaptive_target_multiplier_expansion", 2.2)),
+    }
+    _adaptive_trailing = {
+        "SIDEWAYS": float(settings.get("adaptive_trailing_multiplier_sideways", 0.8)),
+        "NORMAL": float(settings.get("adaptive_trailing_multiplier_normal", 1.0)),
+        "EXPANSION": float(settings.get("adaptive_trailing_multiplier_expansion", 1.15)),
+    }
+    _adaptive_min_stop_pct = float(settings.get("adaptive_min_stop_pct", 0.0025))
+    _adaptive_min_target_pct = float(settings.get("adaptive_min_target_pct", 0.0045))
+    _adaptive_min_trailing_pct = float(settings.get("adaptive_min_trailing_pct", 0.002))
+    _adaptive_conviction_score_weight = float(settings.get("adaptive_conviction_score_weight", 0.5))
 
     def __init__(self, sl_percent, target_percent, trailing_percent):
         self.sl_percent = sl_percent
@@ -181,31 +200,19 @@ class IntradayEquityEngine(TradingEngine):
         )
         base_atr = max(float(atr or 0.0), float(entry_price) * 0.0015)
         normalized_score = min(1.0, max(0.0, float(signal_score or 0.0)))
-        conviction = 1.0 + (normalized_score * 0.5)
+        conviction = 1.0 + (normalized_score * self._adaptive_conviction_score_weight)
 
-        stop_multiplier = {
-            "SIDEWAYS": 1.6,
-            "NORMAL": 1.4,
-            "EXPANSION": 1.4,
-        }[regime]
-        target_multiplier = {
-            "SIDEWAYS": 1.1,
-            "NORMAL": 1.6,
-            "EXPANSION": 2.2,
-        }[regime]
-        trailing_multiplier = {
-            "SIDEWAYS": 0.8,
-            "NORMAL": 1.0,
-            "EXPANSION": 1.15,
-        }[regime]
+        stop_multiplier = self._adaptive_stop[regime]
+        target_multiplier = self._adaptive_target[regime]
+        trailing_multiplier = self._adaptive_trailing[regime]
 
-        stop_distance = max(float(entry_price) * 0.0025, base_atr * stop_multiplier)
+        stop_distance = max(float(entry_price) * self._adaptive_min_stop_pct, base_atr * stop_multiplier)
         target_distance = max(
-            float(entry_price) * 0.0045,
+            float(entry_price) * self._adaptive_min_target_pct,
             base_atr * target_multiplier * conviction,
         )
         atr_trailing_distance = max(
-            float(entry_price) * 0.002,
+            float(entry_price) * self._adaptive_min_trailing_pct,
             base_atr * trailing_multiplier,
         )
         range_distance = max(float(volatility_distance or 0.0), 0.0)

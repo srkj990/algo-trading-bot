@@ -1,4 +1,4 @@
-from datetime import time
+from datetime import datetime, time
 
 from config import ENGINE_DEFAULTS
 from engines.common import build_position
@@ -12,15 +12,15 @@ from .futures_equity import FuturesEquityEngine
 class IntradayFuturesEngine(FuturesEquityEngine):
     settings = ENGINE_DEFAULTS["intraday_futures"]
     name = "intraday_futures"
-    data_period = "15d"
-    data_interval = "3m"
+    data_period = str(settings.get("data_period", "15d"))
+    data_interval = str(settings.get("data_interval", "3m"))
     order_product = "MIS"
     market_open = time(9, 15)
-    entry_cutoff = time(15, 5)
-    square_off_time = time(15, 15)
+    entry_cutoff = datetime.strptime(str(settings.get("entry_cutoff", "15:05")), "%H:%M").time()
+    square_off_time = datetime.strptime(str(settings.get("square_off_time", "15:15")), "%H:%M").time()
     market_close = time(15, 30)
-    sleep_seconds = 60
-    cooldown_seconds = 180
+    sleep_seconds = int(settings.get("sleep_seconds", 60))
+    cooldown_seconds = int(settings.get("cooldown_seconds", 180))
     max_symbol_allocation = float(settings["max_symbol_allocation"])
 
     def get_cycle_state(self, now):

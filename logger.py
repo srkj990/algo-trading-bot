@@ -3,6 +3,7 @@ from datetime import datetime
 from pathlib import Path
 
 from config import LOG_LEVEL
+from display import strip_ansi
 
 
 LOGGER_NAME = "algo_bot"
@@ -80,4 +81,4 @@ def finalize_session_logger():
 def log_event(message, level="info"):
     print(message, flush=True)
     logger = get_logger()
-    getattr(logger, level.lower())(message)
+    getattr(logger, level.lower())(strip_ansi(message))

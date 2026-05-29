@@ -276,46 +276,8 @@ def log_trade_book_summary(
     transaction_cost_model_enabled: bool,
 ) -> None:
     log_event("[REPORT] CLOSED TRADES")
-    if not trade_book:
-        log_event("[REPORT]   No closed trades recorded in this session")
-        return
-
-    sorted_trades = sorted(trade_book, key=lambda item: item.get("exit_time") or "")
-    total_realized = sum(trade["pnl"] for trade in sorted_trades)
-    total_estimated_charges = sum(float(trade.get("estimated_charges") or 0.0) for trade in sorted_trades)
-    total_net = sum(float(trade.get("net_pnl") or trade["pnl"]) for trade in sorted_trades)
-    wins = sum(1 for trade in sorted_trades if trade["pnl"] > 0)
-    losses = sum(1 for trade in sorted_trades if trade["pnl"] < 0)
-    flats = len(sorted_trades) - wins - losses
-    traded_value = sum(trade["entry_price"] * trade["quantity"] for trade in sorted_trades)
-    best_trade = max(sorted_trades, key=lambda item: item["pnl"])
-    worst_trade = min(sorted_trades, key=lambda item: item["pnl"])
-
-    log_event(f"[REPORT]   Closed={len(sorted_trades)} | Wins={wins} | Losses={losses} | Flat={flats}")
-    log_event(f"[REPORT]   Traded value: {traded_value:.2f}")
-    log_event(f"[REPORT]   Realized P&L: {total_realized:+.2f}")
-    if transaction_cost_model_enabled:
-        log_event(f"[REPORT]   Est. charges: {total_estimated_charges:.2f}")
-        log_event(f"[REPORT]   Est. net P&L: {total_net:+.2f}")
-    log_event(f"[REPORT]   Return on starting capital: {(total_realized / capital) * 100:+.2f}%")
-    log_event(f"[REPORT]   Best trade: {best_trade['symbol']} {best_trade['pnl']:+.2f}")
-    log_event(f"[REPORT]   Worst trade: {worst_trade['symbol']} {worst_trade['pnl']:+.2f}")
-    log_event("[REPORT]   # | Symbol | Side | Qty | EntryTime | ExitTime | Entry | Exit | P&L | ExitReason")
-    for index, trade in enumerate(sorted_trades, start=1):
-        pair_suffix = f" [{trade['pair_id']}]" if trade.get("pair_id") else ""
-        log_event(
-            f"[REPORT]   {index:>2} | {trade['symbol']}{pair_suffix} | {trade['side']:<4} | "
-            f"{trade['quantity']:>3} | {format_trade_time(trade['entry_time'])} | "
-            f"{format_trade_time(trade['exit_time'])} | {trade['entry_price']:.2f} | "
-            f"{trade['exit_price']:.2f} | {trade['pnl']:+.2f} ({trade['pnl_pct']:+.2f}%) | {trade['exit_reason']}"
-        )
-
-    summary_rows = summarize_by_exit_reason(sorted_trades)
-    log_event("[REPORT] Exit reason summary (gross/net):")
-    for row in summary_rows:
-        log_event(
-            f"[REPORT]   {row['exit_reason']}: Trades={row['trades']} | Gross={row['gross_pnl']:+.2f} | Net={row['net_pnl']:+.2f}"
-        )
+    from display import trade_book_table
+    trade_book_table(log_event, trade_book, capital, transaction_cost_model_enabled)
 
 
 def close_position_symbols(
@@ -475,30 +437,8 @@ def save_runtime_state(
 
 
 def log_ranked_candidates(candidates: list[dict[str, Any]], log_event: Callable[..., Any]) -> None:
-    if not candidates:
-        log_event("[SCAN] No actionable ranked candidates")
-        return
-
-    log_event("[SCAN] Ranked candidates:")
-    for index, candidate in enumerate(candidates, start=1):
-        analytics = candidate.get("analytics") or {}
-        greeks_text = ""
-        if candidate.get("is_pair"):
-            pair_data = candidate.get("pair_config") or {}
-            greeks_text = (
-                f" | Pair={pair_data.get('lower_strike')}-{pair_data.get('upper_strike')}"
-                f" | Underlying={analytics.get('underlying_price', 0.0):.2f}"
-            )
-        elif analytics:
-            greeks_text = (
-                f" | Delta={analytics.get('delta', 0.0):.3f}"
-                f" | IV={analytics.get('iv', 0.0):.3f}"
-            )
-        log_event(
-            f"[SCAN] Rank {index} | {candidate['symbol']} | Signal={candidate['signal']} | "
-            f"Agree={candidate['agreement_count']} | Score={candidate['score']:.4f} | "
-            f"ATR={candidate['atr']:.2f} | Last close={candidate['latest_close']:.2f}{greeks_text}"
-        )
+    from display import ranked_candidates_table
+    ranked_candidates_table(log_event, candidates)
 
 
 def summarize_execution_stats(
@@ -515,14 +455,17 @@ def summarize_execution_stats(
     open_count = len(positions)
     open_structure_count = count_open_structures(positions)
 
-    log_event("\n" + "=" * 50)
-    log_event("[STATS] Execution summary:")
-    log_event("=" * 50)
-    log_event(f"[STATS] Starting capital: {capital:.2f}")
-    log_event(f"[STATS] Open positions: {open_count}")
-    log_event(f"[STATS] Open structures: {open_structure_count}")
-    log_event(f"[STATS] Deployed capital (entry exposure): {deployed_capital:.2f}")
-    log_event(f"[STATS] Capital reserve estimate: {max(0.0, capital - deployed_capital):.2f}")
+    from display import fmt_header
+    width = 50
+    border = "=" * width
+    log_event(f"\n{border}")
+    log_event(fmt_header("[STATS] Execution Summary"))
+    log_event(border)
+    log_event(f"[STATS]  {'Starting capital':<26}{capital:.2f}")
+    log_event(f"[STATS]  {'Open positions':<26}{open_count}")
+    log_event(f"[STATS]  {'Open structures':<26}{open_structure_count}")
+    log_event(f"[STATS]  {'Deployed capital':<26}{deployed_capital:.2f}")
+    log_event(f"[STATS]  {'Capital reserve':<26}{max(0.0, capital - deployed_capital):.2f}")
     log_trade_book_summary(capital, trade_book, log_event, transaction_cost_model_enabled)
 
     try:
@@ -531,6 +474,8 @@ def summarize_execution_stats(
             log_event(f"[REPORT] Trade report exported: {report_path}")
     except Exception as exc:
         log_event(f"[REPORT] Failed to export trade report: {exc}", "warning")
+
+    from display import fmt_pnl, fmt_side
 
     if open_count == 0:
         log_event("[STATS] No open positions to evaluate for unrealized P/L")
@@ -562,13 +507,7 @@ def summarize_execution_stats(
         pnl, pnl_pct = calculate_position_pnl(position, latest_close)
 
         bucket = long_positions if position_side(position) == "BUY" else short_positions
-        bucket.append(
-            {
-                "symbol": symbol,
-                "pnl": pnl,
-                "pnl_pct": pnl_pct,
-            }
-        )
+        bucket.append({"symbol": symbol, "pnl": pnl, "pnl_pct": pnl_pct})
         if position_side(position) == "BUY":
             long_pnl += pnl
             long_count += 1
@@ -577,37 +516,26 @@ def summarize_execution_stats(
             short_count += 1
         total_unrealized += pnl
         log_event(
-            f"[STATS] {symbol} {position_side(position)} qty={position_quantity(position)} "
-            f"entry={position_entry_price(position):.2f} current={latest_close:.2f} "
-            f"market_value={market_value:.2f} pnl={pnl:+.2f} ({pnl_pct:+.2f}%)"
+            f"[STATS]  {symbol}  {fmt_side(position_side(position))}  "
+            f"qty={position_quantity(position)}  "
+            f"entry={position_entry_price(position):.2f}  current={latest_close:.2f}  "
+            f"mktval={market_value:.2f}  {fmt_pnl(pnl, pnl_pct)}"
         )
 
     log_event("\n" + "-" * 50)
-    log_event("[STATS] LONG POSITIONS SUMMARY:")
-    log_event(f"[STATS]   Count: {long_count}")
-    log_event("[STATS]   Stocks:")
-    if long_positions:
-        for pos in sorted(long_positions, key=lambda x: x["pnl"], reverse=True):
-            log_event(f"[STATS]     {pos['symbol']}: {pos['pnl']:+.2f} ({pos['pnl_pct']:+.2f}%)")
-    else:
-        log_event("[STATS]     None")
-    log_event(f"[STATS]   Total P&L: {long_pnl:+.2f}")
+    log_event(f"[STATS] Long  count={long_count}  P&L {fmt_pnl(long_pnl)}")
+    for pos in sorted(long_positions, key=lambda x: x["pnl"], reverse=True):
+        log_event(f"[STATS]   {pos['symbol']}  {fmt_pnl(pos['pnl'], pos['pnl_pct'])}")
 
-    log_event("\n[STATS] SHORT POSITIONS SUMMARY:")
-    log_event(f"[STATS]   Count: {short_count}")
-    log_event("[STATS]   Stocks:")
-    if short_positions:
-        for pos in sorted(short_positions, key=lambda x: x["pnl"], reverse=True):
-            log_event(f"[STATS]     {pos['symbol']}: {pos['pnl']:+.2f} ({pos['pnl_pct']:+.2f}%)")
-    else:
-        log_event("[STATS]     None")
-    log_event(f"[STATS]   Total P&L: {short_pnl:+.2f}")
+    log_event(f"[STATS] Short count={short_count}  P&L {fmt_pnl(short_pnl)}")
+    for pos in sorted(short_positions, key=lambda x: x["pnl"], reverse=True):
+        log_event(f"[STATS]   {pos['symbol']}  {fmt_pnl(pos['pnl'], pos['pnl_pct'])}")
 
-    log_event("\n[STATS] OVERALL RESULTS:")
-    log_event(f"[STATS]   Total market value of open positions: {total_market_value:.2f}")
-    log_event(f"[STATS]   Total unrealized P&L: {total_unrealized:+.2f}")
+    log_event(f"\n[STATS] Total market value  {total_market_value:.2f}")
+    log_event(f"[STATS] Total unrealized    {fmt_pnl(total_unrealized)}")
     if deployed_capital > 0:
-        log_event(f"[STATS]   Return %: {(total_unrealized / deployed_capital) * 100:+.2f}%")
+        ret_pct = (total_unrealized / deployed_capital) * 100
+        log_event(f"[STATS] Return on deployed  {fmt_pnl(ret_pct)}%")
     log_event("=" * 50)
 
 

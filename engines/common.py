@@ -91,36 +91,8 @@ def log_positions(
     log_event: Callable[..., Any],
     current_prices: dict[str, float] | None = None,
 ) -> None:
-    if not positions:
-        log_event("[POSITION] Flat")
-        return
-
-    for symbol, position in positions.items():
-        current_price = current_prices.get(symbol) if current_prices else position['best_price']
-        
-        # Calculate P&L
-        if position['side'] == 'BUY':
-            pnl_abs = (current_price - position['entry_price']) * position['quantity']
-        else:  # SELL
-            pnl_abs = (position['entry_price'] - current_price) * position['quantity']
-        
-        pnl_pct = (pnl_abs / (position['entry_price'] * position['quantity'])) * 100 if position['entry_price'] > 0 else 0
-        
-        pnl_str = f"P&L={pnl_abs:+.2f} ({pnl_pct:+.2f}%)"
-        
-        log_event(
-            (
-                f"[POSITION] {position['symbol']} {position['side']} "
-                f"Qty={position['quantity']} "
-                f"Entry={position['entry_price']:.2f} "
-                f"Current={current_price:.2f} "
-                f"SL={position['stop_loss']:.2f} "
-                f"Target={position['target']:.2f} "
-                f"Trail={position['trailing_stop']:.2f} "
-                f"Best={position['best_price']:.2f} "
-                f"{pnl_str}"
-            )
-        )
+    from display import positions_table
+    positions_table(log_event, positions, current_prices)
 
 
 def get_deployed_capital(positions: dict[str, dict[str, Any]]) -> float:

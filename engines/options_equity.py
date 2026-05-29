@@ -16,8 +16,8 @@ from logger import log_event
 class OptionsEquityEngine(TradingEngine):
     settings = ENGINE_DEFAULTS["options_equity"]
     name = "options_equity"
-    data_period = "2mo"
-    data_interval = "15m"
+    data_period = str(settings.get("data_period", "2mo"))
+    data_interval = str(settings.get("data_interval", "15m"))
     order_product = "NRML"
     supported_strategies = {
         "1": "MA",
@@ -28,8 +28,8 @@ class OptionsEquityEngine(TradingEngine):
     }
     market_open = time(9, 15)
     market_close = time(15, 20)
-    sleep_seconds = 60
-    cooldown_seconds = 300
+    sleep_seconds = int(settings.get("sleep_seconds", 60))
+    cooldown_seconds = int(settings.get("cooldown_seconds", 300))
     max_symbol_allocation = float(settings["max_symbol_allocation"])
 
     def __init__(self, sl_percent, target_percent, trailing_percent):

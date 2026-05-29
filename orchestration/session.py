@@ -44,12 +44,8 @@ from .signal_workflow import scan_symbols, should_enter_trade
 
 
 def log_order_signal_banner(log_event, title, lines):
-    border = "=" * 72
-    log_event(border)
-    log_event(f"[ORDER] {title}")
-    for line in lines:
-        log_event(f"[ORDER] {line}")
-    log_event(border)
+    from display import banner as _banner
+    _banner(log_event, title, lines, prefix="ORDER", width=72)
 
 
 def _resolve_entry_order_type(context) -> str:
@@ -473,9 +469,8 @@ def run_trading_session(context):
         cycle_state = engine.get_cycle_state(now)
         if _sync_exit_only_live_positions(context, now):
             persist_runtime_state(context)
-        context.log_event("\n==============================")
-        context.log_event("New Cycle Started")
-        context.log_event("==============================")
+        from display import cycle_banner as _cycle_banner
+        _cycle_banner(context.log_event, cycle_state["reason"], now)
         context.log_event(f"[SESSION] {cycle_state['reason']}")
 
         if cycle_state["force_square_off"]:

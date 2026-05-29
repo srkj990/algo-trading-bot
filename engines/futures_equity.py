@@ -11,8 +11,8 @@ from logger import log_event
 class FuturesEquityEngine(TradingEngine):
     settings = ENGINE_DEFAULTS["futures_equity"]
     name = "futures_equity"
-    data_period = "3mo"
-    data_interval = "5m"
+    data_period = str(settings.get("data_period", "3mo"))
+    data_interval = str(settings.get("data_interval", "5m"))
     order_product = "NRML"
     supported_strategies = {
         "1": "MA",
@@ -23,8 +23,8 @@ class FuturesEquityEngine(TradingEngine):
     }
     market_open = time(9, 15)
     market_close = time(15, 20)
-    sleep_seconds = 60
-    cooldown_seconds = 300
+    sleep_seconds = int(settings.get("sleep_seconds", 60))
+    cooldown_seconds = int(settings.get("cooldown_seconds", 300))
     max_symbol_allocation = float(settings["max_symbol_allocation"])
 
     def __init__(self, sl_percent, target_percent, trailing_percent):

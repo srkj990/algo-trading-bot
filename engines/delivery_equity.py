@@ -13,8 +13,8 @@ from risk_manager import calculate_target_price
 class DeliveryEquityEngine(TradingEngine):
     settings = ENGINE_DEFAULTS["delivery_equity"]
     name = "delivery_equity"
-    data_period = "6mo"
-    data_interval = "1d"
+    data_period = str(settings.get("data_period", "6mo"))
+    data_interval = str(settings.get("data_interval", "1d"))
     order_product = "CNC"
     nifty_trend_symbol = str(settings["nifty_trend_symbol"])
     nifty_trend_ma_window = int(settings["nifty_trend_ma_window"])
@@ -28,8 +28,28 @@ class DeliveryEquityEngine(TradingEngine):
     }
     market_open = time(9, 15)
     market_close = time(15, 30)
-    sleep_seconds = 300
-    cooldown_seconds = 0
+    sleep_seconds = int(settings.get("sleep_seconds", 300))
+    cooldown_seconds = int(settings.get("cooldown_seconds", 0))
+    _adaptive_stop = {
+        "SIDEWAYS": float(settings.get("adaptive_stop_multiplier_sideways", 2.4)),
+        "NORMAL": float(settings.get("adaptive_stop_multiplier_normal", 2.0)),
+        "EXPANSION": float(settings.get("adaptive_stop_multiplier_expansion", 1.8)),
+    }
+    _adaptive_target = {
+        "SIDEWAYS": float(settings.get("adaptive_target_multiplier_sideways", 1.6)),
+        "NORMAL": float(settings.get("adaptive_target_multiplier_normal", 2.6)),
+        "EXPANSION": float(settings.get("adaptive_target_multiplier_expansion", 3.4)),
+    }
+    _adaptive_trailing = {
+        "SIDEWAYS": float(settings.get("adaptive_trailing_multiplier_sideways", 1.2)),
+        "NORMAL": float(settings.get("adaptive_trailing_multiplier_normal", 1.5)),
+        "EXPANSION": float(settings.get("adaptive_trailing_multiplier_expansion", 1.8)),
+    }
+    _adaptive_min_stop_pct = float(settings.get("adaptive_min_stop_pct", 0.018))
+    _adaptive_min_target_pct = float(settings.get("adaptive_min_target_pct", 0.040))
+    _adaptive_min_trailing_pct = float(settings.get("adaptive_min_trailing_pct", 0.012))
+    _adaptive_conviction_score_weight = float(settings.get("adaptive_conviction_score_weight", 0.75))
+    _volatility_trailing_range_multiplier = float(settings.get("volatility_trailing_range_multiplier", 1.2))
 
     def __init__(self, sl_percent, target_percent, trailing_percent):
         self.sl_percent = sl_percent
@@ -126,7 +146,7 @@ class DeliveryEquityEngine(TradingEngine):
         avg_range = float(recent_ranges.dropna().mean()) if not recent_ranges.empty else 0.0
         if avg_range != avg_range:
             return 0.0
-        return max(0.0, avg_range * 1.2)
+        return max(0.0, avg_range * self._volatility_trailing_range_multiplier)
 
     def get_trend_adaptive_level_spec(
         self,
@@ -147,31 +167,19 @@ class DeliveryEquityEngine(TradingEngine):
         )
         base_atr = max(float(atr or 0.0), float(entry_price) * 0.006)
         normalized_score = min(1.0, max(0.0, float(signal_score or 0.0)))
-        conviction = 1.0 + (normalized_score * 0.75)
+        conviction = 1.0 + (normalized_score * self._adaptive_conviction_score_weight)
 
-        stop_multiplier = {
-            "SIDEWAYS": 2.4,
-            "NORMAL": 2.0,
-            "EXPANSION": 1.8,
-        }[regime]
-        target_multiplier = {
-            "SIDEWAYS": 1.6,
-            "NORMAL": 2.6,
-            "EXPANSION": 3.4,
-        }[regime]
-        trailing_multiplier = {
-            "SIDEWAYS": 1.2,
-            "NORMAL": 1.5,
-            "EXPANSION": 1.8,
-        }[regime]
+        stop_multiplier = self._adaptive_stop[regime]
+        target_multiplier = self._adaptive_target[regime]
+        trailing_multiplier = self._adaptive_trailing[regime]
 
-        stop_distance = max(float(entry_price) * 0.018, base_atr * stop_multiplier)
+        stop_distance = max(float(entry_price) * self._adaptive_min_stop_pct, base_atr * stop_multiplier)
         target_distance = max(
-            float(entry_price) * 0.040,
+            float(entry_price) * self._adaptive_min_target_pct,
             base_atr * target_multiplier * conviction,
         )
         atr_trailing_distance = max(
-            float(entry_price) * 0.012,
+            float(entry_price) * self._adaptive_min_trailing_pct,
             base_atr * trailing_multiplier,
         )
         swing_volatility_distance = max(float(volatility_distance or 0.0), 0.0)

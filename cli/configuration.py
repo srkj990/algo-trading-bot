@@ -141,6 +141,54 @@ def log_help(message: str) -> None:
     log_event(f"[HELP] {message}")
 
 
+def log_session_config_summary(config: "SessionConfig") -> None:
+    """Print a clean aligned table of all key session parameters."""
+    from display import config_summary as _config_summary
+
+    engine_labels = {
+        "1": "Intraday Equity (MIS, 1-min)",
+        "2": "Delivery Equity (CNC, daily)",
+        "3": "Futures Equity (FNO futures)",
+        "4": "Options Equity (FNO options)",
+        "5": "Intraday Futures (MIS, F&O)",
+        "6": "Intraday Options (MIS, ATM)",
+    }
+    rows: list[tuple[str, str]] = [
+        ("Engine",            engine_labels.get(config.engine_choice, config.engine_choice)),
+        ("Execution mode",    config.execution_mode),
+        ("Data provider",     config.data_provider),
+        ("Execution provider",config.execution_provider),
+        ("Capital",           f"{config.capital:,.2f}"),
+        ("Symbol mode",       config.symbol_mode),
+        ("Symbols",           str(len(config.selected_symbols))),
+        ("Risk style",        config.risk_style_name),
+        ("ATR stop mult",     f"{config.atr_stop_multiplier:.2f}x"),
+        ("ATR trail mult",    f"{config.trailing_atr_multiplier:.2f}x"),
+        ("Target RR",         f"{config.target_risk_reward:.2f}x"),
+        ("Capital risk %",    f"{config.risk_percent * 100:.2f}%"),
+        ("Max positions",     str(config.max_open_positions)),
+        ("Max/trade",         f"{config.max_capital_per_trade:,.2f}"),
+        ("Max deployed",      f"{config.max_capital_deployed:,.2f}"),
+        ("One trade/day",     "Yes" if config.one_trade_per_symbol_per_day else "No"),
+        ("Entry selection",   config.entry_selection_mode + (f" (N={config.top_n_count})" if config.entry_selection_mode == "TOPN" else "")),
+        ("Strategy mode",     config.mode),
+    ]
+    if config.strategy_name:
+        rows.append(("Strategy", config.strategy_name))
+    if config.strategies:
+        rows.append(("Strategies", ", ".join(config.strategies)))
+    if config.min_confirmations:
+        rows.append(("Min confirmations", str(config.min_confirmations)))
+    if config.exit_only_mode:
+        rows.append(("Exit-only mode", "ACTIVE — no new entries"))
+    if config.intraday_options_lot_mode:
+        rows.append(("Options lot mode", config.intraday_options_lot_mode))
+    if config.intraday_options_entry_mode:
+        rows.append(("Options entry mode", config.intraday_options_entry_mode))
+
+    _config_summary(log_event, rows, title="Session Configuration")
+
+
 def log_broker_network_banner() -> None:
     broker_ip_mode = get_broker_ip_mode()
     configured_static_ip = (get_upstox_static_ip() or "").strip()
@@ -818,7 +866,7 @@ def collect_session_configuration() -> SessionConfig:
         f"[MAIN] Scan configuration | Engine={engine.name} | Data provider={data_provider} | Execution provider={execution_provider} | Symbol mode={symbol_mode} | Symbols={len(selected_symbols)} | Data={engine.data_period}/{engine.data_interval} | Mode={mode} | Max positions={max_open_positions} | Max/trade={max_capital_per_trade:.2f} | Max deployed={max_capital_deployed:.2f} | One trade/day={one_trade_per_symbol_per_day} | Selection={entry_selection_mode} | Top N={top_n_count}"
     )
 
-    return validate_session_config(
+    session_config = validate_session_config(
         SessionConfig(
         engine_choice=engine_choice,
         engine=engine,
@@ -854,3 +902,5 @@ def collect_session_configuration() -> SessionConfig:
         intraday_options_entry_mode=intraday_options_entry_mode,
     )
     )
+    log_session_config_summary(session_config)
+    return session_config

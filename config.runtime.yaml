@@ -88,22 +88,91 @@ engine_defaults:
     nifty_trend_symbol: "NSE:NIFTY 50" # used: index symbol for delivery trend guard
     nifty_trend_ma_window: 50 # used: moving-average window for delivery trend guard
     max_hold_days: 5 # used: max business days to hold delivery positions
+    sleep_seconds: 300 # used: session polling interval in seconds
+    cooldown_seconds: 0 # used: post-entry cooldown before next entry is considered
+    data_period: "6mo" # used: live session history lookback period
+    data_interval: "1d" # used: live session candle interval
+    adaptive_stop_multiplier_sideways: 2.4 # used: ATR stop multiplier in sideways regime
+    adaptive_stop_multiplier_normal: 2.0 # used: ATR stop multiplier in normal regime
+    adaptive_stop_multiplier_expansion: 1.8 # used: ATR stop multiplier in expansion regime
+    adaptive_target_multiplier_sideways: 1.6 # used: ATR target multiplier in sideways regime
+    adaptive_target_multiplier_normal: 2.6 # used: ATR target multiplier in normal regime
+    adaptive_target_multiplier_expansion: 3.4 # used: ATR target multiplier in expansion regime
+    adaptive_trailing_multiplier_sideways: 1.2 # used: ATR trailing multiplier in sideways regime
+    adaptive_trailing_multiplier_normal: 1.5 # used: ATR trailing multiplier in normal regime
+    adaptive_trailing_multiplier_expansion: 1.8 # used: ATR trailing multiplier in expansion regime
+    adaptive_min_stop_pct: 0.018 # used: minimum stop distance as fraction of entry price
+    adaptive_min_target_pct: 0.040 # used: minimum target distance as fraction of entry price
+    adaptive_min_trailing_pct: 0.012 # used: minimum trailing distance as fraction of entry price
+    adaptive_conviction_score_weight: 0.75 # used: how much signal score scales the conviction multiplier
+    volatility_trailing_range_multiplier: 1.2 # used: swing-range multiplier for volatility trailing distance
   intraday_equity:
     gap_threshold_percent: 1.0 # used: classifies gap-up/gap-down context in intraday equity
     opening_range_candles: 15 # used: opening-range window size for intraday equity
     breakout_volume_multiplier: 1.2 # used: volume threshold for intraday-equity breakout filter
+    square_off_time: "15:15" # used: time after which all intraday-equity positions are force-exited
+    sleep_seconds: 60 # used: session polling interval in seconds
+    cooldown_seconds: 300 # used: post-entry cooldown before next entry is considered
+    data_period: "1d" # used: live session history lookback period
+    data_interval: "1m" # used: live session candle interval
+    adaptive_stop_multiplier_sideways: 1.6 # used: ATR stop multiplier in sideways regime
+    adaptive_stop_multiplier_normal: 1.4 # used: ATR stop multiplier in normal regime
+    adaptive_stop_multiplier_expansion: 1.4 # used: ATR stop multiplier in expansion regime
+    adaptive_target_multiplier_sideways: 1.1 # used: ATR target multiplier in sideways regime
+    adaptive_target_multiplier_normal: 1.6 # used: ATR target multiplier in normal regime
+    adaptive_target_multiplier_expansion: 2.2 # used: ATR target multiplier in expansion regime
+    adaptive_trailing_multiplier_sideways: 0.8 # used: ATR trailing multiplier in sideways regime
+    adaptive_trailing_multiplier_normal: 1.0 # used: ATR trailing multiplier in normal regime
+    adaptive_trailing_multiplier_expansion: 1.15 # used: ATR trailing multiplier in expansion regime
+    adaptive_min_stop_pct: 0.0025 # used: minimum stop distance as fraction of entry price
+    adaptive_min_target_pct: 0.0045 # used: minimum target distance as fraction of entry price
+    adaptive_min_trailing_pct: 0.002 # used: minimum trailing distance as fraction of entry price
+    adaptive_conviction_score_weight: 0.5 # used: how much signal score scales the conviction multiplier
   futures_equity:
     max_symbol_allocation: 0.25 # used: max capital allocation per futures-equity position
+    sleep_seconds: 60 # used: session polling interval in seconds
+    cooldown_seconds: 300 # used: post-entry cooldown before next entry is considered
+    data_period: "3mo" # used: live session history lookback period
+    data_interval: "5m" # used: live session candle interval
   options_equity:
     max_symbol_allocation: 0.25 # used: max capital allocation per options-equity position
+    sleep_seconds: 60 # used: session polling interval in seconds
+    cooldown_seconds: 300 # used: post-entry cooldown before next entry is considered
+    data_period: "2mo" # used: live session history lookback period
+    data_interval: "15m" # used: live session candle interval
   intraday_futures:
     max_symbol_allocation: 0.35 # used: max capital allocation per intraday-futures position
+    entry_cutoff: "15:05" # used: time after which no new intraday-futures entries are allowed
+    square_off_time: "15:15" # used: time after which all intraday-futures positions are force-exited
+    sleep_seconds: 60 # used: session polling interval in seconds
+    cooldown_seconds: 180 # used: post-entry cooldown before next entry is considered
+    data_period: "15d" # used: live session history lookback period
+    data_interval: "3m" # used: live session candle interval
   intraday_options:
     max_symbol_allocation: 0.2 # used: max capital allocation per intraday-options structure
     min_contract_price: 8.0 # used: blocks too-cheap option premiums
     min_abs_delta: 0.2 # used: minimum absolute delta for intraday-options entries
     max_buy_iv_percentile: 75.0 # used: buy-side IV percentile ceiling
     min_sell_iv_percentile: 15.0 # used: sell-side IV percentile floor
+    entry_cutoff: "15:05" # used: time after which no new intraday-options entries are allowed
+    square_off_time: "15:15" # used: time after which all intraday-options positions are force-exited
+    sleep_seconds: 15 # used: session polling interval in seconds
+    cooldown_seconds: 180 # used: post-entry cooldown before next entry is considered
+    data_period: "1d" # used: live session history lookback period
+    data_interval: "1m" # used: live session candle interval
+    adaptive_stop_multiplier_sideways: 2.0 # used: ATR stop multiplier in sideways regime
+    adaptive_stop_multiplier_normal: 1.7 # used: ATR stop multiplier in normal regime
+    adaptive_stop_multiplier_expansion: 1.7 # used: ATR stop multiplier in expansion regime
+    adaptive_target_multiplier_sideways: 1.1 # used: ATR target multiplier in sideways regime
+    adaptive_target_multiplier_normal: 1.7 # used: ATR target multiplier in normal regime
+    adaptive_target_multiplier_expansion: 2.3 # used: ATR target multiplier in expansion regime
+    adaptive_trailing_multiplier_sideways: 0.8 # used: ATR trailing multiplier in sideways regime
+    adaptive_trailing_multiplier_normal: 1.0 # used: ATR trailing multiplier in normal regime
+    adaptive_trailing_multiplier_expansion: 1.15 # used: ATR trailing multiplier in expansion regime
+    adaptive_min_stop_pct: 0.05 # used: minimum stop distance as fraction of entry price
+    adaptive_min_target_pct: 0.08 # used: minimum target distance as fraction of entry price
+    adaptive_min_trailing_pct: 0.035 # used: minimum trailing distance as fraction of entry price
+    adaptive_conviction_score_weight: 0.5 # used: how much signal score scales the conviction multiplier
     momentum_volume_multiplier: 1.5 # used: momentum-entry volume-spike threshold
     momentum_spike_multiplier: 1.6 # used: max allowed candle-range spike for momentum entries
     momentum_min_body_ratio: 0.6 # used: minimum candle body ratio for momentum entries
