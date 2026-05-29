@@ -14,7 +14,16 @@ def compute_rsi(series, period=14):
 
 
 def compute_vwap(df):
-    return (df['Close'] * df['Volume']).cumsum() / df['Volume'].cumsum()
+   volume = df["Volume"].fillna(0)
+   price = (
+        (df["High"] + df["Low"] + df["Close"]) / 3
+        if {"High", "Low", "Close"}.issubset(df.columns)
+        else df["Close"]
+    )
+   cumulative_volume = volume.cumsum()
+   vwap = (price * volume).cumsum() / cumulative_volume.replace(0, pd.NA)
+   fallback = price.expanding(min_periods=1).mean()
+   return vwap.fillna(fallback)
 
 
 def compute_atr(df, period=14):

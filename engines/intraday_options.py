@@ -59,7 +59,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         INTRADAY_OPTIONS_MARKET_OPEN_HOUR,
         INTRADAY_OPTIONS_MARKET_OPEN_MINUTE,
     )
-    entry_cutoff = time(15, 10)
+    entry_cutoff = time(15, 5)
     square_off_time = time(15, 15)
     market_close = time(15, 30)
     sleep_seconds = 15

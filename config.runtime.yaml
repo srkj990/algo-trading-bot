@@ -65,7 +65,7 @@ fno:
   intraday_options_min_range_pct: 0.35 # used: minimum underlying range percent for intraday-options regime checks
   intraday_options_min_signal_score: 0.03 # used: minimum score for intraday-options signals
   intraday_options_max_hold_minutes: 30 # used: max holding time before intraday-options time exit
-  intraday_options_time_exit_cutoff: "14:45" # used: hard intraday-options time-based exit cutoff
+  intraday_options_time_exit_cutoff: "15:10" # used: hard intraday-options time-based exit cutoff
   intraday_options_iv_expansion_max_iv_percentile: 20 # used: IV-expansion entry ceiling for IV percentile
   intraday_options_sideways_vwap_band_pct: 0.0015 # used: VWAP deviation band for sideways-regime classification
   intraday_options_sideways_lookback_candles: 8 # used: lookback window for sideways-regime checks
@@ -74,7 +74,7 @@ fno:
   intraday_options_regime_sideways_vwap_dev_pct: 0.0025 # used: VWAP-deviation threshold for sideways-regime classification
   intraday_options_regime_expansion_iv_change_pct: 2.0 # used: IV-change threshold for expansion-regime classification
   intraday_options_lot_mode: "CAPITAL_BASED" # used: default lot-sizing mode offered to intraday-options sessions/backtests
-  intraday_options_entry_mode: "LIVE_STAGED" # used: default intraday-options entry mode for sessions/backtests
+  intraday_options_entry_mode: "LEGACY_IMMEDIATE" # used: default intraday-options entry mode for sessions/backtests
   intraday_options_max_entry_cost_ratio: 0.30 # used: blocks intraday-option entries when expected costs consume too much profit
   intraday_options_max_spread_pct: 0.015 # used: intraday-options-specific live spread guard
   intraday_options_min_open_interest: 10000 # used: minimum open interest for live intraday-options entry
@@ -182,10 +182,10 @@ backtest_defaults:
       period: "5d" # used: default backtest lookback period for intraday futures
       interval: "5m" # used: default backtest candle interval for intraday futures
     intraday_options:
-      period: "5d" # used: default backtest lookback period for intraday options
+      period: "1d" # used: default backtest lookback period for intraday options
       interval: "1m" # used: default backtest candle interval for intraday options
   prompt_defaults:
-    engine_choice: 1 # used: default engine selection for backtest CLI prompt
+    engine_choice: 6 # used: default engine selection for backtest CLI prompt
     capital: 100000 # used: default starting capital for backtest CLI prompt
     symbol_mode: 3 # used: default symbol-universe mode for backtest CLI prompt
     single_symbol_key: "1" # used: default single-symbol table selection for backtest CLI prompt
@@ -193,7 +193,7 @@ backtest_defaults:
     fno_options_base_symbol: 1 # used: default options underlying choice for backtest CLI prompt
     expiry_choice: 1 # used: default expiry selection for backtest CLI prompt
     intraday_options_structure_mode: 1 # used: default intraday-options structure selection for backtest CLI prompt
-    intraday_options_strike_mode: 2 # used: default ATM strike-mode selection for backtest CLI prompt
+    intraday_options_strike_mode: 1 # used: default ATM strike-mode selection for backtest CLI prompt
     fno_contract_confirm: 1 # used: default F&O contract confirmation choice for backtest CLI prompt
     intraday_options_strategy: 4 # used: default intraday-options strategy choice for backtest CLI prompt
     intraday_equity_strategy_mode: 2 # used: default intraday-equity strategy-mode choice for backtest CLI prompt
