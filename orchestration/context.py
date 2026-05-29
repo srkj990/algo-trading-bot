@@ -42,6 +42,10 @@ class TradingContext:
     trade_book: list[dict[str, Any]] = field(default_factory=list)
     recent_live_order_timestamps: list[float] = field(default_factory=list)
     previous_cycle_started_at: datetime | None = None
+    # WebSocket tick manager (optional – set after build_trading_context)
+    _ticker_manager: Any | None = field(default=None, repr=False)
+    # Map of symbol → instrument_token for WebSocket subscriptions
+    _symbol_token_map: dict[str, int] = field(default_factory=dict)
 
 
 def build_trading_context(config: SessionConfig) -> TradingContext:
@@ -82,8 +86,35 @@ def build_trading_context(config: SessionConfig) -> TradingContext:
     )
     context.fetch_data = _build_context_fetcher(context)
     context.place_order = _build_context_order_placer(context)
+    _maybe_start_ticker(context)
     persist_runtime_state(context)
     return context
+
+
+def _maybe_start_ticker(context: TradingContext) -> None:
+    """
+    Start the KiteConnect WebSocket tick manager when running LIVE on KITE
+    and the engine supports tick-based entry.  Silently skips otherwise.
+    """
+    from tick_entry.engine_config import get_engine_tick_config
+    tick_cfg = get_engine_tick_config(context.engine.name)
+    if not tick_cfg.enabled:
+        return
+
+    mode = str(getattr(context.config, "execution_mode", "PAPER")).upper()
+    provider = str(getattr(context.config, "execution_provider", "KITE")).upper()
+    # WebSocket only makes sense in LIVE mode; PAPER uses REST LTP poll instead
+    if mode != "LIVE" or provider != "KITE":
+        return
+
+    try:
+        from config import get_access_token, get_api_key
+        from data_providers.kite_ticker import get_ticker_manager
+        ticker = get_ticker_manager(get_api_key(), get_access_token())
+        context._ticker_manager = ticker
+        log_event("[TICKER] KiteConnect WebSocket ticker started")
+    except Exception as exc:
+        log_event(f"[TICKER] Could not start WebSocket ticker: {exc} — will use LTP polling", "warning")
 
 
 def _build_context_fetcher(context: TradingContext) -> Callable[..., Any]:

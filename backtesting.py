@@ -140,6 +140,10 @@ class BacktestConfig:
     intraday_options_entry_mode: str = "LIVE_STAGED"
     summary_lines: list[str] = field(default_factory=list)
     option_backtest_settings: dict[str, Any] | None = None
+    # Tick-entry simulation (opt-in).
+    # When True, entry fills are simulated at an estimated intra-candle price
+    # (rather than candle close) to model early breakout entry via ticks.
+    tick_entry_enabled: bool = False
 
 
 def _prompt_default(key, fallback):
@@ -797,6 +801,36 @@ class BacktestEngine:
                 continue
 
             entry_price = candidate["latest_close"]
+
+            # ── Tick-entry fill simulation ─────────────────────────────────
+            # When tick_entry_enabled=True, model "we entered earlier in the
+            # candle at the breakout level" rather than at the candle close.
+            # Uses the signal candle's OHLC to compute a conservative fill.
+            # Not applied to delivery_equity (daily candles) or intraday_options
+            # where the option premium candle is used directly.
+            if (
+                self.config.tick_entry_enabled
+                and self.config.engine_name not in {"delivery_equity", "intraday_options"}
+            ):
+                try:
+                    src_symbol = candidate.get("underlying_symbol") or candidate["symbol"]
+                    candle_df = (history or {}).get(src_symbol)
+                    if candle_df is not None:
+                        slice_at = candle_df.loc[:timestamp]
+                        if not slice_at.empty:
+                            candle_row = slice_at.iloc[-1]
+                            from tick_entry.manager import backtest_tick_fill
+                            tick_fill = backtest_tick_fill(
+                                candidate,
+                                candle_open=float(candle_row.get("Open", entry_price)),
+                                candle_high=float(candle_row.get("High", entry_price)),
+                                candle_low=float(candle_row.get("Low", entry_price)),
+                            )
+                            if tick_fill is not None:
+                                entry_price = tick_fill
+                except Exception:
+                    pass  # Fall back to candle close on any error
+
             actual_targets = resolve_trade_targets(
                 engine_name=self.config.engine_name,
                 entry_price=entry_price,
@@ -910,6 +944,8 @@ class BacktestEngine:
                     "side": candidate["signal"],
                     "entry_time": timestamp,
                     "entry_price": entry_price,
+                    "candle_close_price": float(candidate["latest_close"]),
+                    "tick_entry": self.config.tick_entry_enabled and entry_price != float(candidate["latest_close"]),
                     "quantity": qty,
                     "score": candidate["score"],
                     "atr": candidate["atr"],
@@ -1219,6 +1255,11 @@ class BacktestEngine:
             closed_trades["net_pnl"].fillna(closed_trades["pnl"]).sum()
         ) if not closed_trades.empty and "pnl" in closed_trades.columns else 0.0
 
+        tick_fills = int(
+            trades_df["tick_entry"].sum()
+            if not trades_df.empty and "tick_entry" in trades_df.columns
+            else 0
+        )
         return {
             "config": self.config,
             "ending_equity": ending_equity,
@@ -1228,6 +1269,7 @@ class BacktestEngine:
             "max_drawdown_percent": max_drawdown,
             "total_estimated_charges": total_estimated_charges,
             "total_net_pnl": total_net_pnl,
+            "tick_entry_fills": tick_fills,
             "equity_curve": equity_df,
             "trades": trades_df,
         }

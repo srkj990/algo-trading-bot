@@ -789,23 +789,39 @@ def place_order(
     )
 
     if resolved_mode != "LIVE":
-        log_event("Order NOT placed (paper mode)")
+        # Simulate a fill so that PAPER-mode positions are tracked identically
+        # to LIVE mode.  The fill price is entry_price → price → 0 (fallback).
+        simulated_fill_price = float(entry_price or price or 0.0)
+        log_event(
+            f"[PAPER] Simulated fill: {signal} {quantity} {symbol} @ "
+            f"{simulated_fill_price:.2f} (mode={resolved_mode})"
+        )
         _record_order_audit(
             trade_store,
-            stage="paper_skip",
+            stage="paper_fill",
             signal=signal,
             quantity=quantity,
             symbol=symbol,
             product=product,
             execution_mode=resolved_mode,
             provider=resolved_provider,
-            status="SKIPPED",
+            status="FILLED",
             note=note,
-            entry_price=entry_price,
-            message="Order skipped because execution mode is PAPER",
+            entry_price=simulated_fill_price,
+            message=f"Simulated paper fill @ {simulated_fill_price:.2f}",
             metadata={"order_type": (order_type or "MARKET").upper(), "price": price},
         )
-        return None
+        if simulated_fill_price <= 0:
+            # No reference price available — cannot simulate a fill
+            return None
+        return OrderResult(
+            order_id=f"PAPER-{int(time.time() * 1000)}",
+            status=OrderStatus.FILLED,
+            message=f"Paper simulated fill ({resolved_mode})",
+            requested_quantity=int(quantity),
+            filled_quantity=int(quantity),
+            average_price=simulated_fill_price,
+        )
 
     client = _get_broker_client(resolved_provider)
     if enforce_spread_check:

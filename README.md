@@ -1,299 +1,307 @@
-# Trading Algo Bot
+# Zerodha Algo Trading Bot
 
-Interactive trading and backtesting bot for Indian markets with six engines:
+Algorithmic trading and backtesting system for Indian markets (NSE/BSE/NFO/BFO).
+Supports six trading engines across three execution modes with shared signal, risk, and position logic.
 
-- `intraday_equity`
-- `delivery_equity`
-- `futures_equity`
-- `options_equity`
-- `intraday_futures`
-- `intraday_options`
+For day-to-day operator instructions, read [HOW_TO_USE.md](./HOW_TO_USE.md).
 
-If you want the operator workflow instead of the project overview, read [HOW_TO_USE.md](./HOW_TO_USE.md).
+---
 
-## What This Repo Does
+## Execution Modes
 
-- Runs paper or live sessions from [main.py](./main.py)
-- Runs interactive backtests from [backtesting.py](./backtesting.py)
-- Persists runtime state under `state/`
-- Writes session logs under `logs/`
-- Exports backtest results under `Results/BackTest/`
-- Supports broker execution through Kite and selected equity flows through Upstox
-
-The important design rule in the current codebase is:
-
-- backtesting should use the same entry/exit target logic as live trading wherever that logic exists in the live path
-- shared stop, target, trailing-distance, and activation-distance resolution now flows through `resolve_trade_targets(...)` in [engines/common.py](./engines/common.py)
-- live entry orchestration and backtesting are expected to stay on that same shared target-resolution path
-- engines that own adaptive position builders, such as `intraday_equity`, `delivery_equity`, and `intraday_options`, should use those builders in both live/paper and backtest paths
-
-## Current Engine Coverage
-
-| Engine | Product | Data cadence | Typical use | Notes |
-| --- | --- | --- | --- | --- |
-| `intraday_equity` | `MIS` | `1d` / `1m` live, `5m` backtest default | same-day stock trading | auto-adaptive strategy selection plus adaptive SL/target/trailing |
-| `delivery_equity` | `CNC` | `6mo` / `1d` | swing and delivery positions | long-only entries plus swing-style adaptive SL/trailing |
-| `futures_equity` | `NRML` | `3mo` / `5m` live, `15m` backtest default | positional index futures | lot-aware sizing |
-| `options_equity` | `NRML` | `2mo` / `15m` | positional index options | lot-aware sizing |
-| `intraday_futures` | `MIS` | `15d` / `3m` live, `5m` backtest default | intraday index futures | entry cutoff + forced square-off |
-| `intraday_options` | `MIS` | `1d` / `1m` | intraday ATM option trading | dynamic ATM, Greeks filters, adaptive runner logic |
-
-## Engine Features
-
-### Intraday Equity
-
-- Long and short intraday entries
-- `MA`, `RSI`, `VWAP`, `BREAKOUT`, `ORB`
-- `AUTO_ADAPTIVE` mode in live and backtest flows
-- VWAP bias filter
-- breakout volume filter
-- reversal exits with confirmation candles
-- late-day entry cutoff before square-off
-- adaptive stop, target, trailing distance, and position sizing based on ATR, recent range, and signal score
-- backtests enforce the same entry cutoff and intraday square-off behavior instead of carrying MIS positions overnight
-
-#### Auto-Adaptive Intraday Equity
-
-Auto-adaptive mode is a strategy-selection layer, not a separate technical indicator.
-
-For each symbol and trade day, it:
-
-- builds a market context from the current intraday session and daily history
-- classifies the open as `GAP_UP`, `GAP_DOWN`, or `NO_GAP`
-- classifies early behavior as `GAP_GO`, `GAP_FILL`, `SIDEWAYS`, or `PENDING_OPEN_RANGE`
-- chooses the strategy basket and confirmation count from that context
-- waits for the opening range before entries when the context is not ready
-- caches the daily regime context so repeated scans do not recalculate it every cycle
-
-Current routing:
-
-- gap with continuation behavior: `ORB`, `VWAP`, `BREAKOUT`, usually with 2 confirmations
-- gap with fill behavior: `ORB`, `VWAP`, usually with 2 confirmations
-- gap but sideways behavior: `VWAP`, `RSI`, usually with 2 confirmations
-- normal/no-gap behavior: `MA`, `RSI`, with the configured normal confirmation count
-
-After a signal passes, the entry still goes through the same VWAP bias, breakout-volume, cost-aware, risk, capital, and one-trade-per-day gates as the other intraday-equity modes.
-
-Adaptive levels then classify the trade as:
-
-- `SIDEWAYS`: lower conviction, tighter target behavior, slower expansion assumptions
-- `NORMAL`: balanced ATR/range behavior
-- `EXPANSION`: stronger score or wider recent range, wider target and trailing behavior
-
-The position builder stores `adaptive_levels_enabled`, `adaptive_regime`, adaptive target levels, ATR trailing distance, range volatility distance, stop distance, and trailing activation distance on the position.
-
-### Delivery Equity
-
-- Long-only entries
-- `MA`, `RSI`, `BREAKOUT`
-- Nifty trend guard for new long entries
-- per-symbol allocation cap
-- delivery holdings reconciliation in live mode
-- time-based exit support across business days
-- swing-style adaptive stop, target reference, trailing distance, and position sizing based on daily ATR, recent daily range, and signal score
-- delivery target remains a reference level and does not force an exit; delivery exits still rely on stop/trailing/sell-signal/time-based logic
-
-### Futures Equity
-
-- Positional index futures
-- `MA`, `RSI`, `BREAKOUT`, `VWAP`, `ORB`
-- lot-size-aware sizing
-- startup reconciliation from broker positions
-
-### Options Equity
-
-- Positional index options
-- `MA`, `RSI`, `BREAKOUT`, `VWAP`, `ORB`
-- lot-size-aware sizing
-- startup reconciliation from broker positions
-
-### Intraday Futures
-
-- Intraday index futures on `MIS`
-- entry cutoff and forced square-off window
-- lot-size-aware sizing and startup sync
-
-### Intraday Options
-
-- Dynamic ATM single-option flow driven by underlying signal
-- optional two-leg bounded range pair flow in live/paper sessions
-- strategies:
-  - `ATM_MOMENTUM`
-  - `ATM_ORB`
-  - `ATM_VWAP_REVERSION`
-  - `ATM_MULTI`
-  - `ATM_BREAKOUT_EXPANSION`
-  - `ATM_IV_EXPANSION`
-  - `ATM_TRAP_REVERSAL`
-- Greeks, IV, VWAP, delta, spread, open-interest, expiry, and cost filters
-- staged momentum entry mode for live-style breakout confirmation
-- legacy immediate mode for raw breakout-style entry
-- dynamic ATM strike rolling for open long option flows
-- theta-aware exits
-- trend-adaptive runner handling with premium-volatility-aware trailing distance
-- two-lot runner protection behavior and larger multi-lot partial exits
-
-## Shared Trading Features
-
-- cost-aware trade filtering before entry
-- risk-style presets: `CONSERVATIVE`, `BALANCED`, `AGGRESSIVE`
-- separate intraday vs positional risk presets
-- max open positions
-- max capital per trade
-- max capital deployed
-- one-trade-per-symbol-per-day control
-- paper and live trade persistence
-- order audit and trade store under `state/trade_store/`
-- provider caching plus per-cycle caching
-- runtime safety checks for live orders
-
-## Strategy Reference
-
-Strategy candles use the engine's active data interval. For example, `intraday_equity` live uses `1m` candles, while its default backtest uses `5m` candles. Delivery equity uses `1d` candles.
-
-### Legacy Equity/Futures Strategies
-
-These strategies are shared by equity, futures, and positional option engines where supported.
-
-| Strategy | Configured minimum | Practical first actionable | Core candle logic | Signal rule | Main tuning location |
-| --- | ---: | ---: | --- | --- | --- |
-| `MA` | 50 | 51 | rolling `MA20` and `MA50` on `Close` | `BUY` when `MA20 > MA50`, `SELL` when `MA20 < MA50` | `strategy.min_candles.MA` |
-| `RSI` | 14 | 15 | 14-period RSI on `Close` | `BUY` below 30, `SELL` above 70 | `strategy.min_candles.RSI`, `indicators.compute_rsi()` |
-| `BREAKOUT` | 20 | 22 | previous 20 completed candles, excluding latest | `BUY` above prior high, `SELL` below prior low | `strategy.min_candles.BREAKOUT`, `get_breakout_reference_levels()` |
-| `VWAP` | 1 | 6 | cumulative VWAP from session/history frame | `BUY` above VWAP, `SELL` below VWAP | `strategy.min_candles.VWAP`, `indicators.compute_vwap()` |
-| `ORB` | 20 | 21 | first 15 candles define opening high/low | `BUY` above opening range high, `SELL` below opening range low | `strategy.min_candles.ORB`, `engine_defaults.intraday_equity.opening_range_candles` |
-
-The practical first actionable column includes the legacy confirmation wrapper in `strategy.confirm_signal()`, which requires the previous candle window and current candle window to agree. This is why the effective candle count can be higher than `strategy.min_candles`.
-
-### Intraday-Equity Auto-Adaptive Inputs
-
-| Item | Default / rule | Used for | Tuning location |
+| Mode | Entry point | Real orders | Use for |
 | --- | --- | --- | --- |
-| Gap threshold | `1.0%` | classifies `GAP_UP`, `GAP_DOWN`, `NO_GAP` | `engine_defaults.intraday_equity.gap_threshold_percent` |
-| Opening range | `15` candles | detects `GAP_GO`, `GAP_FILL`, `SIDEWAYS` | `engine_defaults.intraday_equity.opening_range_candles` |
-| Breakout volume filter | same clock time across prior days; current volume >= average * `1.2` | validates `BREAKOUT` signals | `engine_defaults.intraday_equity.breakout_volume_multiplier` |
-| Normal confirmations | `2` | confirmations for no-gap `MA` + `RSI` routing | `execution_safety.intraday_equity_auto_normal_min_confirmations` |
-| Reversal confirmation | `2` opposite-signal candles | avoids single-candle reversal exits | `execution_safety.reversal_exit_confirmation_candles` |
-| Entry cutoff | `30` minutes before 15:15 square-off | blocks fresh intraday-equity entries late in session | `execution_safety.intraday_equity_entry_cutoff_minutes_before_squareoff` |
-| ATR period | `14` | scoring, sizing, adaptive levels | `indicators.compute_atr()` / `signal_scoring.get_atr_value()` |
+| **Backtest** | `backtesting.py` | No | Historical simulation |
+| **Paper** | `main.py` | No — simulated fills | Market-hours dry run |
+| **Live** | `main.py` | Yes — Kite / Upstox | Production trading |
 
-### Intraday-Options Strategies
+**Paper mode now simulates fills.** `executor.place_order` returns a synthetic `OrderResult` in PAPER mode so positions are tracked in memory exactly as they would be in LIVE mode. This enables the full position lifecycle (stop-loss, trailing, target, exit) to run during paper sessions without connecting to a broker.
 
-Intraday-options strategies emit `BUY_CE`, `BUY_PE`, or `NO_TRADE`; execution maps `BUY_CE` and `BUY_PE` to long option entries.
+---
 
-| Strategy | Configured minimum | Practical minimum | Core candle logic | Signal rule | Main tuning location |
-| --- | ---: | ---: | --- | --- | --- |
-| `ATM_MOMENTUM` | 20 | 20 | RSI14, VWAP, previous 5-candle breakout high/low | bullish above VWAP + RSI > 60 + breakout; bearish below VWAP + RSI < 40 + breakdown | `strategy.py`, `engine_defaults.intraday_options.momentum_*` |
-| `ATM_ORB` | 16 | 16 | first 15 session candles | CE above opening range high, PE below opening range low | `strategy_orb(opening_range_minutes=15)` |
-| `ATM_VWAP_REVERSION` | 20 | 20 | 6-candle prior VWAP deviation and latest re-entry | CE after negative deviation re-enters above VWAP; PE after positive deviation re-enters below VWAP | `strategy_vwap(deviation_threshold=0.0035, lookback=6)` |
-| `ATM_MULTI` | 20 | 20 | combines momentum, ORB, VWAP reversion, ATR14 sideways check | uses aligned momentum+ORB; otherwise can use VWAP reversion in low ATR regime | `strategy_multi(sideways_atr_threshold=0.0035)` |
-| `ATM_BREAKOUT_EXPANSION` | 45 | 45 | 45-candle compression, 30-candle breakout, 20-candle volume, ATR14 expansion | breakout plus compression plus volume spike plus ATR expansion | `strategy_breakout_expansion()` |
-| `ATM_IV_EXPANSION` | 30 | 30 | 20-candle key level, 10-candle body average, RSI14 | breakout candle with body >= 1.8x average and RSI confirmation | `strategy_iv_expansion()` |
-| `ATM_TRAP_REVERSAL` | 24 | 26 | 20-candle support/resistance, 3 trap candles, 10-candle body average | failed support/resistance break with reversal body >= 1.5x average | `strategy_trap_reversal()` |
+## Six Trading Engines
 
-### Indicators And Score Inputs
+| # | Engine | Product | Candle cadence | Typical use |
+| --- | --- | --- | --- | --- |
+| 1 | `intraday_equity` | `MIS` | `1m` live / `5m` backtest default | Intraday stock trading |
+| 2 | `delivery_equity` | `CNC` | `1d` | Swing and delivery positions |
+| 3 | `futures_equity` | `NRML` | `5m` live / `15m` backtest | Positional index futures |
+| 4 | `options_equity` | `NRML` | `15m` | Positional index options |
+| 5 | `intraday_futures` | `MIS` | `3m` live / `5m` backtest | Intraday index futures |
+| 6 | `intraday_options` | `MIS` | `1m` | Intraday ATM option runner |
 
-| Indicator / score | Default candles | Used by |
-| --- | ---: | --- |
-| RSI | 14 | `RSI`, `ATM_MOMENTUM`, `ATM_IV_EXPANSION` |
-| ATR | 14 | ranking score, adaptive stops, trailing distance, `ATM_MULTI`, volatility regimes |
-| VWAP | cumulative over provided frame/session | `VWAP`, VWAP bias gates, option filters, auto-adaptive context |
-| Candidate score floor | `0.008` | `rank_candidates()` filters low-quality ranked candidates |
+---
 
-Strategy score is not a probability. It is a ranking/conviction number built from distance from trigger levels plus normalized ATR. Adaptive equity position builders also use it to classify `SIDEWAYS`, `NORMAL`, or `EXPANSION`.
+## Tick-Based Entry System (`tick_entry/`)
 
-## Runtime Configuration
+### Problem solved
 
-Runtime defaults are defined in [config.py](./config.py) and can be overridden with [config.runtime.yaml](./config.runtime.yaml).
+The standard polling loop fetches closed candles every 60 seconds (15 seconds for intraday options). On a large breakout candle that moves 1–3%, the entry fires at the **top of the candle close** — missing most of the move.
 
-Important config sections:
+### How it works
 
-- `execution_safety`
-- `transaction_costs`
-- `data_cache`
-- `session_defaults`
-- `risk_controls`
-- `orders`
-- `trade_store`
-- `fno`
-- `engine_defaults`
-- `backtest_defaults`
+After each scan cycle detects a signal, the `TickEntryManager` watches the live price for the remaining time in the cycle and fires an entry as soon as price crosses the breakout trigger level — without waiting for the next closed candle.
 
-Useful current knobs:
+| Mode | Price source | Entry mechanism |
+| --- | --- | --- |
+| **Live** | KiteConnect WebSocket (`KiteTicker`) with REST LTP fallback | Callback fires immediately on tick crossing trigger |
+| **Paper** | REST LTP poll every 3–10 seconds | Entry fires mid-cycle; fill simulated via paper `OrderResult` |
+| **Backtest** | Candle OHLC check — no network | Fill price = `max(candle_open, close − ATR×0.40)` for BUY |
 
-- `session_defaults.exit_only_default`
-- `session_defaults.live_broker_resync_interval_seconds`
-- `orders.default_entry_order_type`
-- `orders.entry_limit_price_buffer_pct`
-- `fno.intraday_options_lot_mode`
-- `fno.intraday_options_entry_mode`
-- `fno.intraday_options_max_entry_cost_ratio`
-- `fno.intraday_options_roll_trigger_pct`
+### Per-engine watch windows
 
-## Live vs Backtest Parity
+| Engine | Watch window | Poll interval | Notes |
+| --- | --- | --- | --- |
+| `intraday_equity` | 52 s | 8 s | 60 s cycle |
+| `intraday_options` | 11 s | 3 s | 15 s cycle — highest value here |
+| `intraday_futures` | 52 s | 8 s | 60 s cycle |
+| `futures_equity` | 52 s | 10 s | 60 s cycle |
+| `options_equity` | 52 s | 10 s | 60 s cycle |
+| `delivery_equity` | **disabled** | — | Daily candles; no intra-candle benefit |
 
-Recent behavior to be aware of:
+### Trigger level
 
-- live and backtest entry target resolution share the same `resolve_trade_targets(...)` helper
-- backtesting no longer keeps a separate fallback stop/target/trailing calculation for engines that already have live logic
-- backtest trailing updates now read stored `trailing_distance` instead of using hardcoded zero
-- intraday-equity and delivery-equity backtests reuse their adaptive position builders when those builders are available
-- intraday-equity backtests respect entry cutoff and forced square-off windows, so MIS positions are not carried overnight
-- auto-adaptive backtests use a backtest-local regime cache and no-op persistence shim so live runtime state is not mutated
-- intraday-options backtests reuse live-style momentum, runner, and trend-adaptive position behavior
+The live trigger is the last closed candle close ± (ATR × 0.10). The small buffer prevents noise entries while keeping the price threshold close to the signal level.
 
-That means:
+### Backtest tick simulation
 
-- if you tune risk style, trailing multiplier, or cost-aware target behavior, both live and backtest flows should move together
-- if an engine owns custom position behavior in the live engine class, backtesting should prefer that behavior instead of inventing a parallel version
+Enable in `BacktestConfig`:
 
-## Repo Layout
+```python
+config = BacktestConfig(
+    engine_name="intraday_equity",
+    tick_entry_enabled=True,   # default is False
+    ...
+)
+```
+
+When enabled, fill price = `max(candle_open, close − ATR×0.40)` for BUY — modelling "we entered during the signal candle at the breakout level, not at its close." The summary reports `tick_entry_fills: N`.
+
+### WebSocket startup
+
+In LIVE + KITE mode, `build_trading_context` automatically starts `KiteTickerManager`. If the WebSocket cannot connect within 15 seconds it logs a warning and falls back to REST LTP polling.
+
+---
+
+## Architecture
+
+### Key design rules
+
+- **Backtest parity**: backtesting uses the same `scan_symbols`, `should_enter_trade`, `resolve_trade_targets`, and engine position builders as live/paper. No parallel logic.
+- **Shared target resolution**: stop, target, trailing distance, and activation distance all flow through `resolve_trade_targets(...)` in `engines/common.py`.
+- **Paper = tracked**: paper mode creates real in-memory positions via simulated fills; exits, trailing stops, and risk guards all run normally.
+- **Tick entry is additive**: the existing closed-candle scan loop runs first; tick entry monitors only fire for candidates not yet entered.
+
+### Module map
 
 | Path | Purpose |
 | --- | --- |
-| [main.py](./main.py) | starts live or paper session |
-| [backtesting.py](./backtesting.py) | interactive backtest runner |
-| [cli/](./cli) | prompt flow and session configuration |
-| [engines/](./engines) | engine-specific trading behavior |
-| [orchestration/](./orchestration) | scan loop, session control, position management |
-| [executor.py](./executor.py) | order execution, safety, broker integration |
-| [config.py](./config.py) | runtime config model and defaults |
-| [config.runtime.yaml](./config.runtime.yaml) | local runtime overrides |
-| [tests/unit/](./tests/unit) | unit tests |
+| `main.py` | Thin launcher for live / paper sessions |
+| `backtesting.py` | Interactive candle-replay backtester |
+| `cli/configuration.py` | Interactive prompt flow; builds `SessionConfig` |
+| `orchestration/context.py` | Wires engine, broker, data, logger, config into `TradingContext`; starts WebSocket ticker |
+| `orchestration/session.py` | Main 60-second supervision loop; calls scan, entry, position management, tick entry |
+| `orchestration/signal_workflow.py` | Per-symbol scan / signal evaluation; `get_stable_signal_data` candle gating |
+| `orchestration/positions.py` | Position lifecycle helpers: exits, trailing, partial exits, square-off, trade recording |
+| `engines/` | Six engine classes; each owns `get_cycle_state`, signal normalization, exit evaluation, adaptive position builders |
+| `engines/common.py` | Shared helpers: `build_position`, `resolve_trade_targets`, `update_trailing_stop`, capital limits |
+| `engines/base.py` | `TradingEngine` abstract base class |
+| `executor.py` | `place_order`: validation, margin check, spread check, broker submission, paper fill simulation |
+| `brokers/clients.py` | Concrete `KiteBrokerClient` and `UpstoxBrokerClient` implementations |
+| `brokers/base.py` | `BrokerClient` ABC; `OrderResult`, `Quote`, `OrderRequest`, `OrderStatus` types |
+| `tick_entry/` | Tick-based entry system: engine config, trigger levels, `TickEntryManager`, backtest simulator |
+| `data_providers/` | Provider plugin system: Kite, Upstox, YFinance; shared `MarketDataService` |
+| `data_providers/kite_ticker.py` | KiteConnect WebSocket manager; `arm_breakout`, `get_ltp`, singleton helpers |
+| `signal_scoring.py` | Ranking scores; `evaluate_symbol_signal`, `rank_candidates` |
+| `strategy.py` | All strategy signal functions |
+| `indicators.py` | `compute_atr`, `compute_rsi`, `compute_vwap` |
+| `risk_manager.py` | `position_size`, `atr_position_size`, `atr_stop_from_value`, `update_trailing_stop` |
+| `config.py` | Runtime config model, defaults, `get_runtime_config()` |
+| `config.runtime.yaml` | Local runtime overrides |
+| `state/` | Runtime state persistence: positions, trade counts, regime cache |
+| `state/trade_store/` | Trade and order-audit records |
+| `logs/` | Session logs |
+| `Results/BackTest/` | Backtest output: summary, trades CSV, equity CSV |
+| `tests/unit/` | Unit test suite |
 
-## Running The Project
+---
 
-Windows helpers:
+## Engine Reference
 
-- `run_main.bat`
-- `run_backtest.bat`
+### 1. Intraday Equity (`intraday_equity`)
 
-Direct commands:
+- Long and short MIS intraday entries
+- Strategies: `MA`, `RSI`, `VWAP`, `BREAKOUT`, `ORB`, `AUTO_ADAPTIVE`
+- VWAP bias filter; breakout volume filter; reversal exit confirmation
+- Entry cutoff 30 minutes before 15:15 square-off
+- Adaptive position builder: classifies `SIDEWAYS` / `NORMAL` / `EXPANSION` regime from ATR, recent range, and signal score; stores adaptive stop, target levels, trailing distance, activation distance, and range volatility distance
+- Quantity sized from adaptive stop distance
+
+#### Auto-Adaptive strategy routing
+
+| Market context | Strategy basket | Confirmations |
+| --- | --- | ---: |
+| `GAP_UP`/`GAP_DOWN` + `GAP_GO` | `ORB`, `VWAP`, `BREAKOUT` | 2 |
+| `GAP_UP`/`GAP_DOWN` + `GAP_FILL` | `ORB`, `VWAP` | 2 |
+| Gap + `SIDEWAYS` | `VWAP`, `RSI` | 2 |
+| `NO_GAP` / normal | `MA`, `RSI` | configured normal count |
+| `PENDING_OPEN_RANGE` | waits; no entry | — |
+
+### 2. Delivery Equity (`delivery_equity`)
+
+- Long-only CNC delivery positions on daily candles
+- Strategies: `MA`, `RSI`, `BREAKOUT`
+- Nifty 50-DMA trend guard for new long entries
+- Swing-style adaptive position builder: daily ATR, recent 3–10 daily ranges × 1.2 volatility distance, 1.8% minimum stop floor
+- Target is a reference level only; delivery exits rely on stop / trailing / sell-signal / time-based logic
+- Time-based exit: configurable max hold days
+
+### 3. Futures Equity (`futures_equity`)
+
+- Positional NRML index futures
+- Strategies: `MA`, `RSI`, `BREAKOUT`, `VWAP`, `ORB`
+- Lot-size-aware sizing; startup reconciliation from broker positions
+- Provider forced to Kite
+
+### 4. Options Equity (`options_equity`)
+
+- Positional NRML index options
+- Strategies: `MA`, `RSI`, `BREAKOUT`, `VWAP`, `ORB`
+- Lot-size-aware sizing; startup reconciliation from broker positions
+- Provider forced to Kite
+
+### 5. Intraday Futures (`intraday_futures`)
+
+- Intraday MIS index futures
+- Strategies: `MA`, `RSI`, `BREAKOUT`, `VWAP`, `ORB`
+- Entry cutoff at 15:05; forced square-off at 15:15
+- Lot-size-aware sizing
+
+### 6. Intraday Options (`intraday_options`)
+
+- Intraday ATM single-option flow; optional two-leg bounded range pair in live/paper
+- Strategies: `ATM_MOMENTUM`, `ATM_ORB`, `ATM_VWAP_REVERSION`, `ATM_MULTI`, `ATM_BREAKOUT_EXPANSION`, `ATM_IV_EXPANSION`, `ATM_TRAP_REVERSAL`
+- Dynamic ATM strike selection and rolling for open long option flows
+- Greeks, IV, delta, spread, open-interest, expiry, cost, and vega-crush filters
+- Staged momentum entry: breakout confirmation + pullback re-entry sequence
+- Legacy immediate entry mode also available
+- Trend-adaptive runner: premium-volatility-aware trailing; three-level partial exits
+- Require-closed-signal-candle flag (`require_closed_signal_candle = True`) — makes tick entry especially valuable here
+
+---
+
+## Strategy Reference
+
+### Shared equity / futures strategies
+
+| Strategy | Min candles | First actionable | Signal rule |
+| --- | ---: | ---: | --- |
+| `MA` | 50 | 51 | `BUY` when MA20 > MA50; `SELL` when MA20 < MA50 |
+| `RSI` | 14 | 15 | `BUY` below 30; `SELL` above 70 |
+| `BREAKOUT` | 20 | 22 | `BUY` above prior 20-candle high; `SELL` below prior 20-candle low |
+| `VWAP` | 1 | 6 | `BUY` above cumulative VWAP; `SELL` below |
+| `ORB` | 20 | 21 | `BUY` above first-15-candle high; `SELL` below first-15-candle low |
+
+First actionable is higher than the configured minimum because `confirm_signal()` requires both the previous and current candle windows to agree.
+
+### Intraday-options strategies
+
+| Strategy | Min candles | Core logic |
+| --- | ---: | --- |
+| `ATM_MOMENTUM` | 20 | RSI14 + VWAP + 5-candle breakout; CE on bullish, PE on bearish |
+| `ATM_ORB` | 16 | First 15 session candles; CE above ORB high, PE below ORB low |
+| `ATM_VWAP_REVERSION` | 20 | 6-candle prior VWAP deviation; CE/PE on re-entry through VWAP |
+| `ATM_MULTI` | 20 | Aligned momentum + ORB; or VWAP reversion in low-ATR regime |
+| `ATM_BREAKOUT_EXPANSION` | 45 | 45-candle compression + 30-candle breakout + volume spike + ATR expansion |
+| `ATM_IV_EXPANSION` | 30 | 20-candle key level + 10-candle body average + RSI; body >= 1.8× average |
+| `ATM_TRAP_REVERSAL` | 24 | 20-candle support/resistance + 3 trap candles + reversal body >= 1.5× average |
+
+---
+
+## Shared Trading Features
+
+- Cost-aware trade gate: entry blocked when projected net profit after charges is negative or cost-to-profit ratio exceeds limit
+- Risk-style presets: `CONSERVATIVE`, `BALANCED`, `AGGRESSIVE` (engine-aware; separate intraday and positional buckets)
+- Max open positions, max capital per trade, max capital deployed
+- One-trade-per-symbol-per-day control
+- Daily loss limit and consecutive loss limit risk controls
+- Order-rate limit guard (`max_orders_per_minute`)
+- Abnormal slippage detection and automatic pause
+- Spread and margin pre-flight checks before live orders
+- Order audit trail and trade store under `state/trade_store/`
+- Per-cycle data caching to reduce redundant API calls
+- Startup position reconciliation from broker for F&O and delivery engines
+- Runtime state persistence under `state/` across restarts
+
+---
+
+## Runtime Configuration
+
+Defaults live in `config.py`. Override in `config.runtime.yaml`.
+
+Key sections and fields:
+
+| Section | Notable fields |
+| --- | --- |
+| `execution_safety` | `min_ranked_candidate_score`, `reversal_exit_confirmation_candles`, `intraday_equity_entry_cutoff_minutes_before_squareoff` |
+| `orders` | `default_entry_order_type`, `entry_limit_price_buffer_pct`, `max_live_order_notional`, `max_spread_pct`, `margin_check_enabled`, `max_orders_per_minute` |
+| `session_defaults` | `exit_only_default`, `live_broker_resync_interval_seconds` |
+| `risk_controls` | `daily_max_loss_pct`, `consecutive_loss_limit`, `api_failure_pause_minutes`, `abnormal_slippage_pause_pct` |
+| `fno` | `intraday_options_lot_mode`, `intraday_options_entry_mode`, `intraday_options_max_entry_cost_ratio`, `intraday_options_max_spread_pct`, `intraday_options_min_open_interest`, `intraday_options_roll_trigger_pct`, `intraday_options_theta_exit_ratio` |
+| `engine_defaults.intraday_equity` | `gap_threshold_percent`, `opening_range_candles`, `breakout_volume_multiplier` |
+| `engine_defaults.delivery_equity` | Per-symbol allocation cap, max hold days |
+| `data_cache` | `per_cycle_enabled` |
+| `transaction_costs` | Cost model toggle and slippage settings |
+
+---
+
+## Live vs Backtest Parity
+
+- Signal evaluation, cost gating, risk-style targets, and trailing updates share the same code in both paths
+- Engine adaptive position builders (intraday equity, delivery equity, intraday options) are called in both live and backtest entry paths
+- Backtest trailing updates read stored `trailing_distance` from the position — no hardcoded zero
+- Intraday-equity and intraday-futures backtests enforce entry cutoff and forced square-off so MIS positions are not carried overnight
+- Auto-adaptive backtests use a backtest-local regime cache; live runtime state is not mutated
+- Intraday-options backtests use real option contract symbols, premium candles, and lot-sized quantities
+- `tick_entry_enabled=True` in `BacktestConfig` models early intra-candle fills rather than always filling at candle close
+
+---
+
+## Running the project
 
 ```powershell
+# Live or paper session
+run_main.bat
+# or
 venv\Scripts\python main.py
+
+# Interactive backtest
+run_backtest.bat
+# or
 venv\Scripts\python backtesting.py
+
+# Unit tests
 venv\Scripts\python -m pytest
 ```
 
-## Testing Status
+---
 
-Current verified unit-test status:
+## Test Status
 
-- focused backtest, signal-workflow, intraday-equity, and delivery-equity tests pass with `venv\Scripts\python -m pytest`
-- latest full unit run observed `190` passing and `1` unrelated intraday-options boundary expectation still failing
+```
+116 passed, 1 pre-existing failure
+```
 
-## Notes For Operators
+The 1 failing test (`IntradayOptionsEngineTests.test_get_cycle_state_before_open_waits`) is a pre-existing edge-case in `engines/intraday_options.py` boundary logic unrelated to entry, exit, or risk features.
 
-- F&O engines force `KITE` as both data and execution provider
-- live session behavior now reads `EXIT ONLY` and broker resync defaults from config instead of prompting each time
-- intraday-options live sessions can default to `CAPITAL_BASED` or `ONE_LOT` sizing from config
-- intraday-options live sessions can default to staged or legacy momentum entry mode from config
+---
 
-## Recommended Reading Order
+## Recommended Reading Order for Developers
 
-1. [HOW_TO_USE.md](./HOW_TO_USE.md)
-2. [config.runtime.yaml](./config.runtime.yaml)
-3. [cli/configuration.py](./cli/configuration.py)
-4. [orchestration/session.py](./orchestration/session.py)
-5. the engine file you plan to trade
+1. This file
+2. [HOW_TO_USE.md](./HOW_TO_USE.md) — operator workflow
+3. [config.runtime.yaml](./config.runtime.yaml) — active knobs
+4. [orchestration/context.py](./orchestration/context.py) — dependency wiring
+5. [orchestration/session.py](./orchestration/session.py) — main supervision loop
+6. [tick_entry/manager.py](./tick_entry/manager.py) — tick entry system
+7. The engine file for the engine you are working with

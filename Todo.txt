@@ -1,206 +1,175 @@
-# Trading Bot TODO
+Trading Bot — Feature Tracker
+==============================
 
-This file tracks the refactoring roadmap from `trading_bot_review.md` plus the current feature/status notes for this repo.
-
-## Implemented Today
-
-### Asset-Class Risking
-- [x] Add shared asset-class risk profile map in `config.py`
-- [x] Add cost-aware SL/target calculator in `executor.py`
-- [x] Gate single-entry trades on projected net profitability in `orchestration/signal_workflow.py`
-- [x] Apply cost-aware stop/target/trailing levels during single-entry position creation in `orchestration/session.py`
-- [x] Add unit coverage for cost-aware target math and trade-entry gating
-- [x] Update `README.md` with the new asset-class-aware risk and cost-filter behavior
-- [x] Widen `INTRADAY_OPTIONS` stop-loss, target, trailing-stop, breakeven, and staged target presets to match current premium-volatility expectations
-- [x] Upgrade `intraday_options` backtesting single-option flow to use actual option contracts, premium candles, and lot-sized quantities instead of underlying-price trade rows
-
-### Phase 1 Foundations
-- [x] Create `Position` data model with type hints and validation
-- [x] Create `TradingEngine` base abstract class
-- [x] Create `BrokerClient` interface
-- [x] Add unit tests for the new foundations
-
-Delivered today:
-- [x] Added typed `Position`, `PositionSide`, and `ExitReason` in `models/position.py`
-- [x] Added legacy-compatible position adapters in `models/position_adapter.py`
-- [x] Updated shared position helpers in `engines/common.py` to validate through the typed model
-- [x] Added `engines/base.py`
-- [x] Added `brokers/base.py`
-- [x] Added foundation unit tests under `tests/unit/`
-
-### Phase 2 Refactoring
-- [x] Extract reusable CLI helpers from `main.py` into `cli/interactive_input.py`
-- [x] Extract reusable position/orchestration helpers into `orchestration/positions.py`
-- [x] Replace executor broker `if/elif` logic with concrete broker clients plus a factory
-- [x] Start migrating `backtesting.py` position math to typed helpers
-- [x] Start routing `main.py` through extracted CLI/orchestration modules
-
-Delivered today:
-- [x] Added `brokers/clients.py`
-- [x] Added `brokers/factory.py`
-- [x] Refactored `executor.py` to use broker clients created by factory
-- [x] Added extracted orchestration helpers for:
-  - close/exit flow
-  - trade recording
-  - pair metrics
-  - execution summaries
-  - square-off handling
-  - open-position management
-- [x] Updated `backtesting.py` P&L/equity calculations to use typed position adapters
-- [x] Updated `README.md` to document the new architecture
-
-## Current Pending Roadmap
-
-### Phase 2 Remaining
-- [x] Remove redundant legacy helper definitions still left inside `main.py`
-- [x] Move the remaining top-level runtime loop into a dedicated orchestration session module
-- [x] Split signal-evaluation logic into its own workflow module
-- [x] Split remaining setup/configuration flow into a dedicated CLI/configuration module
-- [x] Split `data_fetcher.py` into provider plugins with a common interface
-- [x] Create DI container / trading context for engine, broker, data, logger, and config wiring
-
-Delivered in this pass:
-- [x] Reduced `main.py` to a thin launcher
-- [x] Added `cli/configuration.py` for interactive runtime setup/config collection
-- [x] Added `orchestration/context.py` for dependency wiring and runtime state hydration
-- [x] Added `orchestration/signal_workflow.py` for per-symbol scan/evaluation flow
-- [x] Added `orchestration/session.py` for the runtime supervision loop and entry orchestration
-- [x] Added `data_providers/` plugin-style provider implementations plus shared market-data service
-- [x] Added unit coverage for the market-data service seam
-
-### Phase 3 Quality
-- [x] Add broader type hints across the codebase
-- [x] Add `mypy` and target strict checking for refactored modules first
-- [x] Expand unit test suite to 50+ tests
-- [x] Add broker integration tests with mocks/fakes
-- [x] Add state persistence tests
-- [x] Add engine workflow tests
-- [x] Set up formatting/lint/pre-commit hooks
-
-Delivered in this pass:
-- [x] Added broader type hints to refactored orchestration, state, broker-factory, execution, data-service, and shared helper modules
-- [x] Added `pyproject.toml` with `mypy` and `ruff` configuration
-- [x] Added `requirements-dev.txt` for quality tooling dependencies
-- [x] Added `.pre-commit-config.yaml` with hooks for formatting, linting, and type checking
-- [x] Expanded automated coverage to 100 unit tests
-- [x] Added broker/executor mock-based tests
-- [x] Added state persistence and trading-context hydration tests
-- [x] Added engine workflow tests across delivery, futures, intraday futures, intraday equity, options, and intraday options
-- [x] Added orchestration helper and signal-workflow tests
-
-### Phase 4 Documentation
-- [ ] Create architecture diagrams
-- [ ] Document live trading workflows with state machines
-- [ ] Document position lifecycle and exit flows
-- [ ] Add docstrings to public APIs
-- [ ] Add troubleshooting guide
-- [ ] Split README into `docs/` structure when ready
-
-## Review Suggestions Mapped To Tasks
-
-### Architecture
-- [x] Introduce typed position model
-- [x] Introduce engine base class
-- [x] Introduce broker abstraction
-- [x] Introduce data-provider abstraction layer
-- [x] Introduce dependency injection / trading context
-- [x] Reduce `main.py` to thin entry point
-
-### Configuration
-- [x] Move runtime config out of scattered constants into structured config objects
-- [x] Consider YAML-backed config for engines/risk/strategies
-- [x] Add config validation
-
-### Performance
-- [x] Add candle/data caching to reduce repeated fetches
-- [x] Reduce repeated fetches inside the main scan loop
-
-### Risk & Safety
-- [x] Add pre-flight order validation before live orders
-- [x] Add structured trade/audit model and persistent trade store
-- [x] Add better live-order reconciliation and status handling
-- [x] Implement limit order support
-- [x] Implement bracket-order entry support scaffold
-- [x] Add partial fill handling and retry logic
-- [x] Add bid-ask spread checks before entries
-- [x] Add rejection retry logic with smaller-size and repriced follow-up attempts
-- [x] Add margin checks before live entries
-- [x] Poll broker to confirm live fill state before trusting the submission path
-- [x] Track slippage on broker-confirmed fills for later analysis
-
-### Intraday Options Entry Profiles
-- [x] Add profile mapping for momentum, mean-reversion, volatility, and hybrid option strategies
-- [x] Add shared momentum entry validator for `ATM_MOMENTUM`, `ATM_ORB`, and `ATM_BREAKOUT_EXPANSION`
-- [x] Add shared mean-reversion entry validator for `ATM_VWAP_REVERSION` and `ATM_TRAP_REVERSAL`
-- [x] Add shared volatility entry validator for `ATM_IV_EXPANSION`
-- [x] Add unit coverage for profile-based entry validators and routing
-- [x] Add stateful breakout confirmation / follow-through workflow for momentum profiles
-- [x] Add pullback-entry orchestration after confirmation instead of same-candle acceptance
-- [x] Persist intraday-options momentum setup state across runtime saves
-- [x] Route `ATM_MULTI` into dynamic profile-specific validators based on the selected signal profile
-- [x] Add a substitute volatility-regime input for advanced confirmation rules
-
-## F&O Feature Status
-
-### Done
-- [x] F&O data and contract metadata support
-- [x] Lot-size aware F&O engines
-- [x] Greeks and IV snapshot support
-- [x] Expiry warning alert
-- [x] Vega crush block
-- [x] Underlying bias filter for single-leg intraday options
-- [x] Volatility proxy filter using intraday range percentage
-- [x] Minimum signal-score gating for intraday options entries
-- [x] Time-based exit support for intraday options
-- [x] Single-option vs two-leg bounded range pair selection in setup flow
-- [x] Pair startup reconciliation / state survival after restart
-- [x] Pair combined stop/target and combined P&L tracking
-- [x] Pair synchronization guard for partial failures
-- [x] Max open positions counts a bounded pair as one structure
-- [x] Profile-based intraday-options entry quality validation
-- [x] Stateful momentum confirmation and pullback workflow for intraday options
-- [x] Dynamic ATM roll for live open positions when the underlying moves materially
-- [x] Theta-aware explicit exit guard for single-leg intraday options
-
-### Not Done Yet
-- [ ] OI / PCR filter
-- [ ] General multi-strike basket logic
-- [ ] Basket-aware options engine
-- [ ] Rich broker-native margin calculator for complex option-selling structures
-- [ ] Full option-chain ingestion layer
-- [ ] Open-interest analytics by strike
-- [ ] Richer F&O backtesting with true contract-premium history
-
-## Best Next Steps
-
-1. Expand the YAML-backed runtime config into richer engine/risk presets when the CLI setup flow is ready for it.
-2. Start migrating more dict-heavy runtime payloads to typed domain objects and typed dictionaries.
-3. Add margin/notional previews to the interactive `LIVE` confirmation flow.
-4. Extend the synthetic bracket scaffold into fully managed OCO exit orchestration.
+Completed features are marked [x]. Open items are marked [ ].
 
 
-Search for all occurrences of "09:20" and "9:20" across the entire repo 
-(orchestration/session.py, engines/intraday_options.py, and any other file).
+COMPLETED
+---------
 
-For each occurrence:
+Core Architecture
+  [x] Typed Position model with validation (models/position.py)
+  [x] TradingEngine abstract base class (engines/base.py)
+  [x] BrokerClient interface (brokers/base.py)
+  [x] Concrete KiteBrokerClient and UpstoxBrokerClient (brokers/clients.py)
+  [x] Broker factory (brokers/factory.py)
+  [x] Dependency injection via TradingContext (orchestration/context.py)
+  [x] Thin main.py launcher
+  [x] CLI prompt flow extracted into cli/configuration.py
+  [x] Data provider plugin system: Kite, Upstox, YFinance (data_providers/)
+  [x] Shared MarketDataService with per-cycle caching
+  [x] Runtime supervision loop in orchestration/session.py
+  [x] Signal scan/evaluation workflow in orchestration/signal_workflow.py
+  [x] Position lifecycle helpers in orchestration/positions.py
 
-1. In orchestration/session.py — options market open wait guard:
-   Replace hardcoded "09:20" with config-driven values:
-   - Add to FnoConfig and _default_runtime_config_map():
-     intraday_options_market_open_hour = int(os.getenv("INTRADAY_OPTIONS_MARKET_OPEN_HOUR", "9"))
-     intraday_options_market_open_minute = int(os.getenv("INTRADAY_OPTIONS_MARKET_OPEN_MINUTE", "15"))
-   - Use IST-aware datetime: now = datetime.now(pytz.timezone("Asia/Kolkata"))
-   - Build open time as: now.replace(hour=open_hour, minute=open_minute, second=0, microsecond=0)
+Risk and Safety
+  [x] Asset-class-aware risk profile map in config.py
+  [x] Cost-aware stop/target/trailing via resolve_trade_targets()
+  [x] Pre-entry cost gate (blocks trades where net profit < 0 after charges)
+  [x] Cost-to-profit ratio gate (blocks when cost ratio exceeds configured limit)
+  [x] Pre-flight order validation (margin check, spread check, notional limit)
+  [x] Bid-ask spread filter before live entries
+  [x] Margin check before live entries
+  [x] Rate limit guard (max_orders_per_minute)
+  [x] Abnormal slippage detection and automatic risk pause
+  [x] Daily loss limit control
+  [x] Consecutive loss limit control
+  [x] Limit order support (orders.default_entry_order_type)
+  [x] Partial fill handling and retry logic
+  [x] Rejection retry logic with smaller size and repriced follow-up
+  [x] Broker poll for fill confirmation before trusting submission path
+  [x] Slippage audit tracking on broker-confirmed fills
 
-2. In engines/intraday_options.py — if 09:20 is used as session start for 
-   ORB or any candle slicing:
-   Replace with 09:15 directly or derive from config.
-   The ATM_ORB opening_range_minutes=15 in strategy.py already handles 
-   the correct candle count — just make sure session_df starts from 09:15.
+Execution Modes
+  [x] LIVE mode: real broker orders via Kite or Upstox
+  [x] PAPER mode: simulated fills via synthetic OrderResult; positions
+      tracked in memory with full stop/trailing/exit lifecycle
+  [x] BACKTEST mode: candle-replay via BacktestEngine; same signal and
+      target logic as live/paper wherever live logic exists
 
-3. In strategy.py — strategy_orb() uses session_df.iloc[:opening_range_minutes] 
-   which is index-position based. Add a comment clarifying this requires 
-   session_df to start from 09:15 IST for the range to be correct.
+Tick-Based Entry System (tick_entry/)
+  [x] KiteConnect WebSocket tick manager (data_providers/kite_ticker.py)
+  [x] Per-engine tick entry config (tick_entry/engine_config.py)
+  [x] Trigger level computation: live (close +/- ATR*0.10) and backtest
+      (max(candle_open, close - ATR*0.40)) (tick_entry/levels.py)
+  [x] TickEntryManager for LIVE (WebSocket + REST fallback) and PAPER
+      (REST LTP poll + simulated fill) (tick_entry/manager.py)
+  [x] Backtest candle OHLC tick simulation via backtest_tick_fill()
+  [x] tick_entry_enabled flag in BacktestConfig
+  [x] tick_entry_fills metric in backtest summary
+  [x] _ticker_manager and _symbol_token_map added to TradingContext
+  [x] Auto-start of KiteTickerManager in LIVE + KITE context build
+  [x] Session loop integration: _run_tick_entry() after each scan cycle
 
-4. Do not change any business logic beyond replacing the hardcoded time 
-   and adding the two config fields.
+Intraday Equity Engine
+  [x] Long and short MIS entries
+  [x] MA, RSI, VWAP, BREAKOUT, ORB, AUTO_ADAPTIVE strategies
+  [x] VWAP bias filter
+  [x] Breakout volume confirmation filter
+  [x] Reversal exit with confirmation candles
+  [x] Entry cutoff before square-off
+  [x] AUTO_ADAPTIVE: gap classification, behavior classification, strategy routing
+  [x] Adaptive position builder: SIDEWAYS/NORMAL/EXPANSION regime classification
+  [x] Adaptive stop, target levels, trailing distance, activation distance
+  [x] Quantity sized from adaptive stop distance
+  [x] Backtest enforces entry cutoff and forced square-off
+
+Delivery Equity Engine
+  [x] Long-only CNC delivery positions on daily candles
+  [x] MA, RSI, BREAKOUT strategies
+  [x] Nifty 50-DMA trend guard for new long entries
+  [x] Per-symbol allocation cap
+  [x] Delivery holdings reconciliation from broker in live mode
+  [x] Time-based exit (configurable max hold days)
+  [x] Swing-style adaptive position builder
+  [x] Daily ATR floor, recent daily range volatility distance, 1.8% minimum stop
+  [x] Delivery target as reference only; exits via stop/trailing/sell-signal/time
+
+Futures / Options Equity Engines
+  [x] Positional NRML futures and options
+  [x] MA, RSI, BREAKOUT, VWAP, ORB strategies
+  [x] Lot-size-aware sizing
+  [x] Startup reconciliation from broker positions
+
+Intraday Futures Engine
+  [x] Intraday MIS index futures
+  [x] Entry cutoff 15:05; forced square-off 15:15
+  [x] Lot-size-aware sizing
+
+Intraday Options Engine
+  [x] Dynamic ATM single-option flow
+  [x] Two-leg bounded range pair flow in live/paper
+  [x] ATM_MOMENTUM, ATM_ORB, ATM_VWAP_REVERSION, ATM_MULTI,
+      ATM_BREAKOUT_EXPANSION, ATM_IV_EXPANSION, ATM_TRAP_REVERSAL
+  [x] Profile-based entry quality validators (momentum, mean-reversion, volatility)
+  [x] Staged momentum entry: breakout confirmation + pullback re-entry
+  [x] Legacy immediate entry mode
+  [x] Dynamic ATM strike selection and rolling for open positions
+  [x] Greeks, IV, delta, spread, OI, expiry, cost, vega-crush filters
+  [x] Theta-aware exit guard
+  [x] Trend-adaptive runner: premium-volatility-aware trailing
+  [x] Three-level runner partial exits
+  [x] Pair startup reconciliation and state survival after restart
+  [x] Pair combined stop/target and combined P&L tracking
+  [x] require_closed_signal_candle = True (tick entry most valuable here)
+  [x] Stateful momentum confirmation and pullback workflow persisted across saves
+
+Quality
+  [x] 116-test unit suite (tests/unit/)
+  [x] Type hints across orchestration, broker, engine, executor modules
+  [x] pyproject.toml with mypy and ruff configuration
+  [x] requirements-dev.txt for tooling dependencies
+  [x] Backtest uses same resolve_trade_targets() and adaptive builders as live
+
+
+OPEN
+----
+
+F&O Analytics
+  [ ] OI / PCR filter by strike
+  [ ] Open-interest analytics by strike from full option chain
+  [ ] Rich broker-native margin calculator for complex option-selling structures
+  [ ] Full option-chain ingestion layer
+  [ ] General multi-strike basket logic
+  [ ] Basket-aware options engine
+
+Documentation
+  [ ] Architecture diagrams (session loop state machine, position lifecycle)
+  [ ] Docstrings on all public API functions
+  [ ] Developer onboarding guide for adding a new engine
+
+Configuration
+  [ ] Margin / notional preview in the interactive LIVE confirmation flow
+  [ ] Config-driven intraday options market open time
+    - Add intraday_options_market_open_hour and intraday_options_market_open_minute
+      to FnoConfig
+    - Use IST-aware datetime in session wait guard
+    - Replace any remaining hardcoded "09:20" references
+
+Execution
+  [ ] OCO (one-cancels-other) exit orchestration from the existing bracket scaffold
+
+Testing
+  [ ] Fix pre-existing test: IntradayOptionsEngineTests.test_get_cycle_state_before_open_waits
+      (boundary logic in engines/intraday_options.py get_cycle_state at exactly 09:15:00)
+
+
+ARCHITECTURE DECISIONS
+----------------------
+
+Paper mode:
+  executor.place_order returns a synthetic OrderResult(filled_quantity=qty,
+  average_price=entry_price) in PAPER mode so that _execute_single_entry
+  creates real in-memory positions. Previously paper returned None and no
+  positions were tracked. This was fixed when tick entry was added.
+
+Backtest parity rule:
+  Backtest must use the same scan_symbols, should_enter_trade,
+  resolve_trade_targets, and engine position builders as live/paper.
+  Never invent a parallel stop/target path in backtesting.py.
+
+Tick entry design:
+  The tick entry system is additive and safe. The closed-candle scan loop
+  runs first. Tick entry only monitors candidates not yet entered. If the
+  WebSocket is unavailable it falls back to REST LTP polling. If REST also
+  fails, the next closed-candle cycle handles entry normally.

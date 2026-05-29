@@ -1,248 +1,139 @@
-coGood—before adding more complexity, you should clearly understand what each strategy is *actually doing* and when it works or fails. That’s how you avoid blindly trusting signals.
+Strategy Reference Notes
+========================
 
----
+Practical notes on when each strategy works and when it fails.
+Use this before tuning parameters or blaming the bot for a loss.
+
+
+1. Moving Average (MA)
+----------------------
+Logic:
+  - MA20 = short-term trend
+  - MA50 = longer-term trend
+  - BUY when MA20 > MA50
+  - SELL when MA20 < MA50
 
-# 🧠 1. Moving Average (MA) Strategy
+What it captures: trend direction
+Works best in: trending markets (strong directional move)
+Fails in: sideways / choppy markets (frequent false crossovers)
+Intuition: "Follow the trend, don't predict it"
 
-### 📌 Logic
+In this bot: confirm_signal() requires both the previous and current
+candle windows to agree, so effective first actionable is candle 51.
 
-* Calculate:
 
-  * MA20 → short-term trend
-  * MA50 → longer-term trend
+2. RSI (Relative Strength Index)
+---------------------------------
+Logic:
+  - RSI range 0-100
+  - BUY when RSI < 30 (oversold)
+  - SELL when RSI > 70 (overbought)
 
-* Decision:
+What it captures: momentum exhaustion
+Works best in: sideways / range-bound markets
+Fails in: strong trends (RSI can stay extended for a long time)
+Intuition: "Too much of anything reverses"
 
-  * MA20 > MA50 → **BUY**
-  * MA20 < MA50 → **SELL**
-
----
-
-### 🎯 What It Captures
-
-👉 Trend direction
-
-* Short MA crossing above long MA = bullish momentum
-* Opposite = bearish momentum
-
----
-
-### ✅ Works Best In
-
-* Trending markets (strong up/down move)
-
----
-
-### ❌ Fails In
-
-* Sideways market (frequent false signals)
-
----
-
-### 🧠 Intuition
-
-> “Follow the trend, don’t predict it”
-
----
-
-# 🟢 2. RSI (Relative Strength Index)
-
-### 📌 Logic
-
-* RSI range: 0–100
-* Decision:
-
-  * RSI < 30 → **BUY (oversold)**
-  * RSI > 70 → **SELL (overbought)**
-
----
-
-### 🎯 What It Captures
-
-👉 Momentum exhaustion
-
-* Price fell too much → likely bounce
-* Price rose too much → likely fall
-
----
-
-### ✅ Works Best In
-
-* Sideways / range-bound markets
-
----
-
-### ❌ Fails In
-
-* Strong trends (RSI stays high/low for long time)
-
----
-
-### 🧠 Intuition
-
-> “Too much of anything reverses”
-
----
-
-# 🟡 3. Breakout Strategy
-
-### 📌 Logic
-
-* Look at last 20 candles:
-
-  * Highest high
-  * Lowest low
-
-* Decision:
-
-  * Price breaks above high → **BUY**
-  * Price breaks below low → **SELL**
-
----
-
-### 🎯 What It Captures
-
-👉 New momentum / volatility expansion
-
----
-
-### ✅ Works Best In
-
-* When market starts moving after consolidation
-
----
-
-### ❌ Fails In
-
-* Fake breakouts (price breaks and reverses)
-
----
-
-### 🧠 Intuition
-
-> “Big moves start after quiet periods”
-
----
-
-# 🟣 4. VWAP Strategy
-
-### 📌 Logic
-
-* VWAP = average price weighted by volume
-
-* Decision:
-
-  * Price > VWAP → **BUY**
-  * Price < VWAP → **SELL**
-
----
-
-### 🎯 What It Captures
-
-👉 Institutional bias
-
-* Above VWAP → buyers in control
-* Below VWAP → sellers in control
-
----
-
-### ✅ Works Best In
-
-* Intraday trading
-
----
-
-### ❌ Fails In
-
-* Choppy markets near VWAP
-
----
-
-### 🧠 Intuition
-
-> “Smart money trades around VWAP”
-
----
-
-# 🟠 5. ORB (Opening Range Breakout)
-
-### 📌 Logic
-
-* Take first 15-minute range:
-
-  * High
-  * Low
-
-* Decision:
-
-  * Break above → **BUY**
-  * Break below → **SELL**
-
----
-
-### 🎯 What It Captures
-
-👉 Early market direction
-
----
-
-### ✅ Works Best In
-
-* Strong opening trends
-
----
-
-### ❌ Fails In
-
-* Flat openings / fake moves
-
----
-
-### 🧠 Intuition
-
-> “First move of the day often defines direction”
-
----
-
-# ⚠️ VERY IMPORTANT TRUTH
-
-No strategy is “best”.
-
-| Market Type | Best Strategy |
-| ----------- | ------------- |
-| Trending    | MA, Breakout  |
-| Sideways    | RSI           |
-| Intraday    | VWAP, ORB     |
-
----
-
-# 🧠 What Your System Currently Lacks
-
-Right now all strategies:
-
-❌ Fire instantly
-❌ No confirmation
-❌ No position awareness
-
-👉 That means:
-
-* Overtrading
-* Fake signals
-* Losses
-
----
-
-# 🚀 Real Trader Thinking
-
-Instead of using one strategy:
-
-👉 Combine them
-
-Examples:
-
-* MA + RSI → trend + confirmation
-* Breakout + Volume → strong moves only
-* VWAP + ORB → intraday strength
-
----
-
+In this bot: 14-period RSI by default. Effective first actionable: 15.
+
+
+3. Breakout
+-----------
+Logic:
+  - Look at the previous 20 completed candles
+  - BUY if current close > prior 20-candle high
+  - SELL if current close < prior 20-candle low
+
+What it captures: new momentum / volatility expansion
+Works best in: markets starting to move after consolidation
+Fails in: fake breakouts (price breaks the level and immediately reverses)
+Intuition: "Big moves start after quiet periods"
+
+In this bot: volume confirmation is applied in intraday equity to require
+that current volume >= matched prior-day average * 1.2.
+Effective first actionable: candle 22 (confirm_signal overhead).
+
+
+4. VWAP
+-------
+Logic:
+  - VWAP = cumulative volume-weighted average price
+  - BUY when price > VWAP
+  - SELL when price < VWAP
+
+What it captures: institutional bias
+Works best in: intraday trading with active volume
+Fails in: choppy markets where price oscillates around VWAP repeatedly
+Intuition: "Smart money trades around VWAP"
+
+In this bot: VWAP bias also acts as a gate for intraday options entries
+and as a filter inside auto-adaptive intraday equity.
+
+
+5. ORB (Opening Range Breakout)
+--------------------------------
+Logic:
+  - Opening range = first 15 candles of the session (09:15-09:30)
+  - BUY if price breaks above the opening range high
+  - SELL if price breaks below the opening range low
+
+What it captures: early market direction setting
+Works best in: strong opening trends
+Fails in: flat opens / fake early moves that reverse after 30-60 minutes
+Intuition: "The first move of the day often defines the direction"
+
+In this bot: strategy_orb() slices session_df by row position starting
+from 09:15 IST. The session_df must start at 09:15 for the range to
+be accurate.
+
+
+Strategy Choice by Market Condition
+-------------------------------------
+  Trending market:  MA, Breakout
+  Sideways market:  RSI
+  Intraday:         VWAP, ORB
+  Unknown:          AUTO_ADAPTIVE (let the engine decide)
+
+No strategy is best in all conditions. The auto-adaptive mode exists
+precisely because different days require different approaches.
+
+
+Multi-Strategy Confirmation
+----------------------------
+Using a single strategy in isolation produces noisy signals.
+Multi-strategy mode requires N out of M chosen strategies to agree
+before an entry fires. Combining complementary strategies reduces
+false signals:
+
+  MA + RSI     -> trend confirmation + momentum filter
+  Breakout + VWAP -> breakout only in the direction institutions favor
+  VWAP + ORB   -> intraday strength confirmed by both directional inputs
+
+In the bot, set strategy mode to MULTI and choose min_confirmations >= 2.
+
+
+Intraday Options Strategy Notes
+---------------------------------
+Intraday options strategies emit BUY_CE, BUY_PE, or NO_TRADE.
+The underlying spot signal drives option type selection.
+
+ATM_MOMENTUM:
+  - Strong directional signal required
+  - CE for bullish, PE for bearish
+  - Staged entry: confirmation candle + pullback re-entry
+  - Fails when market whipsaws around VWAP
+
+ATM_ORB:
+  - Clean directional bias after the opening range
+  - Works best on gap-and-go days
+  - Fails on fake ORB breaks that fill back into range
+
+ATM_BREAKOUT_EXPANSION:
+  - Requires 45 candles to establish compression + breakout + volume + ATR expansion
+  - High quality but fires less frequently
+  - Best for sustained moves; fails on thin-volume breakouts
+
+ATM_TRAP_REVERSAL:
+  - Trades failed breakouts
+  - Requires both a trap candle sequence and a strong reversal body
+  - Counter-trend; keep position sizing conservative

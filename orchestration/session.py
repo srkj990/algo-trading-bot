@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timedelta
+from typing import Any
 
 from config import (
     COST_EDGE_BUFFER_RUPEES,
@@ -662,7 +663,60 @@ def run_trading_session(context):
             context.log_event("[MAIN] No new trade")
 
         log_positions(context.positions, context.log_event)
+
+        # ------------------------------------------------------------------ #
+        # TICK / LTP ENTRY: monitor live price for the rest of this cycle.    #
+        # Fires an early entry when price crosses the breakout trigger level   #
+        # mid-candle, instead of waiting until the next closed candle.        #
+        # Works in LIVE (WebSocket + REST), PAPER (simulated fill), BACKTEST  #
+        # (handled separately in BacktestEngine).                             #
+        # ------------------------------------------------------------------ #
+        _run_tick_entry(context, ranked_candidates, engine)
+
         time.sleep(engine.sleep_seconds)
+
+
+def _run_tick_entry(context: Any, ranked_candidates: list, engine: Any) -> None:
+    """
+    After the normal candle-close entry loop, watch live prices for
+    ``ranked_candidates`` that did NOT yet result in a position.
+    Fires an early entry if price crosses the breakout trigger.
+
+    Skipped when:
+    - No candidates (no signal this cycle)
+    - Engine doesn't support tick entry (e.g. delivery_equity)
+    - exit_only_mode is active
+    - Risk / cooldown guards are already active (they would have blocked
+      the normal entry loop too, so we respect them here)
+    """
+    if not ranked_candidates:
+        return
+    if getattr(context.config, "exit_only_mode", False):
+        return
+
+    from tick_entry.engine_config import get_engine_tick_config
+    tick_cfg = get_engine_tick_config(engine.name)
+    if not tick_cfg.enabled:
+        return
+
+    # Only watch candidates not yet positioned
+    watch_list = [
+        c for c in ranked_candidates
+        if c.get("symbol") not in context.positions
+        and not c.get("is_pair")          # pair entries have their own logic
+    ]
+    if not watch_list:
+        return
+
+    try:
+        from tick_entry import TickEntryManager
+        mgr = TickEntryManager(context)
+        mgr.run(watch_list, cycle_remaining_seconds=tick_cfg.timeout_seconds)
+    except Exception as exc:
+        context.log_event(
+            f"[TICK-ENTRY] Monitor error ({engine.name}): {type(exc).__name__}: {exc}",
+            "warning",
+        )
 
 
 def _execute_pair_entry(context, candidate, now, deployed_capital):
