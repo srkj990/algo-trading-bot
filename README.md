@@ -69,13 +69,15 @@ Enable in `BacktestConfig`:
 
 ```python
 config = BacktestConfig(
-    engine_name="intraday_equity",
-    tick_entry_enabled=True,   # default is False
+    engine_name="intraday_equity",   # or "intraday_options"
+    tick_entry_enabled=True,         # default is False
     ...
 )
 ```
 
 When enabled, fill price = `max(candle_open, close − ATR×0.40)` for BUY — modelling "we entered during the signal candle at the breakout level, not at its close." The summary reports `tick_entry_fills: N`.
+
+For `intraday_options`, the simulation uses the **option premium candle's OHLC** (not the underlying's) so the fill reflects the intra-candle option price at the ORB or momentum breakout — significantly better than the candle close on large spike days. Not available for `delivery_equity` (daily candles; no intra-candle benefit).
 
 ### WebSocket startup
 
@@ -98,7 +100,8 @@ In LIVE + KITE mode, `build_trading_context` automatically starts `KiteTickerMan
 | --- | --- |
 | `main.py` | Thin launcher for live / paper sessions |
 | `backtesting.py` | Interactive candle-replay backtester |
-| `cli/configuration.py` | Interactive prompt flow; builds `SessionConfig` |
+| `cli/configuration.py` | Interactive prompt flow; builds `SessionConfig`; prints startup config summary |
+| `display.py` | Centralized terminal display: ANSI colors, position/candidate/trade-book tables, banners, config summary, backtest summary; ANSI stripped before log-file writes |
 | `orchestration/context.py` | Wires engine, broker, data, logger, config into `TradingContext`; starts WebSocket ticker |
 | `orchestration/session.py` | Main 60-second supervision loop; calls scan, entry, position management, tick entry |
 | `orchestration/signal_workflow.py` | Per-symbol scan / signal evaluation; `get_stable_signal_data` candle gating |
@@ -123,6 +126,23 @@ In LIVE + KITE mode, `build_trading_context` automatically starts `KiteTickerMan
 | `logs/` | Session logs |
 | `Results/BackTest/` | Backtest output: summary, trades CSV, equity CSV |
 | `tests/unit/` | Unit test suite |
+
+---
+
+## Terminal Display (`display.py`)
+
+All terminal output — live sessions, paper mode, and backtest — is routed through `display.py`. ANSI color codes are applied at print time and automatically stripped before any log-file write, so log files stay clean while the terminal shows a colored layout.
+
+| Function | Used by |
+| --- | --- |
+| `config_summary` | Printed once at session startup showing all active parameters |
+| `positions_table` | Every scan cycle; shows open positions with colored P&L |
+| `ranked_candidates_table` | After each scan; shows scored candidates |
+| `trade_book_table` | Session summary; shows closed trades |
+| `backtest_summary` | End of each backtest run |
+| `banner` / `cycle_banner` | Order signals and cycle-state transitions |
+
+Colors are suppressed automatically when stdout is not a TTY (e.g., redirected to a file or CI environment).
 
 ---
 
@@ -248,10 +268,15 @@ Key sections and fields:
 | `session_defaults` | `exit_only_default`, `live_broker_resync_interval_seconds` |
 | `risk_controls` | `daily_max_loss_pct`, `consecutive_loss_limit`, `api_failure_pause_minutes`, `abnormal_slippage_pause_pct` |
 | `fno` | `intraday_options_lot_mode`, `intraday_options_entry_mode`, `intraday_options_max_entry_cost_ratio`, `intraday_options_max_spread_pct`, `intraday_options_min_open_interest`, `intraday_options_roll_trigger_pct`, `intraday_options_theta_exit_ratio` |
-| `engine_defaults.intraday_equity` | `gap_threshold_percent`, `opening_range_candles`, `breakout_volume_multiplier` |
-| `engine_defaults.delivery_equity` | Per-symbol allocation cap, max hold days |
+| `engine_defaults.<engine>` | `sleep_seconds`, `cooldown_seconds`, `data_period`, `data_interval` — all engines |
+| `engine_defaults.intraday_equity` | `square_off_time`, `gap_threshold_percent`, `opening_range_candles`, `breakout_volume_multiplier`, adaptive level multipliers |
+| `engine_defaults.delivery_equity` | `max_symbol_allocation`, `max_hold_days`, `nifty_trend_ma_window`, `volatility_trailing_range_multiplier`, adaptive level multipliers |
+| `engine_defaults.intraday_futures` | `entry_cutoff`, `square_off_time`, `max_symbol_allocation` |
+| `engine_defaults.intraday_options` | `entry_cutoff`, `square_off_time`, adaptive level multipliers, all strategy filter thresholds, runner exit config |
 | `data_cache` | `per_cycle_enabled` |
 | `transaction_costs` | Cost model toggle and slippage settings |
+
+All `engine_defaults` values can be changed in `config.runtime.yaml` without touching Python code. Adaptive level multipliers (`adaptive_stop_multiplier_*`, `adaptive_target_multiplier_*`, `adaptive_trailing_multiplier_*`) are read at engine class-load time; a process restart is required after changing them.
 
 ---
 
@@ -263,7 +288,7 @@ Key sections and fields:
 - Intraday-equity and intraday-futures backtests enforce entry cutoff and forced square-off so MIS positions are not carried overnight
 - Auto-adaptive backtests use a backtest-local regime cache; live runtime state is not mutated
 - Intraday-options backtests use real option contract symbols, premium candles, and lot-sized quantities
-- `tick_entry_enabled=True` in `BacktestConfig` models early intra-candle fills rather than always filling at candle close
+- `tick_entry_enabled=True` in `BacktestConfig` models early intra-candle fills rather than always filling at candle close; for `intraday_options` the simulation uses the option premium candle OHLC directly
 
 ---
 

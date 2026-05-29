@@ -26,6 +26,19 @@ venv\Scripts\python backtesting.py
 
 ---
 
+## Terminal Display
+
+Sessions and backtests print a colored layout to the terminal. Colors are automatically suppressed when stdout is not a TTY.
+
+- **Startup**: full config summary printed once showing engine, mode, capital, risk style, strategies, and all active limits
+- **Each cycle**: open positions table with green/red P&L; ranked candidates table with scores
+- **Session end**: trade book table with all closed trades and net P&L per trade
+- **Backtest end**: summary table with equity curve stats, win rate, and per-trade averages
+
+Log files written to `logs/` are plain text — ANSI codes are stripped before writing so they remain readable without color support.
+
+---
+
 ## Three Modes
 
 | Mode | Command | Real orders | Best for |
@@ -96,16 +109,23 @@ To simulate early intra-candle entry instead of always filling at candle close, 
 from backtesting import BacktestConfig, BacktestEngine
 
 config = BacktestConfig(
-    engine_name="intraday_equity",
+    engine_name="intraday_equity",   # or "intraday_options"
     capital=100_000,
-    tick_entry_enabled=True,   # model early breakout fills
+    tick_entry_enabled=True,         # model early breakout fills
     ...
 )
 results = BacktestEngine(config).run(history)
 print(f"Tick-entry fills: {results['tick_entry_fills']}")
 ```
 
-When enabled, fill price = `max(candle_open, close − ATR×0.40)` for BUY — reflecting "we entered at the breakout level during the candle, not at the close." Not available for `delivery_equity` (daily candles) or `intraday_options` (option premium candles used directly).
+When enabled, fill price = `max(candle_open, close − ATR×0.40)` for BUY — reflecting "we entered at the breakout level during the candle, not at the close."
+
+| Engine | Candle used for simulation | Notes |
+| --- | --- | --- |
+| `intraday_equity` | Underlying 1-minute candle | Standard breakout fill |
+| `intraday_futures` | Futures 3-minute candle | Standard breakout fill |
+| `intraday_options` | **Option premium candle** | Captures ORB/momentum spike entry; significantly better than candle close on large-move days |
+| `delivery_equity` | **Disabled** | Daily candles; no intra-candle benefit |
 
 ### Backtest output
 
@@ -293,7 +313,9 @@ These control: ATR stop multiplier, ATR trailing multiplier, target risk-reward,
 
 ## High-Value Config Knobs
 
-Review these before going live:
+Review these before going live. All live in `config.runtime.yaml`; a process restart is required after changes.
+
+### Session and safety
 
 | Knob | Default | Effect |
 | --- | --- | --- |
@@ -313,6 +335,33 @@ Review these before going live:
 | `fno.intraday_options_min_open_interest` | 0 (off) | OI filter for option entries |
 | `fno.intraday_options_roll_trigger_pct` | 0 (off) | ATM roll trigger for live positions |
 | `fno.intraday_options_theta_exit_ratio` | 0 (off) | Theta-aware exit guard |
+
+### Per-engine timing and data (under `engine_defaults.<engine>`)
+
+All six engines expose these; defaults shown are for `intraday_options`.
+
+| Knob | Default | Effect |
+| --- | --- | --- |
+| `sleep_seconds` | 15 | Session polling interval; lower = faster scans but more API calls |
+| `cooldown_seconds` | 180 | Wait after entry before next entry is considered |
+| `data_period` | `"1d"` | History window fetched each scan cycle |
+| `data_interval` | `"1m"` | Candle granularity fetched each scan cycle |
+| `entry_cutoff` | `"15:05"` | Stop new entries after this time (intraday engines only) |
+| `square_off_time` | `"15:15"` | Force-exit all positions after this time (intraday engines only) |
+
+### Adaptive level multipliers (under `engine_defaults.<engine>`)
+
+Control stop/target/trailing distances per volatility regime. Available for `intraday_equity`, `delivery_equity`, and `intraday_options`.
+
+| Knob | Example | Effect |
+| --- | --- | --- |
+| `adaptive_stop_multiplier_expansion` | 1.7 | ATR multiple for stop in trending/expansion regime |
+| `adaptive_target_multiplier_expansion` | 2.3 | ATR multiple for target in trending regime |
+| `adaptive_trailing_multiplier_expansion` | 1.15 | ATR multiple for trailing stop in trending regime |
+| `adaptive_min_stop_pct` | 0.05 | Hard floor for stop distance as % of entry price |
+| `adaptive_min_target_pct` | 0.08 | Hard floor for target distance as % of entry price |
+| `adaptive_conviction_score_weight` | 0.5 | How much signal score stretches the target (higher = bigger targets on strong signals) |
+| `volatility_trailing_range_multiplier` | 1.2 | Swing range × this = volatility trailing distance (`delivery_equity` only) |
 
 ---
 
