@@ -156,7 +156,7 @@ engine_defaults:
     min_sell_iv_percentile: 15.0 # used: sell-side IV percentile floor
     entry_cutoff: "15:05" # used: time after which no new intraday-options entries are allowed
     square_off_time: "15:15" # used: time after which all intraday-options positions are force-exited
-    sleep_seconds: 15 # used: session polling interval in seconds
+    sleep_seconds: 10 # used: session polling interval in seconds
     cooldown_seconds: 180 # used: post-entry cooldown before next entry is considered
     data_period: "1d" # used: live session history lookback period
     data_interval: "1m" # used: live session candle interval
