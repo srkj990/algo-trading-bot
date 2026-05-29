@@ -114,7 +114,13 @@ def _normalize_yaml_lists(value: Any) -> Any:
 
 
 def _load_runtime_overrides() -> dict[str, Any]:
-    for file_name in ("config.runtime.yaml", "config.runtime.yml"):
+    candidates = (
+        "config/config.runtime.yaml",
+        "config/config.runtime.yml",
+        "config.runtime.yaml",
+        "config.runtime.yml",
+    )
+    for file_name in candidates:
         path = Path(file_name)
         if path.exists():
             return _normalize_yaml_lists(_load_simple_yaml(path))

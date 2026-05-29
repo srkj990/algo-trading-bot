@@ -120,7 +120,7 @@ In LIVE + KITE mode, `build_trading_context` automatically starts `KiteTickerMan
 | `indicators.py` | `compute_atr`, `compute_rsi`, `compute_vwap` |
 | `risk_manager.py` | `position_size`, `atr_position_size`, `atr_stop_from_value`, `update_trailing_stop` |
 | `config.py` | Runtime config model, defaults, `get_runtime_config()` |
-| `config.runtime.yaml` | Local runtime overrides |
+| `config/config.runtime.yaml` | Local runtime overrides |
 | `state/` | Runtime state persistence: positions, trade counts, regime cache |
 | `state/trade_store/` | Trade and order-audit records |
 | `logs/` | Session logs |
@@ -325,7 +325,7 @@ The 1 failing test (`IntradayOptionsEngineTests.test_get_cycle_state_before_open
 
 1. This file
 2. [HOW_TO_USE.md](./HOW_TO_USE.md) — operator workflow
-3. [config.runtime.yaml](./config.runtime.yaml) — active knobs
+3. [config/config.runtime.yaml](../config/config.runtime.yaml) — active knobs
 4. [orchestration/context.py](./orchestration/context.py) — dependency wiring
 5. [orchestration/session.py](./orchestration/session.py) — main supervision loop
 6. [tick_entry/manager.py](./tick_entry/manager.py) — tick entry system
