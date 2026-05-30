@@ -185,6 +185,9 @@ async def start_session() -> JSONResponse:
     web_state.reset_stop_event()
     web_state.set_status("running")
 
+    # Wire the stop event into the trading loop so STOP button works immediately
+    context.stop_fn = web_state.get_stop_event().is_set
+
     def _loop():
         from orchestration.session import run_trading_session
         try:

@@ -439,6 +439,9 @@ def run_trading_session(context):
         context.log_event("[MAIN] No persisted/open positions at startup")
 
     while True:
+        if context.stop_fn():
+            context.log_event("[MAIN] Stop requested — exiting trading loop.")
+            break
         context.cycle_data_cache.clear()
         now = datetime.now()
         if context.previous_cycle_started_at is not None:
@@ -668,7 +671,17 @@ def run_trading_session(context):
         # ------------------------------------------------------------------ #
         _run_tick_entry(context, ranked_candidates, engine)
 
-        time.sleep(engine.sleep_seconds)
+        # Interruptible sleep — wakes early when stop is requested (web mode)
+        _sleep_interruptible(engine.sleep_seconds, context.stop_fn)
+
+
+def _sleep_interruptible(seconds: float, stop_fn) -> None:
+    """Sleep for `seconds` but wake every second to check stop_fn()."""
+    end = time.time() + float(seconds)
+    while time.time() < end:
+        if stop_fn():
+            return
+        time.sleep(min(1.0, end - time.time()))
 
 
 def _run_tick_entry(context: Any, ranked_candidates: list, engine: Any) -> None:

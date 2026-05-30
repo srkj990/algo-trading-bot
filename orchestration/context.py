@@ -46,6 +46,8 @@ class TradingContext:
     _ticker_manager: Any | None = field(default=None, repr=False)
     # Map of symbol → instrument_token for WebSocket subscriptions
     _symbol_token_map: dict[str, int] = field(default_factory=dict)
+    # Called each cycle; returns True to request a graceful stop (web mode sets this)
+    stop_fn: Callable[[], bool] = field(default_factory=lambda: (lambda: False), repr=False)
 
 
 def build_trading_context(config: SessionConfig) -> TradingContext:

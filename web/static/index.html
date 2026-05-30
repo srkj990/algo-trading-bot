@@ -420,6 +420,13 @@
       </div>
     </div>
 
+    <!-- One trade per symbol toggle -->
+    <div class="mt-4 flex items-center gap-3">
+      <input id="b-one-trade" type="checkbox" checked style="width:auto;padding:0" class="accent-blue-500 w-4 h-4"/>
+      <label for="b-one-trade" class="text-sm text-slate-300 cursor-pointer">One trade per symbol per day</label>
+      <span class="text-xs text-slate-500">(uncheck to allow multiple entries in the same symbol on the same day)</span>
+    </div>
+
     <!-- Error banner (backtest) -->
     <div id="bt-error" class="hidden mt-4 bg-red-900/40 border border-red-700 text-red-300 rounded p-3 text-sm"></div>
 
@@ -904,7 +911,7 @@ async function submitBacktest() {
     max_capital_per_trade: parseFloat(document.getElementById('b-max-per-trade').value),
     max_capital_deployed:  parseFloat(document.getElementById('b-capital').value),
     top_n:                 parseInt(document.getElementById('b-top-n').value),
-    one_trade_per_symbol_per_day: true,
+    one_trade_per_symbol_per_day: document.getElementById('b-one-trade').checked,
     strategy_mode:         document.getElementById('b-strat-mode').value,
   };
 
