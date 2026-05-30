@@ -337,21 +337,22 @@
       </div>
     </div>
 
-    <!-- FNO fields (backtest) — uses synthetic expiries, no Kite needed -->
+    <!-- FNO fields (backtest) -->
     <div id="b-fno-section" class="mt-4 hidden">
-      <div class="section-label mt-2 mb-2">F&amp;O Contract (Backtest — uses Yahoo Finance proxy)</div>
+      <div class="section-label mt-2 mb-2">F&amp;O Contract (Backtest — price data from Yahoo Finance)</div>
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="section-label">Underlying</label>
-          <select id="b-underlying" onchange="loadFnoData('backtest')">
+          <select id="b-underlying" onchange="onBUnderlyingChange()">
             <option value="NIFTY" selected>NIFTY 50</option>
             <option value="SENSEX">SENSEX</option>
             <option value="BOTH">Both (futures only)</option>
           </select>
         </div>
         <div id="b-fno-expiry-wrap">
-          <label class="section-label">Expiry (reference) <span id="b-fno-loading" class="spinner hidden"></span></label>
+          <label class="section-label">Expiry <span id="b-fno-loading" class="spinner hidden"></span></label>
           <select id="b-expiry"></select>
+          <div id="b-fno-error" class="fno-error-box hidden"></div>
         </div>
         <div id="b-fno-structure-wrap">
           <label class="section-label">Structure</label>
@@ -749,41 +750,54 @@ function onBStratModeChange() {
 }
 
 // ── FNO expiry loading ────────────────────────────────────────────────────────
+function onBUnderlyingChange() {
+  const und = document.getElementById('b-underlying').value;
+  // BOTH means no single expiry — hide the expiry row and skip the fetch
+  const expWrap = document.getElementById('b-fno-expiry-wrap');
+  if (und === 'BOTH') {
+    expWrap.classList.add('hidden');
+  } else {
+    expWrap.classList.remove('hidden');
+    loadFnoData('backtest');
+  }
+}
+
 async function loadFnoData(scope) {
   const isBacktest = scope === 'backtest';
   const engId  = isBacktest ? 'b-engine'     : 'c-engine';
   const undId  = isBacktest ? 'b-underlying' : 'c-underlying';
   const expId  = isBacktest ? 'b-expiry'     : 'c-expiry';
   const spinId = isBacktest ? 'b-fno-loading': 'fno-loading';
-  const errId  = isBacktest ? null           : 'fno-error';
+  const errId  = isBacktest ? 'b-fno-error'  : 'fno-error';
   const atmId  = isBacktest ? null           : 'fno-atm-badge';
 
-  const eng   = document.getElementById(engId).value;
-  const und   = document.getElementById(undId).value;
+  const eng = document.getElementById(engId).value;
+  const und = document.getElementById(undId).value;
+
+  // BOTH has no single expiry to fetch
+  if (und === 'BOTH') return;
+
   const itype = (eng === '3' || eng === '5') ? 'FUT' : 'OPT';
-  const mode  = isBacktest ? 'backtest' : 'live';
 
   document.getElementById(spinId).classList.remove('hidden');
-  if (errId) document.getElementById(errId).classList.add('hidden');
+  document.getElementById(errId).classList.add('hidden');
 
   try {
-    const r = await fetch(`/api/fno-data?underlying=${und}&instrument_type=${itype}&mode=${mode}`);
+    // Always fetch live expiries from Kite — backtest uses Yahoo Finance for
+    // price data but selects the real expiry for contract identification
+    const r = await fetch(`/api/fno-data?underlying=${und}&instrument_type=${itype}&mode=live`);
     const d = await r.json();
 
     const sel = document.getElementById(expId);
     sel.innerHTML = '';
 
     if (d.error && (!d.expiries || !d.expiries.length)) {
-      // Show error in form — don't silently fail
-      if (errId) {
-        const errEl = document.getElementById(errId);
-        errEl.textContent = '⚠ ' + d.error + (d.hint ? ' — ' + d.hint : '');
-        errEl.classList.remove('hidden');
-      }
+      const errEl = document.getElementById(errId);
+      errEl.textContent = '⚠ ' + d.error + (d.hint ? ' — ' + d.hint : '');
+      errEl.classList.remove('hidden');
       appendLog(`[FNO] ${d.error}`, 'warn');
     } else {
-      if (d.error && errId) {
-        // partial error (expiries loaded but strikes failed)
+      if (d.error) {
         const errEl = document.getElementById(errId);
         errEl.textContent = '⚠ Strike info unavailable: ' + d.error;
         errEl.classList.remove('hidden');
@@ -791,19 +805,14 @@ async function loadFnoData(scope) {
       (d.expiries || []).forEach(ex => {
         const o = document.createElement('option'); o.value = ex; o.text = ex; sel.appendChild(o);
       });
-      if (d.source === 'synthetic') {
-        const note = document.createElement('option');
-        note.disabled = true;
-        note.text = '— synthetic dates (Yahoo Finance proxy)';
-        sel.insertBefore(note, sel.firstChild);
-      }
       if (atmId && d.atm_strike) {
         document.getElementById('fno-atm-val').textContent = d.atm_strike;
         document.getElementById(atmId).classList.remove('hidden');
       }
     }
   } catch(err) {
-    appendLog(`[FNO] Load error: ${err}`, 'error');
+    document.getElementById(errId).textContent = '⚠ Network error: ' + err;
+    document.getElementById(errId).classList.remove('hidden');
   } finally {
     document.getElementById(spinId).classList.add('hidden');
   }

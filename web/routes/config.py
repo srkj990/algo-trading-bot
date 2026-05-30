@@ -73,24 +73,13 @@ def _synthetic_expiries(instrument_type: str) -> list[str]:
 async def get_fno_data(
     underlying: str = "NIFTY",
     instrument_type: str = "OPT",
-    mode: str = "live",        # "live" | "backtest"
+    mode: str = "live",        # "live" | "backtest" (kept for compat; both use Kite now)
 ) -> JSONResponse:
     """
     Return available expiries and ATM strike for a given F&O underlying.
-
-    In backtest mode (mode=backtest) Kite is not needed — returns synthetic
-    weekly expiry dates so the form is usable without live credentials.
+    Always fetches real expiries from Kite. Falls back to synthetic Thursday
+    dates only if Kite is unavailable, so the form remains usable.
     """
-    # ── backtest mode: no Kite needed ─────────────────────────────────────────
-    if mode == "backtest":
-        expiries = _synthetic_expiries(instrument_type)
-        return JSONResponse({
-            "expiries": expiries,
-            "source": "synthetic",
-            "note": "Backtest uses Yahoo Finance data; expiry is used for contract label only.",
-        })
-
-    # ── live mode: fetch real expiries from Kite ───────────────────────────────
     try:
         from fno_data_fetcher import (
             get_atm_option_strike,
@@ -124,13 +113,16 @@ async def get_fno_data(
                 result["strike_error"] = str(strike_exc)
         return JSONResponse(result)
     except Exception as exc:
-        # Return a usable error with clear guidance rather than a bare 500
+        # Fall back to synthetic Thursday expiries so the form remains usable
+        # even when Kite credentials are missing or the market is closed.
+        synthetic = _synthetic_expiries(instrument_type)
         return JSONResponse({
-            "expiries": [],
+            "expiries": synthetic,
+            "source": "synthetic",
             "error": str(exc),
-            "hint": "Kite credentials may be missing or expired. "
-                    "Use backtest mode (mode=backtest) to run without live data.",
-        }, status_code=200)   # 200 so the JS can show the message rather than treat as network error
+            "hint": "Could not reach Kite — showing estimated expiry dates. "
+                    "Verify credentials for live trading.",
+        }, status_code=200)
 
 
 # ── configure ─────────────────────────────────────────────────────────────────
