@@ -904,3 +904,313 @@ def collect_session_configuration() -> SessionConfig:
     )
     log_session_config_summary(session_config)
     return session_config
+
+
+# ---------------------------------------------------------------------------
+# Web-mode entry point — no input() calls; takes a plain dict from the form
+# ---------------------------------------------------------------------------
+
+def build_session_config_from_dict(data: dict) -> SessionConfig:
+    """
+    Build a SessionConfig from a JSON dict submitted by the browser form.
+    Raises ValueError with a user-readable message on invalid input.
+    All decisions mirror collect_session_configuration() exactly.
+    """
+    runtime_config = get_runtime_config()
+
+    # ── engine ──────────────────────────────────────────────────────────────
+    engine_choice = str(data.get("engine_choice", "1"))
+    if engine_choice not in ENGINE_OPTIONS:
+        raise ValueError(f"Invalid engine choice: {engine_choice}")
+    engine_cls = ENGINE_OPTIONS[engine_choice]
+    selected_engine_name = engine_cls.name
+    is_fno_engine = "futures" in selected_engine_name or "options" in selected_engine_name
+
+    # ── execution mode ───────────────────────────────────────────────────────
+    execution_mode = str(data.get("execution_mode", "PAPER")).upper()
+    if execution_mode not in {"PAPER", "LIVE"}:
+        raise ValueError("execution_mode must be PAPER or LIVE")
+    from executor import set_execution_mode
+    set_execution_mode(execution_mode)
+
+    exit_only_mode = bool(runtime_config.session_defaults.exit_only_default)
+    live_broker_resync_interval_seconds = int(
+        runtime_config.session_defaults.live_broker_resync_interval_seconds
+    )
+
+    # ── data / execution providers ────────────────────────────────────────────
+    from data_fetcher import set_data_provider
+    from executor import set_execution_provider
+    if is_fno_engine:
+        data_provider = "KITE"
+        execution_provider = "KITE"
+    else:
+        data_provider = str(data.get("data_provider", "YFINANCE")).upper()
+        if data_provider not in {"YFINANCE", "KITE", "UPSTOX"}:
+            raise ValueError("data_provider must be YFINANCE, KITE, or UPSTOX")
+        execution_provider = str(data.get("execution_provider", "KITE")).upper()
+        if execution_provider not in {"KITE", "UPSTOX"}:
+            raise ValueError("execution_provider must be KITE or UPSTOX")
+    set_data_provider(data_provider)
+    set_execution_provider(execution_provider)
+
+    # ── capital ──────────────────────────────────────────────────────────────
+    try:
+        capital = float(data["capital"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("capital must be a positive number")
+    if capital <= 0:
+        raise ValueError("capital must be greater than 0")
+
+    # ── symbol / F&O contract selection ─────────────────────────────────────
+    option_pair_config = None
+    atm_option_config = None
+
+    if engine_choice in {"3", "4", "5", "6"}:
+        fno_underlying = str(data.get("fno_underlying", "NIFTY"))
+        fno_expiry = str(data.get("fno_expiry", ""))
+        if not fno_expiry:
+            available = get_available_expiries(
+                fno_underlying,
+                instrument_type="FUT" if "futures" in selected_engine_name else "OPT",
+            )
+            if not available:
+                raise ValueError(f"No expiries found for {fno_underlying}")
+            fno_expiry = available[0]
+
+        if "futures" in selected_engine_name:
+            from fno_data_fetcher import resolve_futures_contract
+            if fno_underlying == "BOTH":
+                contracts = []
+                for sym in list(FNO_INDEX_SYMBOLS):
+                    exp = get_available_expiries(sym, instrument_type="FUT")
+                    if not exp:
+                        raise ValueError(f"No futures expiries for {sym}")
+                    contracts.append(resolve_futures_contract(sym, exp[0]))
+                selected_symbols = contracts
+            else:
+                contract = resolve_futures_contract(fno_underlying, fno_expiry)
+                selected_symbols = [contract]
+            symbol_mode = "FNO"
+
+        elif engine_choice == "6":
+            fno_structure = str(data.get("fno_structure", "SINGLE")).upper()
+            if fno_structure == "PAIR":
+                lower_pe = int(data.get("lower_pe_strike", 0))
+                upper_ce = int(data.get("upper_ce_strike", 0))
+                if lower_pe <= 0 or upper_ce <= 0 or lower_pe >= upper_ce:
+                    raise ValueError("lower_pe_strike must be below upper_ce_strike and both must be positive")
+                pe_contract = resolve_option_contract(fno_underlying, fno_expiry, lower_pe, "PE")
+                ce_contract = resolve_option_contract(fno_underlying, fno_expiry, upper_ce, "CE")
+                pe_lot = get_contract_lot_size(pe_contract)
+                ce_lot = get_contract_lot_size(ce_contract)
+                if pe_lot != ce_lot:
+                    raise ValueError(f"Mismatched lot sizes: {pe_lot} vs {ce_lot}")
+                pair_id = f"PAIR:{fno_underlying}:{fno_expiry}:{lower_pe}:{upper_ce}"
+                option_pair_config = {
+                    "mode": "TWO_LEG_RANGE",
+                    "pair_id": pair_id,
+                    "underlying": fno_underlying,
+                    "expiry": fno_expiry,
+                    "lower_strike": lower_pe,
+                    "upper_strike": upper_ce,
+                    "pe_symbol": pe_contract,
+                    "ce_symbol": ce_contract,
+                    "symbols": [pe_contract, ce_contract],
+                    "entry_side": "SELL",
+                }
+                selected_symbols = [pe_contract, ce_contract]
+                symbol_mode = "FNO_PAIR"
+            else:
+                strike_offset_mode = str(data.get("strike_offset_mode", "ATM")).upper()
+                strike_offset = {"ATM": 0, "ATM_PLUS_1": 1, "ATM_MINUS_1": -1}.get(strike_offset_mode, 0)
+                scan_symbol = get_fno_spot_quote_symbol(fno_underlying)
+                atm_option_config = {
+                    "mode": "ATM_DYNAMIC",
+                    "underlying": fno_underlying,
+                    "expiry": fno_expiry,
+                    "scan_symbol": scan_symbol,
+                    "strike_offset_mode": strike_offset_mode,
+                    "strike_offset": strike_offset,
+                }
+                selected_symbols = [scan_symbol]
+                symbol_mode = "FNO_ATM"
+
+        else:  # options_equity (engine 4)
+            option_type = str(data.get("option_type", "CE")).upper()
+            strike = int(data.get("strike", 0))
+            if strike <= 0:
+                strike = get_atm_option_strike(fno_underlying, fno_expiry, option_type)
+            contract = resolve_option_contract(fno_underlying, fno_expiry, strike, option_type)
+            selected_symbols = [contract]
+            symbol_mode = "FNO"
+
+    else:
+        # equity engines — symbol selection from form
+        symbol_mode_raw = str(data.get("symbol_mode", "NIFTY50")).upper()
+        if symbol_mode_raw == "SINGLE":
+            sym_raw = str(data.get("symbol", "")).strip().upper()
+            if not sym_raw:
+                raise ValueError("symbol is required for SINGLE mode")
+            if not sym_raw.endswith(".NS"):
+                sym_raw += ".NS"
+            selected_symbols = [sym_raw]
+            symbol_mode = "SINGLE"
+        elif symbol_mode_raw == "MANUAL_MULTI":
+            raw_list = data.get("symbols", [])
+            if isinstance(raw_list, str):
+                raw_list = [s.strip() for s in raw_list.split(",") if s.strip()]
+            syms = []
+            seen: set = set()
+            for s in raw_list:
+                s = s.strip().upper()
+                if not s:
+                    continue
+                if not s.endswith(".NS"):
+                    s += ".NS"
+                if s not in seen:
+                    syms.append(s)
+                    seen.add(s)
+            if not syms:
+                raise ValueError("At least one symbol required for MANUAL_MULTI mode")
+            selected_symbols = syms
+            symbol_mode = "MANUAL_MULTI"
+        else:
+            from config import NIFTY50_SYMBOLS
+            selected_symbols = list(NIFTY50_SYMBOLS)
+            symbol_mode = "NIFTY50"
+
+    # ── risk style ────────────────────────────────────────────────────────────
+    risk_styles = get_risk_style_presets(engine_cls.name)
+    risk_style_key = str(data.get("risk_style", "2"))
+    if risk_style_key not in risk_styles:
+        raise ValueError(f"risk_style must be one of {list(risk_styles.keys())}")
+    risk_style = risk_styles[risk_style_key]
+    atr_stop_multiplier = risk_style["atr_stop_multiplier"]
+    trailing_atr_multiplier = risk_style["trailing_atr_multiplier"]
+    target_risk_reward = risk_style["target_risk_reward"]
+    sl_percent = float(risk_style.get("sl_percent", ENGINE_FALLBACK_LEVELS["sl_percent"]))
+    target_percent = float(risk_style.get("target_percent", ENGINE_FALLBACK_LEVELS["target_percent"]))
+    trailing_percent = float(risk_style.get("trailing_percent", ENGINE_FALLBACK_LEVELS["trailing_percent"]))
+    risk_percent = risk_style["risk_percent"]
+
+    # ── engine instance ───────────────────────────────────────────────────────
+    engine = engine_cls(sl_percent=sl_percent, target_percent=target_percent, trailing_percent=trailing_percent)
+    if engine.name == "intraday_options":
+        engine.sl_percent = 10.0
+        engine.target_percent = 20.0
+        engine.trailing_percent = 7.5
+    if engine.name == "delivery_equity":
+        max_sym_alloc = float(data.get("max_symbol_allocation_pct", 25)) / 100
+        engine.set_portfolio_rules(max_sym_alloc)
+
+    # ── position limits ───────────────────────────────────────────────────────
+    auto_single = should_auto_select_top1(symbol_mode, selected_symbols, option_pair_config, atm_option_config)
+    if auto_single:
+        max_open_positions = 1
+    else:
+        max_open_positions = max(1, int(data.get("max_open_positions", 1)))
+
+    default_per_trade = capital / max_open_positions
+    max_capital_per_trade = float(data.get("max_capital_per_trade", default_per_trade))
+    max_capital_deployed = float(data.get("max_capital_deployed", capital))
+    if max_capital_per_trade <= 0 or max_capital_per_trade > capital:
+        raise ValueError("max_capital_per_trade must be between 0 and capital")
+    if max_capital_deployed <= 0 or max_capital_deployed > capital:
+        raise ValueError("max_capital_deployed must be between 0 and capital")
+
+    one_trade_per_symbol_per_day = bool(data.get("one_trade_per_symbol_per_day", True))
+
+    # ── entry selection ───────────────────────────────────────────────────────
+    if auto_single:
+        entry_selection_mode = "TOP1"
+        top_n_count = 1
+    else:
+        entry_selection_mode = str(data.get("entry_selection_mode", "TOP1")).upper()
+        if entry_selection_mode not in {"TOP1", "TOPN"}:
+            raise ValueError("entry_selection_mode must be TOP1 or TOPN")
+        top_n_count = int(data.get("top_n_count", 1)) if entry_selection_mode == "TOPN" else 1
+
+    # ── strategy ──────────────────────────────────────────────────────────────
+    if engine.name == "intraday_options":
+        strategy_name_raw = str(data.get("strategy_name", "ATM_MOMENTUM")).upper()
+        mode = "1"
+        strategy_name: str | None = strategy_name_raw
+        strategies: list[str] | None = None
+        min_confirmations: int | None = None
+        engine.momentum_entry_mode = "LEGACY_RAW"
+    elif engine.name == "intraday_equity" and str(data.get("strategy_mode", "2")) == "3":
+        mode = "3"
+        strategy_name = None
+        strategies = None
+        min_confirmations = None
+    else:
+        mode = str(data.get("strategy_mode", "2"))
+        if mode not in {"1", "2"}:
+            raise ValueError("strategy_mode must be 1 (SINGLE) or 2 (MULTI)")
+        if mode == "1":
+            strategy_name = str(data.get("strategy_name", "")).upper()
+            if strategy_name not in engine.supported_strategies.values():
+                raise ValueError(
+                    f"strategy_name must be one of {list(engine.supported_strategies.values())}"
+                )
+            strategies = None
+            min_confirmations = None
+        else:
+            raw_strats = data.get("strategies", [])
+            if isinstance(raw_strats, str):
+                raw_strats = [s.strip() for s in raw_strats.split(",") if s.strip()]
+            valid = set(engine.supported_strategies.values())
+            strategies = [s.upper() for s in raw_strats if s.upper() in valid]
+            if not strategies:
+                strategies = list(engine.supported_strategies.values())[:2]
+            strategy_name = None
+            min_confirmations = DEFAULT_CONFIRMATIONS.get(len(strategies), len(strategies))
+
+    # ── intraday options config ───────────────────────────────────────────────
+    intraday_options_lot_mode: str | None = None
+    intraday_options_entry_mode: str | None = None
+    if engine.name == "intraday_options" and atm_option_config:
+        intraday_options_lot_mode = str(
+            runtime_config.fno.intraday_options_lot_mode or "CAPITAL_BASED"
+        ).upper()
+        intraday_options_entry_mode = str(
+            runtime_config.fno.intraday_options_entry_mode or "LIVE_STAGED"
+        ).upper()
+
+    session_config = validate_session_config(SessionConfig(
+        engine_choice=engine_choice,
+        engine=engine,
+        execution_mode=execution_mode,
+        exit_only_mode=exit_only_mode,
+        live_broker_resync_interval_seconds=live_broker_resync_interval_seconds,
+        data_provider=data_provider,
+        execution_provider=execution_provider,
+        capital=capital,
+        selected_symbols=selected_symbols,
+        symbol_mode=symbol_mode,
+        option_pair_config=option_pair_config,
+        atm_option_config=atm_option_config,
+        risk_style_name=risk_style["name"],
+        atr_stop_multiplier=atr_stop_multiplier,
+        trailing_atr_multiplier=trailing_atr_multiplier,
+        target_risk_reward=target_risk_reward,
+        sl_percent=sl_percent,
+        target_percent=target_percent,
+        trailing_percent=trailing_percent,
+        risk_percent=risk_percent,
+        max_open_positions=max_open_positions,
+        max_capital_per_trade=max_capital_per_trade,
+        max_capital_deployed=max_capital_deployed,
+        one_trade_per_symbol_per_day=one_trade_per_symbol_per_day,
+        entry_selection_mode=entry_selection_mode,
+        top_n_count=top_n_count,
+        mode=mode,
+        strategy_name=strategy_name,
+        strategies=strategies,
+        min_confirmations=min_confirmations,
+        intraday_options_lot_mode=intraday_options_lot_mode,
+        intraday_options_entry_mode=intraday_options_entry_mode,
+    ))
+    log_session_config_summary(session_config)
+    return session_config

@@ -5,6 +5,14 @@ from pathlib import Path
 from config import LOG_LEVEL
 from display import strip_ansi
 
+_web_mode: bool = False
+
+
+def enable_web_mode() -> None:
+    """Called once by main.py --web before the server starts."""
+    global _web_mode
+    _web_mode = True
+
 
 LOGGER_NAME = "algo_bot"
 LOG_DIR = Path("logs")
@@ -82,3 +90,9 @@ def log_event(message, level="info"):
     print(message, flush=True)
     logger = get_logger()
     getattr(logger, level.lower())(strip_ansi(message))
+    if _web_mode:
+        try:
+            from web.state import push_log
+            push_log(strip_ansi(message), level)
+        except Exception:
+            pass
