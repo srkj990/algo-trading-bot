@@ -46,6 +46,13 @@ def attach_context(ctx: "TradingContext") -> None:
         _context = ctx
 
 
+def clear_context() -> None:
+    global _context, _session_thread
+    with _lock:
+        _context = None
+        _session_thread = None
+
+
 def set_session_thread(t: threading.Thread) -> None:
     global _session_thread
     with _lock:

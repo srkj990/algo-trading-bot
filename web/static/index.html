@@ -17,16 +17,20 @@
   .badge-running{background:#14532d;color:#4ade80}
   .badge-stopped{background:#374151;color:#9ca3af}
   .badge-stopping{background:#78350f;color:#fbbf24}
+  .badge-backtest{background:#312e81;color:#a5b4fc}
   .pnl-pos{color:#4ade80}
   .pnl-neg{color:#f87171}
   .pnl-zero{color:#94a3b8}
-  input,select{background:#0f172a;border:1px solid #334155;color:#e2e8f0;border-radius:6px;padding:6px 10px;width:100%}
-  input:focus,select:focus{outline:2px solid #3b82f6;border-color:#3b82f6}
-  .btn{border-radius:6px;padding:8px 18px;font-weight:600;cursor:pointer;transition:opacity .15s}
+  input,select,textarea{background:#0f172a;border:1px solid #334155;color:#e2e8f0;border-radius:6px;padding:6px 10px;width:100%}
+  input:focus,select:focus,textarea:focus{outline:2px solid #3b82f6;border-color:#3b82f6}
+  .btn{border-radius:6px;padding:8px 18px;font-weight:600;cursor:pointer;transition:opacity .15s;border:none}
   .btn:hover{opacity:.85}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
   .btn-primary{background:#2563eb;color:#fff}
+  .btn-success{background:#16a34a;color:#fff}
   .btn-danger{background:#dc2626;color:#fff}
   .btn-ghost{background:#334155;color:#e2e8f0}
+  .btn-amber{background:#d97706;color:#fff}
   table{width:100%;border-collapse:collapse;font-size:.8rem}
   th{color:#64748b;text-align:left;padding:6px 8px;border-bottom:1px solid #334155;font-weight:600}
   td{padding:5px 8px;border-bottom:1px solid #1e293b;font-variant-numeric:tabular-nums}
@@ -35,40 +39,51 @@
   #log-panel .log-warn{color:#fbbf24}
   #log-panel .log-error{color:#f87171}
   .section-label{font-size:.7rem;font-weight:700;color:#64748b;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px}
+  .tab-btn{padding:8px 20px;font-weight:600;font-size:.85rem;border-radius:6px 6px 0 0;cursor:pointer;border:none;transition:background .15s}
+  .tab-btn.active{background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-bottom:1px solid #1e293b}
+  .tab-btn.inactive{background:transparent;color:#64748b}
+  .tab-btn.inactive:hover{color:#94a3b8}
   .fade-in{animation:fadeIn .3s ease-in}
   @keyframes fadeIn{from{opacity:0}to{opacity:1}}
   .spinner{width:18px;height:18px;border:2px solid #334155;border-top-color:#3b82f6;border-radius:50%;display:inline-block;animation:spin .7s linear infinite;vertical-align:middle}
   @keyframes spin{to{transform:rotate(360deg)}}
   .hidden{display:none!important}
+  .fno-error-box{background:#451a03;border:1px solid #92400e;color:#fbbf24;border-radius:6px;padding:8px 12px;font-size:.8rem;margin-top:6px}
 </style>
 </head>
 <body class="min-h-screen">
 
-<!-- ═══════════════════════════════ HEADER ═══════════════════════════════════ -->
+<!-- ═══════════════════════════════ HEADER ════════════════════════════════════ -->
 <header class="flex items-center justify-between px-6 py-3 border-b border-slate-700 bg-slate-900">
   <div class="flex items-center gap-3">
     <span class="text-lg font-bold text-blue-400">⚡ ZERODHA ALGO</span>
     <span id="hdr-engine" class="text-sm text-slate-400"></span>
   </div>
-  <div class="flex items-center gap-3">
-    <span id="hdr-mode" class="badge-paper text-xs px-2 py-0.5 rounded font-semibold hidden"></span>
+  <div class="flex items-center gap-4">
+    <span id="hdr-mode" class="text-xs px-2 py-0.5 rounded font-semibold hidden"></span>
     <span id="hdr-status" class="badge-stopped text-xs px-2 py-0.5 rounded font-semibold">IDLE</span>
-    <button id="btn-stop" onclick="stopSession()" class="btn btn-danger text-sm hidden">■ STOP</button>
-    <button onclick="showConfigure()" id="btn-reconfigure" class="btn btn-ghost text-sm hidden">⚙ Reconfigure</button>
+    <button id="btn-stop"        onclick="stopSession()"      class="btn btn-danger  text-sm hidden">■ STOP</button>
+    <button id="btn-reconfigure" onclick="doReconfigure()"    class="btn btn-ghost   text-sm hidden">⚙ Reconfigure</button>
   </div>
 </header>
 
-<!-- ══════════════════════════════ CONFIGURE VIEW ════════════════════════════ -->
-<div id="view-configure" class="max-w-3xl mx-auto px-4 py-8">
-  <div class="card p-6 fade-in">
-    <h2 class="text-base font-bold text-slate-200 mb-6">Configure Session</h2>
+<!-- ═══════════════════════════ CONFIGURE / BACKTEST TABS ═════════════════════ -->
+<div id="view-configure" class="max-w-3xl mx-auto px-4 pt-6">
+
+  <!-- tab bar -->
+  <div class="flex gap-1 mb-0 border-b border-slate-700">
+    <button id="tab-live"     class="tab-btn active"   onclick="switchTab('live')">Live Trading</button>
+    <button id="tab-backtest" class="tab-btn inactive" onclick="switchTab('backtest')">Backtest</button>
+  </div>
+
+  <!-- ── LIVE TAB ─────────────────────────────────────────────────────────── -->
+  <div id="pane-live" class="card p-6 fade-in" style="border-top-left-radius:0">
+    <h2 class="text-base font-bold text-slate-200 mb-6">Configure Live Session</h2>
 
     <div class="grid grid-cols-2 gap-4">
-
-      <!-- Engine -->
       <div class="col-span-2 sm:col-span-1">
         <label class="section-label">Engine</label>
-        <select id="c-engine" onchange="onEngineChange()">
+        <select id="c-engine" onchange="onEngineChange('live')">
           <option value="1">1 · Intraday Equity (MIS 1min)</option>
           <option value="2">2 · Delivery Equity (CNC daily)</option>
           <option value="3">3 · Futures Equity (NRML)</option>
@@ -77,8 +92,6 @@
           <option value="6" selected>6 · Intraday Options (MIS ATM)</option>
         </select>
       </div>
-
-      <!-- Execution mode -->
       <div class="col-span-2 sm:col-span-1">
         <label class="section-label">Execution Mode</label>
         <select id="c-exec-mode">
@@ -86,14 +99,10 @@
           <option value="LIVE">LIVE — real broker orders</option>
         </select>
       </div>
-
-      <!-- Capital -->
       <div>
         <label class="section-label">Capital (₹)</label>
         <input id="c-capital" type="number" value="100000" min="1"/>
       </div>
-
-      <!-- Risk style -->
       <div>
         <label class="section-label">Risk Style</label>
         <select id="c-risk">
@@ -102,10 +111,9 @@
           <option value="3">Aggressive — 1.5% risk/trade</option>
         </select>
       </div>
-
     </div>
 
-    <!-- ── Equity-only fields ─────────────────────────────────────────────── -->
+    <!-- Equity fields -->
     <div id="eq-section" class="mt-4 hidden">
       <div class="section-label mt-2 mb-2">Symbol Selection</div>
       <div class="grid grid-cols-2 gap-4">
@@ -128,13 +136,13 @@
       </div>
     </div>
 
-    <!-- ── FNO fields ─────────────────────────────────────────────────────── -->
+    <!-- FNO fields -->
     <div id="fno-section" class="mt-4 hidden">
       <div class="section-label mt-2 mb-2">F&amp;O Contract</div>
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="section-label">Underlying</label>
-          <select id="c-underlying" onchange="loadFnoData()">
+          <select id="c-underlying" onchange="loadFnoData('live')">
             <option value="NIFTY" selected>NIFTY 50</option>
             <option value="SENSEX">SENSEX</option>
           </select>
@@ -142,9 +150,8 @@
         <div id="fno-expiry-wrap">
           <label class="section-label">Expiry <span id="fno-loading" class="spinner hidden"></span></label>
           <select id="c-expiry"></select>
+          <div id="fno-error" class="fno-error-box hidden"></div>
         </div>
-
-        <!-- Futures-only: BOTH option -->
         <div id="fno-both-wrap" class="hidden">
           <label class="section-label">Underlying scope</label>
           <select id="c-fno-underlying-scope">
@@ -152,8 +159,6 @@
             <option value="BOTH">Both NIFTY + SENSEX</option>
           </select>
         </div>
-
-        <!-- Options-only: strike mode -->
         <div id="fno-strike-wrap">
           <label class="section-label">Strike Mode</label>
           <select id="c-strike-mode">
@@ -162,8 +167,6 @@
             <option value="ATM_MINUS_1">ATM − 1</option>
           </select>
         </div>
-
-        <!-- Intraday options structure -->
         <div id="fno-structure-wrap">
           <label class="section-label">Structure</label>
           <select id="c-structure" onchange="onStructureChange()">
@@ -171,8 +174,6 @@
             <option value="PAIR">Two-Leg Range Pair</option>
           </select>
         </div>
-
-        <!-- Pair strikes -->
         <div id="fno-pair-wrap" class="col-span-2 hidden">
           <div class="grid grid-cols-2 gap-4">
             <div>
@@ -185,15 +186,13 @@
             </div>
           </div>
         </div>
-
-        <!-- ATM reference badge -->
         <div id="fno-atm-badge" class="col-span-2 text-sm text-slate-400 hidden">
           ATM reference: <span id="fno-atm-val" class="text-blue-400 font-mono"></span>
         </div>
       </div>
     </div>
 
-    <!-- ── Strategy fields ─────────────────────────────────────────────────── -->
+    <!-- Strategy -->
     <div class="mt-4 grid grid-cols-2 gap-4">
       <div id="strat-mode-wrap">
         <label class="section-label">Strategy Mode</label>
@@ -208,13 +207,13 @@
         <select id="c-strat-name"></select>
       </div>
       <div id="strat-multi-wrap" class="col-span-2 hidden">
-        <label class="section-label">Strategies (hold Ctrl/Cmd to multi-select)</label>
+        <label class="section-label">Strategies (hold Ctrl/Cmd for multi-select)</label>
         <select id="c-strat-multi" multiple size="3" style="height:auto"></select>
       </div>
     </div>
 
-    <!-- ── Position limits ────────────────────────────────────────────────── -->
-    <div id="pos-limits-section" class="mt-4 grid grid-cols-3 gap-4">
+    <!-- Position limits -->
+    <div class="mt-4 grid grid-cols-3 gap-4">
       <div>
         <label class="section-label">Max Open Positions</label>
         <input id="c-max-pos" type="number" value="1" min="1"/>
@@ -229,7 +228,7 @@
       </div>
     </div>
 
-    <!-- Data / execution providers (equity only) -->
+    <!-- Providers (equity only) -->
     <div id="provider-section" class="mt-4 grid grid-cols-2 gap-4 hidden">
       <div>
         <label class="section-label">Data Provider</label>
@@ -252,23 +251,194 @@
     <div id="cfg-error" class="hidden mt-4 bg-red-900/40 border border-red-700 text-red-300 rounded p-3 text-sm"></div>
 
     <!-- Submit -->
-    <div class="mt-6 flex gap-3">
-      <button onclick="submitConfigure()" class="btn btn-primary">Configure &amp; Start Session →</button>
-      <span id="cfg-spinner" class="hidden items-center gap-2 text-slate-400 text-sm"><span class="spinner"></span> Starting…</span>
+    <div class="mt-6 flex items-center gap-3">
+      <button onclick="submitLive()" class="btn btn-primary">Configure &amp; Start →</button>
+      <span id="cfg-spinner" class="hidden items-center gap-2 text-slate-400 text-sm">
+        <span class="spinner"></span> Starting…
+      </span>
+    </div>
+  </div>
+
+  <!-- ── BACKTEST TAB ──────────────────────────────────────────────────────── -->
+  <div id="pane-backtest" class="card p-6 fade-in hidden" style="border-top-left-radius:0">
+    <h2 class="text-base font-bold text-slate-200 mb-6">Configure Backtest</h2>
+
+    <div class="grid grid-cols-2 gap-4">
+      <div class="col-span-2 sm:col-span-1">
+        <label class="section-label">Engine</label>
+        <select id="b-engine" onchange="onEngineChange('backtest')">
+          <option value="1" selected>1 · Intraday Equity (MIS 1min)</option>
+          <option value="2">2 · Delivery Equity (CNC daily)</option>
+          <option value="3">3 · Futures Equity (NRML)</option>
+          <option value="4">4 · Options Equity (NRML)</option>
+          <option value="5">5 · Intraday Futures (MIS)</option>
+          <option value="6">6 · Intraday Options (MIS ATM)</option>
+        </select>
+      </div>
+      <div>
+        <label class="section-label">Capital (₹)</label>
+        <input id="b-capital" type="number" value="100000" min="1"/>
+      </div>
+      <div>
+        <label class="section-label">Risk Style</label>
+        <select id="b-risk">
+          <option value="1">Conservative — 0.5% risk/trade</option>
+          <option value="2" selected>Balanced — 1.0% risk/trade</option>
+          <option value="3">Aggressive — 1.5% risk/trade</option>
+        </select>
+      </div>
+      <div>
+        <label class="section-label">Period</label>
+        <select id="b-period">
+          <option value="1d">1 day</option>
+          <option value="5d">5 days</option>
+          <option value="1mo">1 month</option>
+          <option value="3mo" selected>3 months</option>
+          <option value="6mo">6 months</option>
+          <option value="1y">1 year</option>
+          <option value="2y">2 years</option>
+          <option value="5y">5 years</option>
+        </select>
+      </div>
+      <div>
+        <label class="section-label">Interval</label>
+        <select id="b-interval">
+          <option value="1m">1 min</option>
+          <option value="2m">2 min</option>
+          <option value="5m" selected>5 min</option>
+          <option value="15m">15 min</option>
+          <option value="30m">30 min</option>
+          <option value="60m">60 min</option>
+          <option value="1d">Daily</option>
+        </select>
+      </div>
     </div>
 
+    <!-- Equity symbol fields (backtest) -->
+    <div id="b-eq-section" class="mt-4">
+      <div class="section-label mt-2 mb-2">Symbol Selection</div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="section-label">Symbol Mode</label>
+          <select id="b-sym-mode" onchange="onBSymModeChange()">
+            <option value="NIFTY50" selected>NIFTY50 Universe</option>
+            <option value="SINGLE">Single Symbol</option>
+            <option value="MANUAL_MULTI">Manual Multi</option>
+          </select>
+        </div>
+        <div id="b-eq-single-wrap" class="hidden">
+          <label class="section-label">Symbol (e.g. RELIANCE)</label>
+          <input id="b-symbol" type="text" placeholder="RELIANCE"/>
+        </div>
+        <div id="b-eq-multi-wrap" class="col-span-2 hidden">
+          <label class="section-label">Symbols (comma-separated)</label>
+          <input id="b-symbols" type="text" placeholder="RELIANCE, TCS, INFY"/>
+        </div>
+      </div>
+    </div>
+
+    <!-- FNO fields (backtest) — uses synthetic expiries, no Kite needed -->
+    <div id="b-fno-section" class="mt-4 hidden">
+      <div class="section-label mt-2 mb-2">F&amp;O Contract (Backtest — uses Yahoo Finance proxy)</div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="section-label">Underlying</label>
+          <select id="b-underlying" onchange="loadFnoData('backtest')">
+            <option value="NIFTY" selected>NIFTY 50</option>
+            <option value="SENSEX">SENSEX</option>
+            <option value="BOTH">Both (futures only)</option>
+          </select>
+        </div>
+        <div id="b-fno-expiry-wrap">
+          <label class="section-label">Expiry (reference) <span id="b-fno-loading" class="spinner hidden"></span></label>
+          <select id="b-expiry"></select>
+        </div>
+        <div id="b-fno-structure-wrap">
+          <label class="section-label">Structure</label>
+          <select id="b-structure" onchange="onBStructureChange()">
+            <option value="SINGLE" selected>ATM Single Option</option>
+            <option value="PAIR">Two-Leg Range Pair</option>
+          </select>
+        </div>
+        <div id="b-fno-strike-wrap">
+          <label class="section-label">Strike Mode</label>
+          <select id="b-strike-mode">
+            <option value="ATM" selected>ATM</option>
+            <option value="ATM_PLUS_1">ATM + 1</option>
+            <option value="ATM_MINUS_1">ATM − 1</option>
+          </select>
+        </div>
+        <div id="b-fno-pair-wrap" class="col-span-2 hidden">
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="section-label">Lower PE Strike</label>
+              <input id="b-lower-pe" type="number" placeholder="e.g. 24000"/>
+            </div>
+            <div>
+              <label class="section-label">Upper CE Strike</label>
+              <input id="b-upper-ce" type="number" placeholder="e.g. 24600"/>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Strategy (backtest) -->
+    <div class="mt-4 grid grid-cols-2 gap-4">
+      <div id="b-strat-mode-wrap">
+        <label class="section-label">Strategy Mode</label>
+        <select id="b-strat-mode" onchange="onBStratModeChange()">
+          <option value="2" selected>Multi-strategy</option>
+          <option value="1">Single strategy</option>
+          <option value="3">Auto-adaptive</option>
+        </select>
+      </div>
+      <div id="b-strat-name-wrap" class="hidden">
+        <label class="section-label">Strategy</label>
+        <select id="b-strat-name"></select>
+      </div>
+      <div id="b-strat-multi-wrap" class="col-span-2">
+        <label class="section-label">Strategies (hold Ctrl/Cmd for multi-select)</label>
+        <select id="b-strat-multi" multiple size="3" style="height:auto"></select>
+      </div>
+    </div>
+
+    <!-- Position limits (backtest) -->
+    <div class="mt-4 grid grid-cols-3 gap-4">
+      <div>
+        <label class="section-label">Max Open Positions</label>
+        <input id="b-max-pos" type="number" value="1" min="1"/>
+      </div>
+      <div>
+        <label class="section-label">Max Capital / Trade (₹)</label>
+        <input id="b-max-per-trade" type="number" value="50000" min="1"/>
+      </div>
+      <div>
+        <label class="section-label">Top-N entries / cycle</label>
+        <input id="b-top-n" type="number" value="1" min="1" max="10"/>
+      </div>
+    </div>
+
+    <!-- Error banner (backtest) -->
+    <div id="bt-error" class="hidden mt-4 bg-red-900/40 border border-red-700 text-red-300 rounded p-3 text-sm"></div>
+
+    <!-- Submit -->
+    <div class="mt-6 flex items-center gap-3">
+      <button onclick="submitBacktest()" id="btn-run-bt" class="btn btn-success">▶ Run Backtest</button>
+      <span id="bt-spinner" class="hidden items-center gap-2 text-slate-400 text-sm">
+        <span class="spinner"></span> Running… check Log Stream below
+      </span>
+    </div>
   </div>
 </div>
 
 <!-- ══════════════════════════════ DASHBOARD VIEW ════════════════════════════ -->
 <div id="view-dashboard" class="hidden px-4 py-4 fade-in">
 
-  <!-- ── Top bar: summary tiles ─────────────────────────────────────────────── -->
   <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
     <div class="card p-3">
-      <div class="section-label">Nifty 50</div>
-      <div id="d-nifty" class="text-xl font-bold font-mono">—</div>
-      <div id="d-nifty-chg" class="text-xs text-slate-400">—</div>
+      <div class="section-label">Engine / Mode</div>
+      <div id="d-engine" class="text-sm font-semibold text-slate-200 leading-snug">—</div>
     </div>
     <div class="card p-3">
       <div class="section-label">Session P&amp;L</div>
@@ -287,76 +457,54 @@
     </div>
   </div>
 
-  <!-- ── Main grid: positions + candidates ──────────────────────────────────── -->
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-3">
-
-    <!-- Positions -->
     <div class="card p-3">
       <div class="flex justify-between items-center mb-2">
         <div class="section-label mb-0">Open Positions <span id="d-pos-count" class="text-blue-400"></span></div>
       </div>
       <div class="overflow-x-auto">
-        <table>
-          <thead><tr>
-            <th>Symbol</th><th>Side</th><th>Qty</th>
-            <th>Entry</th><th>SL</th><th>Target</th><th>Trail</th><th>P&amp;L</th>
-          </tr></thead>
-          <tbody id="d-positions-body">
-            <tr><td colspan="8" class="text-slate-500 text-center py-4">No open positions</td></tr>
-          </tbody>
-        </table>
+        <table><thead><tr>
+          <th>Symbol</th><th>Side</th><th>Qty</th>
+          <th>Entry</th><th>SL</th><th>Target</th><th>Trail</th><th>P&amp;L</th>
+        </tr></thead>
+        <tbody id="d-positions-body">
+          <tr><td colspan="8" class="text-slate-500 text-center py-4">No open positions</td></tr>
+        </tbody></table>
       </div>
     </div>
-
-    <!-- Candidates -->
     <div class="card p-3">
       <div class="section-label mb-2">Last Scan — Ranked Candidates</div>
       <div class="overflow-x-auto">
-        <table>
-          <thead><tr>
-            <th>#</th><th>Symbol</th><th>Signal</th>
-            <th>Score</th><th>ATR</th><th>Close</th><th>Info</th>
-          </tr></thead>
-          <tbody id="d-candidates-body">
-            <tr><td colspan="7" class="text-slate-500 text-center py-4">No candidates yet</td></tr>
-          </tbody>
-        </table>
+        <table><thead><tr>
+          <th>#</th><th>Symbol</th><th>Signal</th><th>Score</th><th>ATR</th><th>Close</th><th>Info</th>
+        </tr></thead>
+        <tbody id="d-candidates-body">
+          <tr><td colspan="7" class="text-slate-500 text-center py-4">No candidates yet</td></tr>
+        </tbody></table>
       </div>
     </div>
-
   </div>
 
-  <!-- ── Trade book + equity curve ──────────────────────────────────────────── -->
   <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-3">
-
-    <!-- Trade book -->
     <div class="card p-3 lg:col-span-2">
       <div class="section-label mb-2">Trade Book (Today) <span id="d-trade-count" class="text-blue-400"></span></div>
       <div class="overflow-x-auto">
-        <table>
-          <thead><tr>
-            <th>Symbol</th><th>Side</th><th>Entry</th>
-            <th>Exit</th><th>Net P&amp;L</th><th>Reason</th><th>Time</th>
-          </tr></thead>
-          <tbody id="d-trades-body">
-            <tr><td colspan="7" class="text-slate-500 text-center py-4">No trades today</td></tr>
-          </tbody>
-        </table>
+        <table><thead><tr>
+          <th>Symbol</th><th>Side</th><th>Entry</th>
+          <th>Exit</th><th>Net P&amp;L</th><th>Reason</th><th>Time</th>
+        </tr></thead>
+        <tbody id="d-trades-body">
+          <tr><td colspan="7" class="text-slate-500 text-center py-4">No trades today</td></tr>
+        </tbody></table>
       </div>
     </div>
-
-    <!-- Equity curve -->
     <div class="card p-3">
       <div class="section-label mb-2">Cumulative P&amp;L</div>
       <canvas id="equity-chart" height="160"></canvas>
     </div>
-
   </div>
 
-  <!-- ── Risk panel + log ────────────────────────────────────────────────────── -->
   <div class="grid grid-cols-1 lg:grid-cols-3 gap-3">
-
-    <!-- Risk status -->
     <div class="card p-3">
       <div class="section-label mb-2">Risk Status</div>
       <div class="space-y-2 text-sm">
@@ -366,8 +514,6 @@
         <div id="r-pause-reason" class="text-yellow-400 text-xs hidden"></div>
       </div>
     </div>
-
-    <!-- Log stream -->
     <div class="card p-3 lg:col-span-2">
       <div class="flex justify-between items-center mb-2">
         <div class="section-label mb-0">Log Stream</div>
@@ -375,9 +521,57 @@
       </div>
       <div id="log-panel"></div>
     </div>
+  </div>
+</div>
 
+<!-- ══════════════════════════════ BACKTEST RESULTS ══════════════════════════ -->
+<div id="view-backtest-results" class="hidden px-4 py-4 fade-in">
+  <div class="flex items-center justify-between mb-4">
+    <h2 class="text-base font-bold text-slate-200">Backtest Results</h2>
+    <button onclick="showConfigureBacktest()" class="btn btn-ghost text-sm">← New Backtest</button>
   </div>
 
+  <!-- Summary tiles -->
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4" id="bt-tiles">
+    <div class="card p-3"><div class="section-label">Total Return</div><div id="bt-return" class="text-xl font-bold font-mono pnl-zero">—</div></div>
+    <div class="card p-3"><div class="section-label">Net P&amp;L</div><div id="bt-net-pnl" class="text-xl font-bold font-mono pnl-zero">—</div></div>
+    <div class="card p-3"><div class="section-label">Closed Trades</div><div id="bt-trades" class="text-xl font-bold font-mono">—</div></div>
+    <div class="card p-3"><div class="section-label">Win Rate</div><div id="bt-winrate" class="text-xl font-bold font-mono">—</div></div>
+    <div class="card p-3"><div class="section-label">Max Drawdown</div><div id="bt-drawdown" class="text-xl font-bold font-mono pnl-neg">—</div></div>
+    <div class="card p-3"><div class="section-label">Est. Charges</div><div id="bt-charges" class="text-xl font-bold font-mono">—</div></div>
+    <div class="card p-3"><div class="section-label">Ending Equity</div><div id="bt-equity" class="text-xl font-bold font-mono">—</div></div>
+    <div class="card p-3"><div class="section-label">Tick Fills</div><div id="bt-tick" class="text-xl font-bold font-mono">—</div></div>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-3">
+    <!-- Equity curve chart -->
+    <div class="card p-3">
+      <div class="section-label mb-2">Equity Curve</div>
+      <canvas id="bt-equity-chart" height="160"></canvas>
+    </div>
+    <!-- Trade list -->
+    <div class="card p-3 lg:col-span-2">
+      <div class="section-label mb-2">Trades <span id="bt-trade-count" class="text-blue-400"></span></div>
+      <div class="overflow-x-auto" style="max-height:260px;overflow-y:auto">
+        <table><thead><tr>
+          <th>Symbol</th><th>Side</th><th>Entry Time</th><th>Exit Time</th>
+          <th>Entry</th><th>Exit</th><th>Qty</th><th>Net P&amp;L</th><th>Reason</th>
+        </tr></thead>
+        <tbody id="bt-trades-body">
+          <tr><td colspan="9" class="text-slate-500 text-center py-4">No trades</td></tr>
+        </tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Log panel for backtest -->
+  <div class="card p-3">
+    <div class="flex justify-between items-center mb-2">
+      <div class="section-label mb-0">Backtest Log</div>
+      <button onclick="clearLog()" class="text-xs text-slate-500 hover:text-slate-300">clear</button>
+    </div>
+    <div id="log-panel"></div>
+  </div>
 </div>
 
 <!-- ═══════════════════════════════ SCRIPT ═══════════════════════════════════ -->
@@ -385,24 +579,27 @@
 // ── state ──────────────────────────────────────────────────────────────────
 let ws = null;
 let equityChart = null;
-let pnlHistory = [];
+let btEquityChart = null;
 let lastState = {};
-let candidatesCache = [];
+let currentTab = 'live';
 
-// ── strategy maps ────────────────────────────────────────────────────────────
-const EQ_STRATEGIES  = {MA:'MA',RSI:'RSI',VWAP:'VWAP',BREAKOUT:'BREAKOUT',ORB:'ORB'};
-const FNO_STRATEGIES = {ATM_MOMENTUM:'ATM_MOMENTUM',ATM_ORB:'ATM_ORB',
-  ATM_VWAP_REVERSION:'ATM_VWAP_REVERSION',ATM_MULTI:'ATM_MULTI',
-  ATM_BREAKOUT_EXPANSION:'ATM_BREAKOUT_EXPANSION',ATM_IV_EXPANSION:'ATM_IV_EXPANSION',
-  ATM_TRAP_REVERSAL:'ATM_TRAP_REVERSAL'};
-const IS_FNO  = e => ['3','4','5','6'].includes(e);
+const EQ_STRATEGIES  = {MA:'MA', RSI:'RSI', VWAP:'VWAP', BREAKOUT:'BREAKOUT', ORB:'ORB'};
+const FNO_STRATEGIES = {
+  ATM_MOMENTUM:'ATM_MOMENTUM', ATM_ORB:'ATM_ORB',
+  ATM_VWAP_REVERSION:'ATM_VWAP_REVERSION', ATM_MULTI:'ATM_MULTI',
+  ATM_BREAKOUT_EXPANSION:'ATM_BREAKOUT_EXPANSION',
+  ATM_IV_EXPANSION:'ATM_IV_EXPANSION', ATM_TRAP_REVERSAL:'ATM_TRAP_REVERSAL',
+};
+const IS_FNO   = e => ['3','4','5','6'].includes(e);
 const IS_IOPTS = e => e === '6';
 
 // ── init ────────────────────────────────────────────────────────────────────
 window.onload = async () => {
   initChart();
-  onEngineChange();
+  onEngineChange('live');
+  onEngineChange('backtest');
   await checkStatus();
+  connectWS();
 };
 
 async function checkStatus() {
@@ -411,59 +608,120 @@ async function checkStatus() {
     const d = await r.json();
     if (d.alive || d.status === 'running' || d.status === 'stopping') {
       showDashboard();
-      connectWS();
-    } else {
-      showConfigure();
     }
-  } catch { showConfigure(); }
+  } catch {}
+}
+
+// ── tabs ────────────────────────────────────────────────────────────────────
+function switchTab(tab) {
+  currentTab = tab;
+  document.getElementById('pane-live').classList.toggle('hidden', tab !== 'live');
+  document.getElementById('pane-backtest').classList.toggle('hidden', tab !== 'backtest');
+  document.getElementById('tab-live').className     = 'tab-btn ' + (tab === 'live' ? 'active' : 'inactive');
+  document.getElementById('tab-backtest').className = 'tab-btn ' + (tab === 'backtest' ? 'active' : 'inactive');
+  if (tab === 'backtest') {
+    const eng = document.getElementById('b-engine').value;
+    if (IS_FNO(eng)) loadFnoData('backtest');
+  }
 }
 
 // ── views ────────────────────────────────────────────────────────────────────
 function showConfigure() {
   document.getElementById('view-configure').classList.remove('hidden');
   document.getElementById('view-dashboard').classList.add('hidden');
+  document.getElementById('view-backtest-results').classList.add('hidden');
   document.getElementById('btn-reconfigure').classList.add('hidden');
   document.getElementById('btn-stop').classList.add('hidden');
 }
 
+function showConfigureBacktest() {
+  showConfigure();
+  switchTab('backtest');
+}
+
 function showDashboard() {
   document.getElementById('view-configure').classList.add('hidden');
+  document.getElementById('view-backtest-results').classList.add('hidden');
   document.getElementById('view-dashboard').classList.remove('hidden');
   document.getElementById('btn-reconfigure').classList.remove('hidden');
   document.getElementById('btn-stop').classList.remove('hidden');
 }
 
-// ── engine-change cascade ─────────────────────────────────────────────────────
-function onEngineChange() {
-  const e = document.getElementById('c-engine').value;
-  const fno = IS_FNO(e);
-  tog('eq-section',  !fno);
-  tog('fno-section',  fno);
-  tog('provider-section', !fno);
-  tog('strat-mode-wrap', !IS_IOPTS(e));
+function showBacktestResults(result) {
+  document.getElementById('view-configure').classList.add('hidden');
+  document.getElementById('view-dashboard').classList.add('hidden');
+  document.getElementById('view-backtest-results').classList.remove('hidden');
+  document.getElementById('btn-reconfigure').classList.add('hidden');
+  document.getElementById('btn-stop').classList.add('hidden');
+  renderBacktestResults(result);
+}
 
-  // futures BOTH scope
-  tog('fno-both-wrap', e === '3' || e === '5');
+// ── reconfigure ──────────────────────────────────────────────────────────────
+async function doReconfigure() {
+  // reset server state so /api/configure won't get 409
+  try {
+    await fetch('/api/reset', {method:'POST'});
+  } catch {}
+  showConfigure();
+}
 
-  // structure only for intraday options
-  tog('fno-structure-wrap', IS_IOPTS(e));
+// ── engine-change ─────────────────────────────────────────────────────────────
+function onEngineChange(scope) {
+  const pfx = scope === 'backtest' ? 'b-' : 'c-';
+  const eng = document.getElementById(pfx + (scope === 'backtest' ? 'engine' : 'engine')).value;
+  const fno = IS_FNO(eng);
 
-  // populate strategy options
-  const strats = fno ? FNO_STRATEGIES : EQ_STRATEGIES;
-  populateSelect('c-strat-name', Object.values(strats));
-  populateSelect('c-strat-multi', Object.values(strats), true);
+  if (scope === 'live') {
+    tog('eq-section',       !fno);
+    tog('fno-section',       fno);
+    tog('provider-section', !fno);
+    tog('strat-mode-wrap',  !IS_IOPTS(eng));
+    tog('fno-both-wrap',     eng === '3' || eng === '5');
+    tog('fno-structure-wrap', IS_IOPTS(eng));
+    const strats = fno ? FNO_STRATEGIES : EQ_STRATEGIES;
+    populateSelect('c-strat-name',  Object.values(strats));
+    populateSelect('c-strat-multi', Object.values(strats));
+    if (IS_IOPTS(eng)) { document.getElementById('c-strat-mode').value = '1'; onStratModeChange(); }
+    if (fno) loadFnoData('live');
+  } else {
+    tog('b-eq-section',       !fno);
+    tog('b-fno-section',       fno);
+    tog('b-strat-mode-wrap',  !IS_IOPTS(eng));
+    tog('b-fno-structure-wrap', IS_IOPTS(eng));
+    // hide BOTH for options engines
+    const undEl = document.getElementById('b-underlying');
+    if (undEl) {
+      const bothOpt = undEl.querySelector('option[value="BOTH"]');
+      if (bothOpt) bothOpt.disabled = IS_IOPTS(eng);
+    }
+    const strats = fno ? FNO_STRATEGIES : EQ_STRATEGIES;
+    populateSelect('b-strat-name',  Object.values(strats));
+    populateSelect('b-strat-multi', Object.values(strats));
+    if (IS_IOPTS(eng)) { document.getElementById('b-strat-mode').value = '1'; onBStratModeChange(); }
 
-  if (IS_IOPTS(e)) {
-    document.getElementById('c-strat-mode').value = '1';
-    onStratModeChange();
+    // auto-set sensible period/interval for this engine
+    const engineDefaults = {
+      '1': ['3mo','5m'], '2': ['1y','1d'], '3': ['6mo','15m'],
+      '4': ['6mo','15m'], '5': ['3mo','5m'], '6': ['3mo','5m'],
+    };
+    const [defPeriod, defInterval] = engineDefaults[eng] || ['3mo','5m'];
+    document.getElementById('b-period').value   = defPeriod;
+    document.getElementById('b-interval').value = defInterval;
+
+    if (fno) loadFnoData('backtest');
   }
-  if (fno) loadFnoData();
 }
 
 function onSymModeChange() {
   const m = document.getElementById('c-sym-mode').value;
-  tog('eq-single-wrap',  m === 'SINGLE');
-  tog('eq-multi-wrap',   m === 'MANUAL_MULTI');
+  tog('eq-single-wrap', m === 'SINGLE');
+  tog('eq-multi-wrap',  m === 'MANUAL_MULTI');
+}
+
+function onBSymModeChange() {
+  const m = document.getElementById('b-sym-mode').value;
+  tog('b-eq-single-wrap', m === 'SINGLE');
+  tog('b-eq-multi-wrap',  m === 'MANUAL_MULTI');
 }
 
 function onStructureChange() {
@@ -472,51 +730,99 @@ function onStructureChange() {
   tog('fno-strike-wrap', !p);
 }
 
+function onBStructureChange() {
+  const p = document.getElementById('b-structure').value === 'PAIR';
+  tog('b-fno-pair-wrap',   p);
+  tog('b-fno-strike-wrap', !p);
+}
+
 function onStratModeChange() {
   const m = document.getElementById('c-strat-mode').value;
   tog('strat-name-wrap',  m === '1');
   tog('strat-multi-wrap', m === '2');
 }
 
-// ── load FNO expiries ─────────────────────────────────────────────────────────
-async function loadFnoData() {
-  const eng  = document.getElementById('c-engine').value;
-  const und  = document.getElementById('c-underlying').value;
+function onBStratModeChange() {
+  const m = document.getElementById('b-strat-mode').value;
+  tog('b-strat-name-wrap',  m === '1');
+  tog('b-strat-multi-wrap', m !== '1');
+}
+
+// ── FNO expiry loading ────────────────────────────────────────────────────────
+async function loadFnoData(scope) {
+  const isBacktest = scope === 'backtest';
+  const engId  = isBacktest ? 'b-engine'     : 'c-engine';
+  const undId  = isBacktest ? 'b-underlying' : 'c-underlying';
+  const expId  = isBacktest ? 'b-expiry'     : 'c-expiry';
+  const spinId = isBacktest ? 'b-fno-loading': 'fno-loading';
+  const errId  = isBacktest ? null           : 'fno-error';
+  const atmId  = isBacktest ? null           : 'fno-atm-badge';
+
+  const eng   = document.getElementById(engId).value;
+  const und   = document.getElementById(undId).value;
   const itype = (eng === '3' || eng === '5') ? 'FUT' : 'OPT';
-  document.getElementById('fno-loading').classList.remove('hidden');
+  const mode  = isBacktest ? 'backtest' : 'live';
+
+  document.getElementById(spinId).classList.remove('hidden');
+  if (errId) document.getElementById(errId).classList.add('hidden');
+
   try {
-    const r = await fetch(`/api/fno-data?underlying=${und}&instrument_type=${itype}`);
+    const r = await fetch(`/api/fno-data?underlying=${und}&instrument_type=${itype}&mode=${mode}`);
     const d = await r.json();
-    const sel = document.getElementById('c-expiry');
+
+    const sel = document.getElementById(expId);
     sel.innerHTML = '';
-    (d.expiries || []).forEach(ex => {
-      const o = document.createElement('option'); o.value = ex; o.text = ex; sel.appendChild(o);
-    });
-    if (d.atm_strike) {
-      document.getElementById('fno-atm-val').textContent = d.atm_strike;
-      document.getElementById('fno-atm-badge').classList.remove('hidden');
+
+    if (d.error && (!d.expiries || !d.expiries.length)) {
+      // Show error in form — don't silently fail
+      if (errId) {
+        const errEl = document.getElementById(errId);
+        errEl.textContent = '⚠ ' + d.error + (d.hint ? ' — ' + d.hint : '');
+        errEl.classList.remove('hidden');
+      }
+      appendLog(`[FNO] ${d.error}`, 'warn');
+    } else {
+      if (d.error && errId) {
+        // partial error (expiries loaded but strikes failed)
+        const errEl = document.getElementById(errId);
+        errEl.textContent = '⚠ Strike info unavailable: ' + d.error;
+        errEl.classList.remove('hidden');
+      }
+      (d.expiries || []).forEach(ex => {
+        const o = document.createElement('option'); o.value = ex; o.text = ex; sel.appendChild(o);
+      });
+      if (d.source === 'synthetic') {
+        const note = document.createElement('option');
+        note.disabled = true;
+        note.text = '— synthetic dates (Yahoo Finance proxy)';
+        sel.insertBefore(note, sel.firstChild);
+      }
+      if (atmId && d.atm_strike) {
+        document.getElementById('fno-atm-val').textContent = d.atm_strike;
+        document.getElementById(atmId).classList.remove('hidden');
+      }
     }
   } catch(err) {
-    appendLog(`FNO data load failed: ${err}`, 'warn');
+    appendLog(`[FNO] Load error: ${err}`, 'error');
   } finally {
-    document.getElementById('fno-loading').classList.add('hidden');
+    document.getElementById(spinId).classList.add('hidden');
   }
 }
 
-// ── configure + start ─────────────────────────────────────────────────────────
-async function submitConfigure() {
+// ── Live: configure + start ───────────────────────────────────────────────────
+async function submitLive() {
   hideCfgError();
   const eng = document.getElementById('c-engine').value;
   const payload = {
-    engine_choice:    eng,
-    execution_mode:   document.getElementById('c-exec-mode').value,
-    capital:          parseFloat(document.getElementById('c-capital').value),
-    risk_style:       document.getElementById('c-risk').value,
+    engine_choice:        eng,
+    execution_mode:       document.getElementById('c-exec-mode').value,
+    capital:              parseFloat(document.getElementById('c-capital').value),
+    risk_style:           document.getElementById('c-risk').value,
     max_open_positions:   parseInt(document.getElementById('c-max-pos').value),
     max_capital_per_trade: parseFloat(document.getElementById('c-max-per-trade').value),
     max_capital_deployed:  parseFloat(document.getElementById('c-max-deployed').value),
     one_trade_per_symbol_per_day: true,
-    strategy_mode:    document.getElementById('c-strat-mode').value,
+    strategy_mode:        document.getElementById('c-strat-mode').value,
   };
 
   if (IS_FNO(eng)) {
@@ -534,9 +840,9 @@ async function submitConfigure() {
       payload.strategy_name = document.getElementById('c-strat-name').value;
     }
   } else {
-    payload.data_provider    = document.getElementById('c-data-provider').value;
+    payload.data_provider      = document.getElementById('c-data-provider').value;
     payload.execution_provider = document.getElementById('c-exec-provider').value;
-    payload.symbol_mode      = document.getElementById('c-sym-mode').value;
+    payload.symbol_mode        = document.getElementById('c-sym-mode').value;
     if (payload.symbol_mode === 'SINGLE')
       payload.symbol = document.getElementById('c-symbol').value;
     if (payload.symbol_mode === 'MANUAL_MULTI')
@@ -562,7 +868,6 @@ async function submitConfigure() {
     if (!r2.ok) { showCfgError(d2.error || 'Start failed'); return; }
 
     showDashboard();
-    connectWS();
   } catch(err) {
     showCfgError('Network error: ' + err);
   } finally {
@@ -574,6 +879,70 @@ async function stopSession() {
   await fetch('/api/stop', {method:'POST'});
 }
 
+// ── Backtest: configure + run ─────────────────────────────────────────────────
+async function submitBacktest() {
+  hideBtError();
+  const eng = document.getElementById('b-engine').value;
+  const fno = IS_FNO(eng);
+
+  const payload = {
+    engine_choice:         eng,
+    capital:               parseFloat(document.getElementById('b-capital').value),
+    risk_style:            document.getElementById('b-risk').value,
+    period:                document.getElementById('b-period').value,
+    interval:              document.getElementById('b-interval').value,
+    max_open_positions:    parseInt(document.getElementById('b-max-pos').value),
+    max_capital_per_trade: parseFloat(document.getElementById('b-max-per-trade').value),
+    max_capital_deployed:  parseFloat(document.getElementById('b-capital').value),
+    top_n:                 parseInt(document.getElementById('b-top-n').value),
+    one_trade_per_symbol_per_day: true,
+    strategy_mode:         document.getElementById('b-strat-mode').value,
+  };
+
+  if (fno) {
+    payload.fno_underlying = document.getElementById('b-underlying').value;
+    payload.fno_expiry     = document.getElementById('b-expiry').value;
+    if (IS_IOPTS(eng)) {
+      payload.fno_structure = document.getElementById('b-structure').value;
+      if (payload.fno_structure === 'PAIR') {
+        payload.lower_pe_strike = parseInt(document.getElementById('b-lower-pe').value);
+        payload.upper_ce_strike = parseInt(document.getElementById('b-upper-ce').value);
+      } else {
+        payload.strike_offset_mode = document.getElementById('b-strike-mode').value;
+      }
+      payload.strategy_name = document.getElementById('b-strat-name').value;
+    }
+  } else {
+    payload.symbol_mode = document.getElementById('b-sym-mode').value;
+    if (payload.symbol_mode === 'SINGLE')
+      payload.symbol = document.getElementById('b-symbol').value;
+    if (payload.symbol_mode === 'MANUAL_MULTI')
+      payload.symbols = document.getElementById('b-symbols').value;
+  }
+
+  const mode = document.getElementById('b-strat-mode').value;
+  if (mode === '1') {
+    payload.strategy_name = document.getElementById('b-strat-name').value;
+  } else if (mode === '2') {
+    const sel = document.getElementById('b-strat-multi');
+    payload.strategies = Array.from(sel.selectedOptions).map(o => o.value);
+  }
+
+  setBtSpinner(true);
+  try {
+    const r = await fetch('/api/backtest', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    const d = await r.json();
+    if (!r.ok) { showBtError(d.error || 'Backtest start failed'); return; }
+    // switch to log view so user can see progress
+    appendLog(`[BACKTEST] Started ${d.engine} | ${d.period}/${d.interval} | ₹${(d.capital||0).toLocaleString('en-IN')}`);
+    // results will arrive via WS backtest_done event
+  } catch(err) {
+    showBtError('Network error: ' + err);
+  } finally {
+    setBtSpinner(false);
+  }
+}
+
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 function connectWS() {
   if (ws && ws.readyState < 2) return;
@@ -581,81 +950,77 @@ function connectWS() {
   ws.onmessage = ev => {
     try { handleEvent(JSON.parse(ev.data)); } catch {}
   };
-  ws.onclose = () => {
-    setTimeout(() => {
-      if (document.getElementById('view-dashboard').classList.contains('hidden')) return;
-      connectWS();
-    }, 3000);
-  };
+  ws.onclose = () => setTimeout(connectWS, 3000);
 }
 
 function handleEvent(ev) {
-  if (ev.type === 'log')   { appendLog(ev.line, ev.level); return; }
-  if (ev.type === 'ping')  return;
+  if (ev.type === 'log')    { appendLog(ev.line, ev.level); return; }
+  if (ev.type === 'ping')   return;
   if (ev.type === 'status') { updateStatusBadge(ev.status); return; }
-  if (ev.type === 'state' || ev.positions !== undefined) { applyState(ev); }
+  if (ev.type === 'backtest_done')  { showBacktestResults(ev.result); setBtSpinner(false); return; }
+  if (ev.type === 'backtest_error') { showBtError(ev.error); setBtSpinner(false); return; }
+  if (ev.type === 'state' || ev.positions !== undefined) applyState(ev);
 }
 
-// ── state apply ───────────────────────────────────────────────────────────────
+// ── live state apply ──────────────────────────────────────────────────────────
 function applyState(s) {
   lastState = s;
   const sess = s.session || {};
   const risk = s.risk || {};
 
-  // header
-  setTxt('hdr-engine', sess.engine ? `${sess.engine} · ${sess.execution_mode||''}` : '');
+  const engLabel = sess.engine ? `${sess.engine} · ${sess.execution_mode||''}` : '—';
+  setTxt('d-engine', engLabel);
+  setTxt('hdr-engine', engLabel);
   setBadge('hdr-mode', sess.execution_mode || '', sess.execution_mode === 'LIVE' ? 'badge-live' : 'badge-paper');
   updateStatusBadge(s.status);
 
-  // tiles
   const pnl = sess.session_pnl ?? 0;
   setTxt('d-pnl', `₹${fmt(pnl)}`, pnl >= 0 ? 'pnl-pos' : 'pnl-neg');
   setTxt('d-daily-loss', `Daily loss: ${fmt(risk.daily_loss_pct || 0, 2)}%`);
   setTxt('d-deployed', `₹${fmt(sess.deployed_capital || 0)}`);
   setTxt('d-deployed-pct', `${fmt(sess.deployed_pct || 0, 1)}% of capital`);
 
-  // cycle
-  const cycleTxt = s.cycle_reason || s.reason || '—';
-  setTxt('d-cycle', cycleTxt);
+  setTxt('d-cycle', s.cycle_reason || s.reason || '—');
   tog('d-risk-pause', risk.paused);
 
-  // risk panel
   setTxt('r-daily-loss', `${fmt(risk.daily_loss_pct || 0, 2)}%`);
   setTxt('r-consec', risk.consecutive_losses ?? 0);
   if (risk.paused) {
     setTxt('r-status', 'PAUSED', 'text-yellow-400');
     const el = document.getElementById('r-pause-reason');
-    el.textContent = risk.pause_reason || '';
-    el.classList.remove('hidden');
+    el.textContent = risk.pause_reason || ''; el.classList.remove('hidden');
   } else {
     setTxt('r-status', 'OK', 'text-green-400');
     document.getElementById('r-pause-reason').classList.add('hidden');
   }
 
-  // positions
   renderPositions(s.positions || {});
-
-  // trade book + equity curve
   renderTrades(s.trade_book || []);
+}
+
+function updateStatusBadge(status) {
+  const el = document.getElementById('hdr-status');
+  el.textContent = (status || 'idle').toUpperCase();
+  el.className = 'text-xs px-2 py-0.5 rounded font-semibold ' +
+    ({running:'badge-running', stopping:'badge-stopping', stopped:'badge-stopped'}[status] || 'badge-stopped');
+  tog('btn-stop', status === 'running' || status === 'stopping');
+  // Show reconfigure only when stopped (not when idle — form is already showing)
+  if (status === 'stopped') tog('btn-reconfigure', true);
+  else if (status === 'idle') tog('btn-reconfigure', false);
 }
 
 function renderPositions(pos) {
   const tb = document.getElementById('d-positions-body');
   const entries = Object.values(pos);
   setTxt('d-pos-count', entries.length ? `(${entries.length})` : '');
-  if (!entries.length) {
-    tb.innerHTML = `<tr><td colspan="8" class="text-slate-500 text-center py-4">No open positions</td></tr>`;
-    return;
-  }
+  if (!entries.length) { tb.innerHTML = `<tr><td colspan="8" class="text-slate-500 text-center py-4">No open positions</td></tr>`; return; }
   tb.innerHTML = entries.map(p => {
-    const side = p.side === 'BUY' ? '<span class="badge-buy px-1 rounded text-xs">BUY</span>'
-                                  : '<span class="badge-sell px-1 rounded text-xs">SELL</span>';
-    const sym = shortSym(p.symbol);
-    // P&L estimated from position (we don't have live quote here, show —)
+    const side = p.side === 'BUY'
+      ? '<span class="badge-buy px-1 rounded text-xs">BUY</span>'
+      : '<span class="badge-sell px-1 rounded text-xs">SELL</span>';
     return `<tr>
-      <td class="font-mono text-xs" title="${p.symbol}">${sym}</td>
-      <td>${side}</td>
-      <td class="font-mono">${p.quantity ?? '—'}</td>
+      <td class="font-mono text-xs" title="${p.symbol}">${shortSym(p.symbol)}</td>
+      <td>${side}</td><td class="font-mono">${p.quantity ?? '—'}</td>
       <td class="font-mono">${ff(p.entry_price)}</td>
       <td class="font-mono text-red-400">${ff(p.stop_loss)}</td>
       <td class="font-mono text-green-400">${ff(p.target)}</td>
@@ -668,56 +1033,84 @@ function renderPositions(pos) {
 function renderTrades(trades) {
   const tb = document.getElementById('d-trades-body');
   setTxt('d-trade-count', trades.length ? `(${trades.length})` : '');
-  if (!trades.length) {
-    tb.innerHTML = `<tr><td colspan="7" class="text-slate-500 text-center py-4">No trades today</td></tr>`;
-    updateChart([]);
-    return;
-  }
+  if (!trades.length) { tb.innerHTML = `<tr><td colspan="7" class="text-slate-500 text-center py-4">No trades today</td></tr>`; updateChart([]); return; }
   tb.innerHTML = trades.map(t => {
     const pnl = t.net_pnl ?? t.pnl ?? 0;
     const cls = pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
     return `<tr>
       <td class="font-mono text-xs" title="${t.symbol}">${shortSym(t.symbol)}</td>
-      <td>${t.side}</td>
-      <td class="font-mono">${ff(t.entry_price)}</td>
+      <td>${t.side}</td><td class="font-mono">${ff(t.entry_price)}</td>
       <td class="font-mono">${ff(t.exit_price)}</td>
       <td class="font-mono ${cls}">${pnl >= 0 ? '+' : ''}${fmt(pnl)}</td>
       <td class="text-xs text-slate-400">${t.exit_reason || '—'}</td>
       <td class="text-xs text-slate-500">${(t.exit_time || '').slice(11, 19)}</td>
     </tr>`;
   }).join('');
+  let cum = 0;
+  updateChart(trades.map(t => { cum += (t.net_pnl ?? t.pnl ?? 0); return cum; }));
+}
+
+// ── backtest results ──────────────────────────────────────────────────────────
+function renderBacktestResults(r) {
+  const pct = r.total_return_pct ?? 0;
+  setTxt('bt-return', `${pct >= 0 ? '+' : ''}${(pct).toFixed(2)}%`, pct >= 0 ? 'pnl-pos' : 'pnl-neg');
+  const netPnl = r.total_net_pnl ?? 0;
+  setTxt('bt-net-pnl', `₹${fmt(netPnl)}`, netPnl >= 0 ? 'pnl-pos' : 'pnl-neg');
+  setTxt('bt-trades', String(r.closed_trades ?? 0));
+  setTxt('bt-winrate', `${(r.win_rate_pct ?? 0).toFixed(1)}%`);
+  setTxt('bt-drawdown', `${(r.max_drawdown_pct ?? 0).toFixed(2)}%`);
+  setTxt('bt-charges', `₹${fmt(r.total_charges ?? 0)}`);
+  setTxt('bt-equity', `₹${fmt(r.ending_equity ?? 0)}`);
+  setTxt('bt-tick', String(r.tick_entry_fills ?? 0));
 
   // equity curve
-  let cum = 0;
-  const points = trades.map(t => { cum += (t.net_pnl ?? t.pnl ?? 0); return cum; });
-  updateChart(points);
+  if (btEquityChart) {
+    const pts = r.equity_curve || [];
+    btEquityChart.data.labels = pts.map((_,i) => i+1);
+    btEquityChart.data.datasets[0].data = pts;
+    const last = pts[pts.length - 1] ?? 0;
+    btEquityChart.data.datasets[0].borderColor = last >= (r.capital ?? 0) ? '#4ade80' : '#f87171';
+    btEquityChart.update('none');
+  }
+
+  // trade table
+  const trades = r.trades || [];
+  const tb = document.getElementById('bt-trades-body');
+  setTxt('bt-trade-count', trades.length ? `(${trades.length})` : '');
+  if (!trades.length) { tb.innerHTML = `<tr><td colspan="9" class="text-slate-500 text-center py-4">No trades</td></tr>`; return; }
+  tb.innerHTML = trades.map(t => {
+    const pnl = t.pnl ?? 0;
+    const cls = pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+    return `<tr>
+      <td class="font-mono text-xs" title="${t.symbol}">${shortSym(t.symbol)}</td>
+      <td>${t.side}</td>
+      <td class="text-xs text-slate-400">${(t.entry_time||'').slice(0,16)}</td>
+      <td class="text-xs text-slate-400">${(t.exit_time||'').slice(0,16)}</td>
+      <td class="font-mono">${ff(t.entry_price)}</td>
+      <td class="font-mono">${ff(t.exit_price)}</td>
+      <td class="font-mono">${t.quantity ?? '—'}</td>
+      <td class="font-mono ${cls}">${pnl >= 0 ? '+' : ''}${fmt(pnl)}</td>
+      <td class="text-xs text-slate-400">${t.exit_reason || '—'}</td>
+    </tr>`;
+  }).join('');
 }
 
-function updateStatusBadge(status) {
-  const el = document.getElementById('hdr-status');
-  el.textContent = (status || 'idle').toUpperCase();
-  el.className = 'text-xs px-2 py-0.5 rounded font-semibold ' +
-    ({running:'badge-running', stopping:'badge-stopping', stopped:'badge-stopped'}[status] || 'badge-stopped');
-  tog('btn-stop', status === 'running' || status === 'stopping');
-  if (status === 'stopped') tog('btn-reconfigure', true);
-}
-
-// ── chart ─────────────────────────────────────────────────────────────────────
+// ── charts ─────────────────────────────────────────────────────────────────────
 function initChart() {
-  const ctx = document.getElementById('equity-chart').getContext('2d');
-  equityChart = new Chart(ctx, {
-    type: 'line',
-    data: { labels: [], datasets: [{ data: [], borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,.08)',
-      tension: 0.3, fill: true, pointRadius: 0, borderWidth: 1.5 }] },
-    options: { animation: false, plugins: { legend: { display: false } },
-      scales: { x: { display: false }, y: { grid: { color: '#1e293b' },
-        ticks: { color: '#64748b', font: { size: 10 } } } } }
-  });
+  const opts = {
+    type:'line',
+    data:{labels:[],datasets:[{data:[],borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,.08)',
+      tension:.3,fill:true,pointRadius:0,borderWidth:1.5}]},
+    options:{animation:false,plugins:{legend:{display:false}},
+      scales:{x:{display:false},y:{grid:{color:'#1e293b'},ticks:{color:'#64748b',font:{size:10}}}}}
+  };
+  equityChart   = new Chart(document.getElementById('equity-chart').getContext('2d'), JSON.parse(JSON.stringify(opts)));
+  btEquityChart = new Chart(document.getElementById('bt-equity-chart').getContext('2d'), JSON.parse(JSON.stringify(opts)));
 }
 
 function updateChart(points) {
   if (!equityChart) return;
-  equityChart.data.labels = points.map((_, i) => i + 1);
+  equityChart.data.labels = points.map((_,i) => i+1);
   equityChart.data.datasets[0].data = points;
   equityChart.data.datasets[0].borderColor = points.length && points[points.length-1] >= 0 ? '#4ade80' : '#f87171';
   equityChart.update('none');
@@ -726,52 +1119,53 @@ function updateChart(points) {
 // ── log ───────────────────────────────────────────────────────────────────────
 function appendLog(line, level) {
   const panel = document.getElementById('log-panel');
+  if (!panel) return;
   const div = document.createElement('div');
   div.className = level === 'warning' || level === 'warn' ? 'log-warn' : level === 'error' ? 'log-error' : '';
   div.textContent = line;
   panel.appendChild(div);
-  // keep max 300 lines
-  while (panel.children.length > 300) panel.removeChild(panel.firstChild);
+  while (panel.children.length > 500) panel.removeChild(panel.firstChild);
   panel.scrollTop = panel.scrollHeight;
 }
-function clearLog() { document.getElementById('log-panel').innerHTML = ''; }
+function clearLog() { const p = document.getElementById('log-panel'); if(p) p.innerHTML=''; }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 function tog(id, show) {
   const el = document.getElementById(id);
   if (!el) return;
   el.classList.toggle('hidden', !show);
-  if (show && el.tagName === 'DIV') el.classList.add('fade-in');
 }
 function setTxt(id, txt, cls) {
-  const el = document.getElementById(id);
-  if (!el) return;
+  const el = document.getElementById(id); if (!el) return;
   el.textContent = txt;
-  if (cls) { el.className = el.className.replace(/pnl-\w+|text-\w+-\d+/g, '').trim(); el.classList.add(...cls.split(' ')); }
+  if (cls) { el.className = el.className.replace(/pnl-\w+|text-\w+-\d+/g,'').trim(); el.classList.add(...cls.split(' ')); }
 }
 function setBadge(id, txt, cls) {
-  const el = document.getElementById(id);
-  if (!el) return;
+  const el = document.getElementById(id); if (!el) return;
   el.textContent = txt;
   el.className = `text-xs px-2 py-0.5 rounded font-semibold ${cls}`;
   el.classList.remove('hidden');
 }
-function populateSelect(id, opts, keep) {
-  const sel = document.getElementById(id);
-  if (!keep) sel.innerHTML = '';
+function populateSelect(id, opts) {
+  const sel = document.getElementById(id); if (!sel) return;
+  sel.innerHTML = '';
   opts.forEach(v => { const o = document.createElement('option'); o.value = v; o.text = v; sel.appendChild(o); });
 }
-function fmt(n, dp=0) { return (n ?? 0).toLocaleString('en-IN', {minimumFractionDigits:dp, maximumFractionDigits:dp}); }
-function ff(n) { return n != null ? n.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2}) : '—'; }
-function shortSym(s) { return (s || '').replace('NFO:','').replace('.NS','').slice(0,18); }
-function showCfgError(msg) {
-  const el = document.getElementById('cfg-error');
-  el.textContent = '⚠ ' + msg; el.classList.remove('hidden');
-}
-function hideCfgError() { document.getElementById('cfg-error').classList.add('hidden'); }
+function fmt(n, dp=0) { return (n??0).toLocaleString('en-IN',{minimumFractionDigits:dp,maximumFractionDigits:dp}); }
+function ff(n) { return n!=null ? n.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—'; }
+function shortSym(s) { return (s||'').replace('NFO:','').replace('.NS','').slice(0,18); }
+function showCfgError(msg) { const el=document.getElementById('cfg-error'); el.textContent='⚠ '+msg; el.classList.remove('hidden'); }
+function hideCfgError()    { document.getElementById('cfg-error').classList.add('hidden'); }
 function showCfgSpinner(v) {
-  document.getElementById('cfg-spinner').classList.toggle('hidden', !v);
-  document.getElementById('cfg-spinner').classList.toggle('flex', v);
+  const el = document.getElementById('cfg-spinner');
+  el.classList.toggle('hidden', !v); el.classList.toggle('flex', v);
+}
+function showBtError(msg) { const el=document.getElementById('bt-error'); el.textContent='⚠ '+msg; el.classList.remove('hidden'); }
+function hideBtError()    { document.getElementById('bt-error').classList.add('hidden'); }
+function setBtSpinner(v) {
+  const el = document.getElementById('bt-spinner');
+  el.classList.toggle('hidden', !v); el.classList.toggle('flex', v);
+  document.getElementById('btn-run-bt').disabled = v;
 }
 </script>
 </body>
