@@ -247,6 +247,13 @@
       </div>
     </div>
 
+    <!-- Weekend paper override -->
+    <div class="mt-4 flex items-center gap-3">
+      <input id="c-paper-override" type="checkbox" style="width:auto;padding:0" class="accent-amber-500 w-4 h-4"/>
+      <label for="c-paper-override" class="text-sm text-amber-300 cursor-pointer font-semibold">Weekend / Off-hours paper test mode</label>
+      <span class="text-xs text-slate-500">(bypasses market-hours &amp; weekend checks — PAPER only)</span>
+    </div>
+
     <!-- Error banner -->
     <div id="cfg-error" class="hidden mt-4 bg-red-900/40 border border-red-700 text-red-300 rounded p-3 text-sm"></div>
 
@@ -839,6 +846,7 @@ async function submitLive() {
     max_capital_deployed:  parseFloat(document.getElementById('c-max-deployed').value),
     one_trade_per_symbol_per_day: true,
     strategy_mode:        document.getElementById('c-strat-mode').value,
+    paper_trading_override: document.getElementById('c-paper-override').checked,
   };
 
   if (IS_FNO(eng)) {

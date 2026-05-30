@@ -98,6 +98,7 @@ class SessionConfig:
     min_confirmations: int | None
     intraday_options_lot_mode: str | None
     intraday_options_entry_mode: str | None
+    paper_trading_override: bool = False
 
 
 def validate_session_config(config: SessionConfig) -> SessionConfig:
@@ -1211,6 +1212,7 @@ def build_session_config_from_dict(data: dict) -> SessionConfig:
         min_confirmations=min_confirmations,
         intraday_options_lot_mode=intraday_options_lot_mode,
         intraday_options_entry_mode=intraday_options_entry_mode,
+        paper_trading_override=bool(data.get("paper_trading_override", False)),
     ))
     log_session_config_summary(session_config)
     return session_config

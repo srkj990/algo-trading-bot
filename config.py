@@ -374,6 +374,7 @@ class DataCacheConfig:
 class SessionDefaultsConfig:
     exit_only_default: bool
     live_broker_resync_interval_seconds: int
+    paper_trading_override: bool = False  # bypass weekend + market-hours checks for paper testing
 
     def validate(self) -> None:
         if self.live_broker_resync_interval_seconds < 0:
@@ -679,6 +680,10 @@ def _default_runtime_config_map() -> dict[str, Any]:
             ),
             "live_broker_resync_interval_seconds": int(
                 os.getenv("LIVE_BROKER_RESYNC_INTERVAL_SECONDS", "60")
+            ),
+            "paper_trading_override": _parse_bool(
+                os.getenv("PAPER_TRADING_OVERRIDE", "0"),
+                default=False,
             ),
         },
         "risk_controls": {

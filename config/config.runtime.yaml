@@ -24,6 +24,7 @@ data_cache:
 session_defaults:
   exit_only_default: true # used: default session behavior; true manages exits only and blocks fresh entries
   live_broker_resync_interval_seconds: 60 # used: how often live exit-only sessions reconcile broker positions
+  paper_trading_override: false # set true to bypass weekend + market-hours checks for paper/testing runs
 
 risk_controls:
   daily_max_loss_pct: 0.03 # used: blocks new entries after realized daily loss exceeds 3% of capital

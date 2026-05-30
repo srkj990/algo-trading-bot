@@ -11,6 +11,7 @@ from config import (
     TRAILING_ACTIVATION_STOP_DISTANCE_MULTIPLIER,
     TRANSACTION_COST_MODEL_ENABLED,
     TRANSACTION_SLIPPAGE_PCT_PER_SIDE,
+    get_runtime_config,
 )
 from executor import calculate_cost_aware_targets
 from executor import get_available_margin, get_quote
@@ -423,11 +424,22 @@ def _maybe_roll_dynamic_atm_positions(context, symbol_snapshots, now) -> bool:
 def run_trading_session(context):
     cfg = context.config
     engine = context.engine
+    _paper_override = bool(
+        getattr(cfg, "paper_trading_override", False)
+        or getattr(get_runtime_config().session_defaults, "paper_trading_override", False)
+    )
+
     context.log_event("[MAIN] Trading session initialized")
     context.log_event(
         f"[MAIN] Engine={engine.name} | Mode={cfg.execution_mode} | ExitOnly={bool(getattr(cfg, 'exit_only_mode', False))} | "
         f"OpenPositions={len(context.positions)} | Sleep={int(getattr(engine, 'sleep_seconds', 60))}s"
     )
+    if _paper_override:
+        context.log_event(
+            "[MAIN] paper_trading_override=true — weekend/market-hours checks bypassed. "
+            "Cycle clock simulated as Wednesday 10:30. PAPER mode only.",
+            "warning",
+        )
     if str(getattr(cfg, "execution_mode", "")).upper() == "LIVE":
         context.log_event(
             f"[MAIN] Live execution provider={getattr(cfg, 'execution_provider', 'KITE')} | "
@@ -469,7 +481,8 @@ def run_trading_session(context):
             context.regime_cache = {}
             persist_runtime_state(context)
 
-        cycle_state = engine.get_cycle_state(now)
+        cycle_now = _simulated_now(now) if _paper_override else now
+        cycle_state = engine.get_cycle_state(cycle_now)
         if _sync_exit_only_live_positions(context, now):
             persist_runtime_state(context)
         from display import cycle_banner as _cycle_banner
@@ -673,6 +686,21 @@ def run_trading_session(context):
 
         # Interruptible sleep — wakes early when stop is requested (web mode)
         _sleep_interruptible(engine.sleep_seconds, context.stop_fn)
+
+
+def _simulated_now(real_now: datetime) -> datetime:
+    """
+    Return a datetime that looks like a Wednesday at 10:30, preserving wall-clock
+    seconds-within-the-minute so cycle timing still feels real.
+    Used only when paper_trading_override=true to bypass weekend/market-hours guards.
+    """
+    # Find most recent Wednesday (weekday 2) on or before today
+    days_back = (real_now.weekday() - 2) % 7  # 0 if already Wednesday
+    sim_date = (real_now - timedelta(days=days_back)).date()
+    return real_now.replace(
+        year=sim_date.year, month=sim_date.month, day=sim_date.day,
+        hour=10, minute=30,
+    )
 
 
 def _sleep_interruptible(seconds: float, stop_fn) -> None:
