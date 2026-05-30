@@ -40,13 +40,14 @@ def _run_console_session():
 
 def _run_web_session():
     """
-    Web mode (Phase 2+):
+    Default mode — browser UI:
       - Start uvicorn in a daemon thread; return immediately once the socket binds.
       - Open the browser at localhost:8080 — the user configures and starts the
         session entirely from the browser form (no terminal prompts needed).
       - The trading loop is spawned by POST /api/start from the browser.
       - Main thread blocks on web_state.get_stop_event() so the process stays
         alive for as long as the server runs.
+      - Run with --console to use the old terminal prompt flow instead.
     """
     from web import state as web_state
     from web.server import start_web_server_in_thread
@@ -75,10 +76,10 @@ def _run_web_session():
 
 
 def main():
-    if "--web" in sys.argv:
-        _run_web_session()
-    else:
+    if "--console" in sys.argv:
         _run_console_session()
+    else:
+        _run_web_session()
 
 
 if __name__ == "__main__":
