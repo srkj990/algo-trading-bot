@@ -691,7 +691,7 @@ def _default_runtime_config_map() -> dict[str, Any]:
                 os.getenv("RISK_DAILY_MAX_LOSS_PCT", "0.03")
             ),
             "consecutive_loss_limit": int(
-                os.getenv("RISK_CONSECUTIVE_LOSS_LIMIT", "4")
+                os.getenv("RISK_CONSECUTIVE_LOSS_LIMIT", "3")
             ),
             "api_failure_pause_minutes": int(
                 os.getenv("RISK_API_FAILURE_PAUSE_MINUTES", "5")
@@ -1026,7 +1026,7 @@ def _default_runtime_config_map() -> dict[str, Any]:
                 "min_sell_iv_percentile": 15.0,
                 "entry_cutoff": "15:05",
                 "square_off_time": "15:15",
-                "sleep_seconds": 15,
+                "sleep_seconds": 5,
                 "cooldown_seconds": 180,
                 "data_period": "1d",
                 "data_interval": "1m",
