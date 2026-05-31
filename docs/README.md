@@ -228,6 +228,14 @@ Called every scan cycle from `orchestration/session.py` when in web mode. All gu
 
 Signal quality score (0–100) combines: VWAP alignment (20 pts), EMA alignment (15 pts), ADX strength (15 pts), signal score distribution (20 pts), IV stability (15 pts), VIX environment (15 pts).
 
+### Session configuration inputs
+
+The live and backtest configuration forms expose:
+- **Capital** — total session capital; changing it auto-updates Max Capital / Trade to `capital / max_open_positions`
+- **Max Open Positions** — same auto-update trigger
+- **Max Capital / Trade** — editable override; auto-populated as `floor(capital / max_positions)` on every capital or max-pos change
+- **Lot Mode** (intraday_options engine only) — Capital Based (qty = floor(max_capital_per_trade / entry_price)) or One Lot (fixed single contract)
+
 ### Bot override controls (`web/routes/config.py`)
 
 Five REST endpoints + runtime state flags in `session_runtime_state`:
@@ -428,6 +436,7 @@ All `engine_defaults` values can be changed in `config.runtime.yaml` without tou
 - `tick_entry_enabled=True` in `BacktestConfig` models early intra-candle fills rather than always filling at candle close; for `intraday_options` the simulation uses the option premium candle OHLC directly
 - Backtest trailing stop ratchet uses candle **High** (BUY) / **Low** (SELL) before exit evaluation — simulates the intra-candle favorable move before a spike-and-crash, matching live tick-exit behaviour
 - Backtests run correctly on weekends: `get_underlying_bias()` returns NEUTRAL when no live underlying data is available instead of crashing; the underlying bias filter is skipped rather than blocking all entries
+- `intraday_options_lot_mode` (ONE_LOT / CAPITAL_BASED) is now user-selectable from the web UI in both live and backtest tabs; defaults to runtime_config if not set in the form
 
 ---
 
