@@ -89,6 +89,58 @@ In LIVE + KITE mode, `build_trading_context` automatically starts `KiteTickerMan
 
 ---
 
+## Tick-Based Exit System (`tick_exit/`)
+
+### Problem solved
+
+Without intra-candle exit monitoring, a position can spike to a profitable level and crash back within one 1-minute candle. The candle-close check sees only the low close price and exits at a loss — capturing none of the intra-candle spike. Similarly, the trailing stop only ratchets at each candle close, so the spike profit is never locked in.
+
+### How it works
+
+`TickExitMonitor` (one instance per session) arms three WebSocket breakout callbacks per open position after each `manage_open_positions` cycle, plus a continuous per-tick callback for trailing ratcheting:
+
+| Arm | Direction | Fires on |
+| --- | --- | --- |
+| Stop-loss | Against position | Price breaches SL level intra-candle |
+| Trailing stop | Against position | Price breaches trailing stop level intra-candle |
+| Target | With position | Price reaches target level intra-candle |
+| Continuous (per-tick) | — | Every tick — ratchets trailing stop upward in real time |
+
+When a breakout callback fires, `_fire_exit()` acquires a lock, validates `trailing_active` for TRAILING_STOP arms, places the exit order at the live tick price, records the closed trade, and persists state — all without waiting for candle close.
+
+The continuous callback (`_on_tick_ratchet`) calls `update_trailing_stop()` on every tick. If the stop moves, it immediately re-arms the WebSocket at the new level. This means during a spike from 122 → 155 within one candle, the trailing stop ratchets in real time (e.g. 95 → 123) and fires on the way back down — exit at ~123 instead of the candle close at 80.
+
+### Guards and fallbacks
+
+- Only active when `execution_mode` is `LIVE` or `PAPER` and WebSocket is connected
+- Only active for engines where `tick_exit_enabled=True` in `tick_entry/engine_config.py` (currently: `intraday_options` only)
+- Candle-close exits in `manage_open_positions` remain the fallback if WebSocket is unavailable
+- `_fire_exit()` checks `trailing_active` before firing TRAILING_STOP — rejects stale arms that predate activation
+- Trailing stop is clamped to minimum `entry_price` on activation — TRAILING_STOP can never fire below breakeven (see [Trailing Stop Breakeven Clamp](#trailing-stop-breakeven-clamp))
+
+### Backtest equivalent
+
+In backtests, the intra-candle trailing ratchet is simulated by updating the trailing stop with candle **High** (BUY) or **Low** (SELL) before evaluating exits — modelling the favorable intra-candle price move before the crash.
+
+---
+
+## Trailing Stop Breakeven Clamp (`models/position.py`)
+
+### Problem solved
+
+The trailing stop activation distance is set to `max(trailing_distance, level1_distance × 0.8)`. With typical NIFTY option ATR of 4–7, `trailing_distance = ATR × 1.0` and `level1_distance = ATR × 0.85`, so at activation the computed trailing stop candidate equals exactly `entry_price`. Any slippage or small adverse tick after activation fires TRAILING_STOP at a net loss after charges.
+
+### Fix
+
+`Position.update_trailing_stop()` clamps the trailing stop candidate to at least `entry_price` (BUY) / at most `entry_price` (SELL) on every update. This guarantees the trailing stop never activates below breakeven regardless of ATR multiplier config:
+
+- At activation (`best_price = entry + trailing_distance`): trailing stop clamped to `entry_price` — breakeven, not a loss
+- As price moves further: `best_price − trailing_distance > entry_price`, clamp no longer binds — trailing stop locks in real profit
+
+To lock in meaningful profit at activation (not just breakeven), reduce `adaptive_trailing_multiplier_normal` from `1.0` to `0.6–0.7` in `config/config.runtime.yaml` so `trailing_distance < level1_distance`.
+
+---
+
 ## Architecture
 
 ### Key design rules
@@ -118,6 +170,7 @@ In LIVE + KITE mode, `build_trading_context` automatically starts `KiteTickerMan
 | `brokers/clients.py` | `KiteBrokerClient`, `UpstoxBrokerClient` |
 | `brokers/base.py` | `BrokerClient` ABC; `OrderResult`, `Quote`, `OrderRequest`, `OrderStatus` |
 | `tick_entry/` | Tick-based entry: engine config, trigger levels, `TickEntryManager`, backtest simulator |
+| `tick_exit/` | Tick-based exit: `TickExitMonitor` — arms SL/trail/target WebSocket breakouts, per-tick trailing ratchet, intra-candle exits for LIVE/PAPER |
 | `data_providers/` | Provider plugin system: Kite, Upstox, YFinance; `MarketDataService` |
 | `data_providers/kite_ticker.py` | KiteConnect WebSocket manager; `arm_breakout`, `get_ltp`, singleton helpers |
 | `signal_scoring.py` | `evaluate_symbol_signal`, `rank_candidates` |
@@ -373,6 +426,8 @@ All `engine_defaults` values can be changed in `config.runtime.yaml` without tou
 - Auto-adaptive backtests use a backtest-local regime cache; live runtime state is not mutated
 - Intraday-options backtests use real option contract symbols, premium candles, and lot-sized quantities
 - `tick_entry_enabled=True` in `BacktestConfig` models early intra-candle fills rather than always filling at candle close; for `intraday_options` the simulation uses the option premium candle OHLC directly
+- Backtest trailing stop ratchet uses candle **High** (BUY) / **Low** (SELL) before exit evaluation — simulates the intra-candle favorable move before a spike-and-crash, matching live tick-exit behaviour
+- Backtests run correctly on weekends: `get_underlying_bias()` returns NEUTRAL when no live underlying data is available instead of crashing; the underlying bias filter is skipped rather than blocking all entries
 
 ---
 
@@ -394,7 +449,7 @@ venv\Scripts\python -m pytest
 ## Test Status
 
 ```
-116 passed, 1 pre-existing failure
+192 passed, 1 pre-existing failure
 ```
 
 The 1 failing test (`IntradayOptionsEngineTests.test_get_cycle_state_before_open_waits`) is a pre-existing edge-case in `engines/intraday_options.py` boundary logic unrelated to entry, exit, or risk features.
@@ -409,4 +464,6 @@ The 1 failing test (`IntradayOptionsEngineTests.test_get_cycle_state_before_open
 4. [orchestration/context.py](./orchestration/context.py) — dependency wiring
 5. [orchestration/session.py](./orchestration/session.py) — main supervision loop
 6. [tick_entry/manager.py](./tick_entry/manager.py) — tick entry system
-7. The engine file for the engine you are working with
+7. [tick_exit/monitor.py](./tick_exit/monitor.py) — tick exit system
+8. [models/position.py](./models/position.py) — position lifecycle, trailing stop logic
+9. The engine file for the engine you are working with
