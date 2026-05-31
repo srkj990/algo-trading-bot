@@ -213,3 +213,25 @@ Minimum capital to trade = `lot_size × entry_price` (e.g. ₹75 × ₹200 = ₹
 
 ### Commit
 `fix: remove max_symbol_allocation cap from intraday_options apply_entry_allocation_limit` (commit 09999ae)
+
+---
+
+## [2026-05-31] consecutive_loss_limit mismatch — config.py default stale after yaml change
+
+### Symptom
+`config/config.runtime.yaml` was updated to `consecutive_loss_limit: 3` (from 4) as part of the loss-optimisation change, but `config.py` still had `os.getenv("RISK_CONSECUTIVE_LOSS_LIMIT", "4")` as the fallback default. Any deployment using the env-var path (no yaml file present, or yaml not loaded) would silently use 4 instead of 3.
+
+### Root Cause
+Two sources of truth for the same default: `config/config.runtime.yaml` (authoritative for running sessions) and `config.py` `_default_runtime_config_map()` (used as base before yaml merges). When the yaml was updated, the code default was not kept in sync.
+
+### Fix
+Updated `config.py` env default from `"4"` to `"3"`:
+```python
+"consecutive_loss_limit": int(os.getenv("RISK_CONSECUTIVE_LOSS_LIMIT", "3")),
+```
+
+### Files Changed
+- `config.py`
+
+### Commit
+`fix: sync consecutive_loss_limit default in config.py from 4 to 3` (commit d7c224e)
