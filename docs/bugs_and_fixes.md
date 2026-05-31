@@ -114,3 +114,68 @@ else:
 
 ### Commit
 `feat: intra-candle WebSocket exit monitoring + trailing ratchet` (commit b597ad5)
+
+---
+
+## [2026-05-31] ATM_MULTI loss optimisation — config tuning
+
+### Symptom
+Backtest `backtest_intraday_options_20260530_220205` (ATM_MULTI, AGGRESSIVE, 5 days, ₹1L):
+- 34 trades, 41% win rate, Net P&L = −₹9,520 (−9.5%), Max DD = 12.05%
+- 26/34 exits (76%) via STOP_LOSS — all net losses, avg −₹710 each
+- BUY_CE entries: 12.5% win rate (8 trades, 1 winner) on a non-trending day
+- Trailing stop activating at exactly breakeven → TRAILING_STOP exits with net losses
+
+### Root Cause
+1. Stop multiplier ATR×1.7 too tight — hit by 1-candle normal volatility, not reversals
+2. R:R was 1:1 (stop = target = ATR×1.7) — insufficient for 41% win rate
+3. Trailing distance ATR×1.0 = activation threshold → trailing stop lands at entry (breakeven) even with the new breakeven clamp; needs to be narrower than activation to lock in profit
+4. EXPANSION regime threshold (1.1%) too loose — fired CE entries on May 26 (descending day)
+5. `consecutive_loss_limit=4` allowed 4-loss streaks costing ₹2,803
+
+### Fix
+Config-only changes in `config/config.runtime.yaml`:
+
+| Parameter | Before | After |
+|-----------|--------|-------|
+| `adaptive_stop_multiplier_normal` | 1.7 | 2.2 |
+| `adaptive_stop_multiplier_sideways` | 2.0 | 2.5 |
+| `adaptive_stop_multiplier_expansion` | 1.7 | 2.0 |
+| `adaptive_target_multiplier_normal` | 1.7 | 2.5 |
+| `adaptive_target_multiplier_sideways` | 1.1 | 1.5 |
+| `adaptive_target_multiplier_expansion` | 2.3 | 3.0 |
+| `adaptive_trailing_multiplier_normal` | 1.0 | 0.7 |
+| `adaptive_trailing_multiplier_sideways` | 0.8 | 0.6 |
+| `adaptive_trailing_multiplier_expansion` | 1.15 | 0.8 |
+| `adaptive_min_stop_pct` | 0.05 | 0.07 |
+| `consecutive_loss_limit` | 4 | 3 |
+| `intraday_options_max_entry_cost_ratio` | 0.30 | 0.20 |
+| `intraday_options_regime_expansion_range_pct` | 1.1 | 1.4 |
+
+Key effect: tighter trailing (ATR×0.7) vs activation (ATR×1.0) means trailing stop activates at entry+0.3×ATR profit instead of breakeven.
+
+### Files Changed
+- `config/config.runtime.yaml`
+
+### Commit
+`config: widen stops, raise targets, tighten trailing for intraday_options loss reduction` (commit c5d1fff)
+
+---
+
+## [2026-05-31] UI: lot mode selector + auto capital-per-trade
+
+### Symptom
+`intraday_options_lot_mode` was only settable by editing `config.runtime.yaml`. Users starting sessions from the web UI had no way to switch between ONE_LOT and CAPITAL_BASED sizing. Also, `max_capital_per_trade` field showed a static ₹50,000 default that did not update when capital or max_open_positions changed.
+
+### Fix
+- Added Lot Mode dropdown to web UI for intraday_options engine (live and backtest tabs), shown only when engine = Intraday Options
+- Added `oninput="autoCapPerTrade(pfx)"` to capital and max-pos inputs — auto-computes `max_capital_per_trade = floor(capital / max_open_positions)` on each keystroke
+- `cli/configuration.py` and `web/routes/config.py`: prefer `intraday_options_lot_mode` from the form payload over `runtime_config.fno` default
+
+### Files Changed
+- `web/static/index.html`
+- `cli/configuration.py`
+- `web/routes/config.py`
+
+### Commit
+`feat: add lot mode selector and auto capital-per-trade to UI` (commit 9e05110)
