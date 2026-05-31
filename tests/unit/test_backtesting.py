@@ -392,7 +392,8 @@ class BacktestWorkflowTests(unittest.TestCase):
              patch.object(engine, "_mark_equity"):
             engine._process_timestamp(history, pd.Timestamp("2026-05-18 10:00:00+05:30"))
 
-        mock_trail.assert_called_once_with(engine.positions["SBIN.NS"], 100.5, 3.5)
+        # Trailing stop is now ratcheted with candle High (BUY) before exit evaluation
+        mock_trail.assert_called_once_with(engine.positions["SBIN.NS"], 101.0, 3.5)
 
     def test_intraday_backtest_square_off_closes_position_without_scanning(self) -> None:
         config = BacktestConfig(

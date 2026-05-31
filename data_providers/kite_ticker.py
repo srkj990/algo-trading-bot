@@ -37,6 +37,8 @@ class KiteTickerManager:
         self._connected = threading.Event()
         # token -> list of (trigger_level, direction, callback, fired_flag)
         self._arms: dict[int, list[dict]] = {}
+        # token -> callback invoked on every tick (for trailing ratchet)
+        self._continuous: dict[int, Callable[[int, float], None]] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -107,6 +109,15 @@ class KiteTickerManager:
         with self._lock:
             self._arms.pop(token, None)
 
+    def arm_continuous(self, token: int, callback: Callable[[int, float], None]) -> None:
+        """Register a callback called on every tick for this token (for trailing ratchet)."""
+        with self._lock:
+            self._continuous[token] = callback
+
+    def disarm_continuous(self, token: int) -> None:
+        with self._lock:
+            self._continuous.pop(token, None)
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
@@ -163,7 +174,7 @@ class KiteTickerManager:
             self._connected.clear()
 
     def _check_arms(self, token: int, ltp: float) -> None:
-        """Called inside lock — fire any armed breakouts."""
+        """Called inside lock — fire any armed breakouts and continuous callbacks."""
         arms = self._arms.get(token, [])
         for arm in arms:
             if arm["fired"]:
@@ -176,6 +187,11 @@ class KiteTickerManager:
                 cb = arm["callback"]
                 t = threading.Thread(target=cb, args=(token, ltp), daemon=True)
                 t.start()
+
+        cont_cb = self._continuous.get(token)
+        if cont_cb:
+            t = threading.Thread(target=cont_cb, args=(token, ltp), daemon=True)
+            t.start()
 
 
 # ---------------------------------------------------------------------------

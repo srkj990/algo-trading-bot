@@ -432,7 +432,11 @@ class BacktestEngine:
                 else:
                     position = self.positions[symbol]
                     trailing_distance = float(position.get("trailing_distance") or 0.0)
-                    update_trailing_stop(position, latest_prices[symbol], trailing_distance)
+                    # Ratchet with candle High/Low first so fast intra-candle moves lock in profit
+                    if position_side(position) == "BUY":
+                        update_trailing_stop(position, float(latest_candle.get("High", latest_prices[symbol])), trailing_distance)
+                    else:
+                        update_trailing_stop(position, float(latest_candle.get("Low", latest_prices[symbol])), trailing_distance)
                     exit_reason = self.engine_helper.evaluate_position_exit(position, latest_candle)
                     if exit_reason:
                         exit_fill_price = self._resolve_exit_fill_price(
@@ -1024,6 +1028,16 @@ class BacktestEngine:
                 if symbol not in self.positions:
                     return
 
+        # Ratchet trailing stop with candle High/Low before evaluating exit.
+        # This simulates intra-candle price moving favourably (spike-and-crash scenario):
+        # a BUY position that spikes to candle High will have its trailing stop locked in
+        # at that high-water mark, so if the candle then crashes, the ratcheted stop fires.
+        trailing_distance = float(position.get("trailing_distance") or 0.0)
+        if position_side(position) == "BUY":
+            update_trailing_stop(position, float(latest_candle.get("High", latest_close)), trailing_distance)
+        else:
+            update_trailing_stop(position, float(latest_candle.get("Low", latest_close)), trailing_distance)
+
         exit_reason = self.engine_helper.evaluate_position_exit(position, latest_candle)
         if not exit_reason and hasattr(self.engine_helper, "get_time_exit_reason"):
             exit_reason = self.engine_helper.get_time_exit_reason(
@@ -1039,9 +1053,6 @@ class BacktestEngine:
             )
             self._exit_position(symbol, exit_fill_price, timestamp, str(exit_reason))
             return
-
-        trailing_distance = float(position.get("trailing_distance") or 0.0)
-        update_trailing_stop(position, float(latest_close), trailing_distance)
 
     def _partial_exit_position(self, *, symbol, exit_price, timestamp, action, snapshot):
         position = self.positions.get(symbol)

@@ -77,6 +77,9 @@ class KiteDataProvider(DataProvider):
             raise RuntimeError(f"Kite instrument token not found for {symbol}")
         return token
 
+    def get_instrument_token(self, symbol: str):
+        return self._get_instrument_token(symbol)
+
     @staticmethod
     def _parse_symbol_exchange(symbol: str):
         if not symbol:

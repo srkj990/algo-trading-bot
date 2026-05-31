@@ -147,7 +147,7 @@ class TickEntryManager:
         mode: str,
     ) -> None:
         for arm in arms:
-            token = token_map.get(arm["symbol"])
+            token = self._ensure_ws_subscription(arm["symbol"], ticker, token_map)
             if not token:
                 continue
 
@@ -164,6 +164,30 @@ class TickEntryManager:
                 return cb
 
             ticker.arm_breakout(int(token), arm["trigger"], arm["direction"], make_cb())
+
+    def _ensure_ws_subscription(
+        self,
+        symbol: str,
+        ticker: Any,
+        token_map: dict[str, int],
+    ) -> int | None:
+        token = token_map.get(symbol)
+        if token:
+            return int(token)
+
+        try:
+            provider = self._ctx.data_service.get_provider("KITE")
+            resolver = getattr(provider, "get_instrument_token", None)
+            if resolver is None:
+                return None
+            token = int(resolver(symbol))
+            token_map[symbol] = token
+            ticker.subscribe([token])
+            self._log(f"[TICK-ENTRY] Subscribed {symbol} token={token}")
+            return token
+        except Exception as exc:
+            self._log(f"[TICK-ENTRY] WebSocket subscribe skipped for {symbol}: {exc}", "warning")
+            return None
 
     def _poll_ltp(
         self,
@@ -213,7 +237,8 @@ class TickEntryManager:
         # 1. WebSocket cache
         ticker = getattr(self._ctx, "_ticker_manager", None)
         if ticker and getattr(ticker, "is_connected", lambda: False)():
-            token = getattr(self._ctx, "_symbol_token_map", {}).get(symbol)
+            token_map = getattr(self._ctx, "_symbol_token_map", {})
+            token = self._ensure_ws_subscription(symbol, ticker, token_map)
             if token:
                 ltp = ticker.get_ltp(int(token))
                 if ltp:

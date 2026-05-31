@@ -16,6 +16,7 @@ class EngineTickConfig:
     enabled: bool
     timeout_seconds: float   # watch window per cycle
     poll_interval: float     # seconds between REST LTP calls
+    tick_exit_enabled: bool = False  # intra-candle WebSocket exit monitoring
 
 
 # Keyed by engine.name
@@ -25,7 +26,8 @@ TICK_ENTRY_CONFIG: dict[str, EngineTickConfig] = {
 
     # 1m candles, 15s cycle → watch 11s, poll every 3s (≈3 LTP checks)
     # require_closed_signal_candle=True makes this especially valuable
-    "intraday_options": EngineTickConfig(enabled=True, timeout_seconds=11, poll_interval=3),
+    # tick_exit_enabled: monitors stop/trail/target intra-candle; ratchets trailing stop on every tick
+    "intraday_options": EngineTickConfig(enabled=True, timeout_seconds=11, poll_interval=3, tick_exit_enabled=True),
 
     # 3m candles, 60s cycle → watch 52s, poll every 8s
     "intraday_futures": EngineTickConfig(enabled=True, timeout_seconds=52, poll_interval=8),

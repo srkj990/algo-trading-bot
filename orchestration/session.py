@@ -61,6 +61,48 @@ def _resolve_limit_price(entry_price: float, side: str, buffer_pct: float) -> fl
     return max(0.01, price - buffer)
 
 
+def _resolve_live_entry_price(context, symbol: str, side: str, fallback_price: float) -> float:
+    if str(getattr(context.config, "execution_mode", "")).upper() != "LIVE":
+        return float(fallback_price)
+
+    ticker = getattr(context, "_ticker_manager", None)
+    token_map = getattr(context, "_symbol_token_map", {})
+    if ticker and getattr(ticker, "is_connected", lambda: False)():
+        try:
+            token = token_map.get(symbol)
+            if not token:
+                provider = context.data_service.get_provider("KITE")
+                resolver = getattr(provider, "get_instrument_token", None)
+                if resolver is not None:
+                    token = int(resolver(symbol))
+                    token_map[symbol] = token
+                    ticker.subscribe([token])
+            if token:
+                ltp = ticker.get_ltp(int(token))
+                if ltp:
+                    return float(ltp)
+        except Exception:
+            pass
+
+    try:
+        quote = get_quote(symbol, provider=context.config.execution_provider)
+        candidates = (
+            (quote.ask_price, quote.last_price, quote.bid_price)
+            if str(side).upper() == "BUY"
+            else (quote.bid_price, quote.last_price, quote.ask_price)
+        )
+        for price in candidates:
+            if price and float(price) > 0:
+                return float(price)
+    except Exception as exc:
+        context.log_event(
+            f"[LIVE PRICE] Could not refresh {symbol}; using candle price {float(fallback_price):.2f} | {type(exc).__name__}: {exc}",
+            "warning",
+        )
+
+    return float(fallback_price)
+
+
 def _validate_intraday_options_live_entry(context, symbol, quantity, entry_price, actual_targets) -> bool:
     if str(context.config.execution_mode).upper() != "LIVE":
         return True
@@ -478,6 +520,9 @@ def run_trading_session(context):
         f"[MAIN] Engine={engine.name} | Mode={cfg.execution_mode} | ExitOnly={bool(getattr(cfg, 'exit_only_mode', False))} | "
         f"OpenPositions={len(context.positions)} | Sleep={int(getattr(engine, 'sleep_seconds', 60))}s"
     )
+
+    from tick_exit.monitor import TickExitMonitor
+    _tick_exit_monitor = TickExitMonitor(context)
     if _paper_override:
         context.log_event(
             "[MAIN] paper_trading_override=true — weekend/market-hours checks bypassed. "
@@ -634,6 +679,7 @@ def run_trading_session(context):
                 persist_runtime_state(context)
             if _maybe_roll_dynamic_atm_positions(context, symbol_snapshots, now):
                 persist_runtime_state(context)
+            _tick_exit_monitor.refresh(context.positions)
 
         # safe mode: tighten open positions once, then auto-stop when flat
         if context.session_runtime_state.get("override_safe_mode"):
@@ -758,6 +804,8 @@ def run_trading_session(context):
 
         # Interruptible sleep — wakes early when stop is requested (web mode)
         _sleep_interruptible(engine.sleep_seconds, context.stop_fn)
+
+    _tick_exit_monitor.shutdown()
 
 
 def _simulated_now(real_now: datetime) -> datetime:
@@ -1117,7 +1165,20 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
         context.log_event("[LIMIT] Max open position structures reached")
         return False
 
-    entry_price = candidate["latest_close"]
+    entry_price = float(candidate["latest_close"])
+    if engine.name == "intraday_options":
+        live_entry_price = _resolve_live_entry_price(
+            context,
+            symbol,
+            candidate["signal"],
+            entry_price,
+        )
+        if abs(live_entry_price - entry_price) >= 0.01:
+            context.log_event(
+                f"[LIVE PRICE] {symbol} entry price refreshed from candle {entry_price:.2f} to live {live_entry_price:.2f}"
+            )
+            candidate["latest_close"] = live_entry_price
+            entry_price = live_entry_price
     atr_value = candidate.get("atr", 0.0)
     if engine.name == "intraday_options" and cfg.atm_option_config:
         if hasattr(engine, "get_trend_adaptive_level_spec"):
