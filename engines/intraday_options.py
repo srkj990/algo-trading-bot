@@ -520,15 +520,12 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         positions,
         capital,
     ):
-        capped = super().apply_entry_allocation_limit(
-            symbol,
-            quantity,
-            entry_price,
-            positions,
-            capital,
-        )
+        # Skip max_symbol_allocation from the parent — capital is already bounded by
+        # max_capital_per_trade before this call.  Applying an additional 20%-of-capital
+        # cap here would zero out quantity on small accounts (e.g. ₹20k capital, ₹210
+        # entry → 20000×0.2/210 = 19 units < lot_size 75 → qty rounds to 0).
         lot_size = get_contract_lot_size(symbol)
-        return (capped // lot_size) * lot_size
+        return (quantity // lot_size) * lot_size
 
     def apply_signal_filters(
         self,
@@ -621,7 +618,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             )
             return filtered
 
-        if analytics and not analytics.get("skip_underlying_bias"):
+        if analytics and not analytics.get("skip_underlying_bias") and prefetched_underlying_df is not None:
             bias = self.get_underlying_bias(
                 analytics["underlying"],
                 underlying_df=prefetched_underlying_df,
@@ -1336,15 +1333,8 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         )
 
     def get_underlying_bias(self, underlying, underlying_df=None):
-        if underlying_df is None:
-            underlying_df = get_data(
-                get_fno_spot_quote_symbol(underlying),
-                period="2d",
-                interval="1m",
-                provider="KITE",
-            )
-        if underlying_df.empty:
-            raise RuntimeError(f"No underlying data for {underlying}")
+        if underlying_df is None or underlying_df.empty:
+            return {"bias": "NEUTRAL", "close": 0.0, "vwap": 0.0, "ema": 0.0}
 
         session_df = underlying_df.loc[
             underlying_df.index.date == underlying_df.index[-1].date()
