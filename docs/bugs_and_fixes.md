@@ -365,3 +365,40 @@ This means the entry filter now uses the same target the trade will actually aim
 
 ### Commit
 `fix: use ATR-based target in should_enter_trade profitability check for intraday_options`
+
+---
+
+## [2026-05-31] Small capital (≤₹35k) hits daily_max_loss_pct after first trade — entries blocked all day
+
+### Symptom
+Backtests with capital ≤ ₹20,000 produced only 2–4 trades over 5 days regardless of risk style. ₹1,00,000 capital with identical settings produced 27 trades.
+
+### Root Cause
+`daily_max_loss_pct = 3%` (₹600 for ₹20k capital). A single AGGRESSIVE stop-loss on 1 NIFTY lot ≈ ATR×2.64 × 75 units ≈ ₹975, which exceeds the ₹600 daily cap. After the first losing trade, all entries for the remaining day are blocked by the risk guard. This repeats each day → effectively 0–1 trades per day.
+
+The 3% cap is calibrated for larger accounts (₹1L+) where ₹3,000 can absorb 2–3 losses before blocking. On small capital the absolute rupee cap becomes smaller than a single lot's stop-loss.
+
+### Fix
+Added `resolve_daily_max_loss_pct(capital, configured_pct)` in `risk_manager.py`. When `capital ≤ ₹35,000`, the effective daily loss pct is raised to `max(configured_pct, 10%)`:
+
+```python
+_SMALL_CAPITAL_THRESHOLD = 35_000.0
+_SMALL_CAPITAL_MIN_DAILY_LOSS_PCT = 0.10
+
+def resolve_daily_max_loss_pct(capital, configured_pct):
+    if capital <= _SMALL_CAPITAL_THRESHOLD:
+        return max(pct, _SMALL_CAPITAL_MIN_DAILY_LOSS_PCT)
+    return pct
+```
+
+Both `backtesting.py` and `orchestration/session.py` now call `resolve_daily_max_loss_pct()` instead of using the raw config value directly.
+
+Effect on ₹20k capital: daily loss budget = `max(3%, 10%)` = 10% = ₹2,000 → absorbs 2 AGGRESSIVE lot losses before blocking (consistent with consecutive_loss_limit=3 being the binding constraint instead).
+
+### Files Changed
+- `risk_manager.py`
+- `backtesting.py`
+- `orchestration/session.py`
+
+### Commit
+`fix: raise daily_max_loss_pct floor to 10% for capital <= 35k`

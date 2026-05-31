@@ -98,6 +98,25 @@ def atr_position_size(
     }
 
 
+_SMALL_CAPITAL_THRESHOLD = 35_000.0
+_SMALL_CAPITAL_MIN_DAILY_LOSS_PCT = 0.10  # floor for capital <= threshold
+
+
+def resolve_daily_max_loss_pct(capital: float, configured_pct: float) -> float:
+    """Return effective daily_max_loss_pct, raising the floor to 10% for small accounts.
+
+    With capital <= ₹35,000 the configured 3% cap (₹600-1050) is smaller than a
+    single lot stop-loss, so the first loss would block all remaining entries for the
+    day. Raise the floor to 10% so small accounts get a meaningful loss budget.
+    """
+    pct = float(configured_pct or 0.0)
+    if pct <= 0:
+        return pct
+    if float(capital or 0.0) <= _SMALL_CAPITAL_THRESHOLD:
+        return max(pct, _SMALL_CAPITAL_MIN_DAILY_LOSS_PCT)
+    return pct
+
+
 def check_daily_loss_limit(session_pnl, capital, max_loss_pct):
     max_loss_pct = float(max_loss_pct or 0.0)
     if max_loss_pct <= 0 or float(capital or 0.0) <= 0:

@@ -36,6 +36,7 @@ from risk_manager import (
     calculate_target_price,
     check_daily_loss_limit,
     position_size,
+    resolve_daily_max_loss_pct,
 )
 from transaction_costs import estimate_intraday_equity_round_trip_cost
 
@@ -719,7 +720,9 @@ def run_trading_session(context):
                 continue
 
             risk_cfg = context.runtime_config.risk_controls
-            max_daily_loss_pct = float(risk_cfg.daily_max_loss_pct or 0.0)
+            max_daily_loss_pct = resolve_daily_max_loss_pct(
+                float(cfg.capital), float(risk_cfg.daily_max_loss_pct or 0.0)
+            )
             session_pnl = _calculate_session_pnl(context.trade_book, current_trade_day)
             if check_daily_loss_limit(session_pnl, cfg.capital, max_daily_loss_pct):
                 context.log_event(

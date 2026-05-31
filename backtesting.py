@@ -53,7 +53,7 @@ from models.position_adapter import (
 )
 from orchestration.positions import normalize_partial_exit_quantity
 from orchestration.signal_workflow import scan_symbols, should_enter_trade
-from risk_manager import atr_position_size, position_size
+from risk_manager import atr_position_size, position_size, resolve_daily_max_loss_pct
 from signal_scoring import get_atr_value
 from transaction_costs import estimate_intraday_equity_round_trip_cost
 from transaction_costs import (
@@ -746,7 +746,9 @@ class BacktestEngine:
             return
 
         # Daily max loss guard — mirrors session.py risk check
-        daily_max_loss_pct = float(risk_cfg.daily_max_loss_pct or 0)
+        daily_max_loss_pct = resolve_daily_max_loss_pct(
+            float(self.config.capital), float(risk_cfg.daily_max_loss_pct or 0)
+        )
         if daily_max_loss_pct > 0:
             day_str = trade_day.isoformat()
             day_pnl = sum(
