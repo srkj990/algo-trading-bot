@@ -28,7 +28,7 @@ session_defaults:
 
 risk_controls:
   daily_max_loss_pct: 0.03 # used: blocks new entries after realized daily loss exceeds 3% of capital
-  consecutive_loss_limit: 4 # used: blocks new entries after this many losing closed trades in a row
+  consecutive_loss_limit: 3 # used: blocks new entries after this many losing closed trades in a row
   api_failure_pause_minutes: 5 # used: pause duration after scan/entry/API-style failures and abnormal slippage events
   max_orders_per_minute: 10 # used: live-order rate cap enforced in the shared order wrapper
   abnormal_slippage_pause_pct: 0.5 # used: pauses new entries when a filled live order slips by at least this percent
@@ -70,13 +70,13 @@ fno:
   intraday_options_iv_expansion_max_iv_percentile: 20 # used: IV-expansion entry ceiling for IV percentile
   intraday_options_sideways_vwap_band_pct: 0.0015 # used: VWAP deviation band for sideways-regime classification
   intraday_options_sideways_lookback_candles: 8 # used: lookback window for sideways-regime checks
-  intraday_options_regime_expansion_range_pct: 1.1 # used: range threshold for expansion-regime classification
+  intraday_options_regime_expansion_range_pct: 1.4 # used: range threshold for expansion-regime classification
   intraday_options_regime_sideways_range_pct: 0.55 # used: range threshold for sideways-regime classification
   intraday_options_regime_sideways_vwap_dev_pct: 0.0025 # used: VWAP-deviation threshold for sideways-regime classification
   intraday_options_regime_expansion_iv_change_pct: 2.0 # used: IV-change threshold for expansion-regime classification
   intraday_options_lot_mode: "CAPITAL_BASED" # used: default lot-sizing mode offered to intraday-options sessions/backtests
   intraday_options_entry_mode: "LEGACY_IMMEDIATE" # used: default intraday-options entry mode for sessions/backtests
-  intraday_options_max_entry_cost_ratio: 0.30 # used: blocks intraday-option entries when expected costs consume too much profit
+  intraday_options_max_entry_cost_ratio: 0.20 # used: blocks intraday-option entries when expected costs consume too much profit
   intraday_options_max_spread_pct: 0.015 # used: intraday-options-specific live spread guard
   intraday_options_min_open_interest: 10000 # used: minimum open interest for live intraday-options entry
   intraday_options_roll_trigger_pct: 2.0 # used: underlying-move threshold for dynamic ATM strike rolling
@@ -157,20 +157,20 @@ engine_defaults:
     min_sell_iv_percentile: 15.0 # used: sell-side IV percentile floor
     entry_cutoff: "15:05" # used: time after which no new intraday-options entries are allowed
     square_off_time: "15:15" # used: time after which all intraday-options positions are force-exited
-    sleep_seconds: 10 # used: session polling interval in seconds
+    sleep_seconds: 5 # used: session polling interval in seconds
     cooldown_seconds: 180 # used: post-entry cooldown before next entry is considered
     data_period: "1d" # used: live session history lookback period
     data_interval: "1m" # used: live session candle interval
-    adaptive_stop_multiplier_sideways: 2.0 # used: ATR stop multiplier in sideways regime
-    adaptive_stop_multiplier_normal: 1.7 # used: ATR stop multiplier in normal regime
-    adaptive_stop_multiplier_expansion: 1.7 # used: ATR stop multiplier in expansion regime
-    adaptive_target_multiplier_sideways: 1.1 # used: ATR target multiplier in sideways regime
-    adaptive_target_multiplier_normal: 1.7 # used: ATR target multiplier in normal regime
-    adaptive_target_multiplier_expansion: 2.3 # used: ATR target multiplier in expansion regime
-    adaptive_trailing_multiplier_sideways: 0.8 # used: ATR trailing multiplier in sideways regime
-    adaptive_trailing_multiplier_normal: 1.0 # used: ATR trailing multiplier in normal regime
-    adaptive_trailing_multiplier_expansion: 1.15 # used: ATR trailing multiplier in expansion regime
-    adaptive_min_stop_pct: 0.05 # used: minimum stop distance as fraction of entry price
+    adaptive_stop_multiplier_sideways: 2.5 # used: ATR stop multiplier in sideways regime
+    adaptive_stop_multiplier_normal: 2.2 # used: ATR stop multiplier in normal regime
+    adaptive_stop_multiplier_expansion: 2.0 # used: ATR stop multiplier in expansion regime
+    adaptive_target_multiplier_sideways: 1.5 # used: ATR target multiplier in sideways regime
+    adaptive_target_multiplier_normal: 2.5 # used: ATR target multiplier in normal regime
+    adaptive_target_multiplier_expansion: 3.0 # used: ATR target multiplier in expansion regime
+    adaptive_trailing_multiplier_sideways: 0.6 # used: ATR trailing multiplier in sideways regime
+    adaptive_trailing_multiplier_normal: 0.7 # used: ATR trailing multiplier in normal regime
+    adaptive_trailing_multiplier_expansion: 0.8 # used: ATR trailing multiplier in expansion regime
+    adaptive_min_stop_pct: 0.07 # used: minimum stop distance as fraction of entry price
     adaptive_min_target_pct: 0.08 # used: minimum target distance as fraction of entry price
     adaptive_min_trailing_pct: 0.035 # used: minimum trailing distance as fraction of entry price
     adaptive_conviction_score_weight: 0.5 # used: how much signal score scales the conviction multiplier
