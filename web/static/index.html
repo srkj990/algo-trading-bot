@@ -917,6 +917,8 @@ window.onload = async () => {
   initChart();
   onEngineChange('live');
   onEngineChange('backtest');
+  autoCapPerTrade('c');
+  autoCapPerTrade('b');
   await checkStatus();
   connectWS();
   fetchTicker();

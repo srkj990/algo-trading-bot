@@ -68,7 +68,10 @@ def _build_app() -> FastAPI:
 
         @app.get("/")
         async def index() -> FileResponse:
-            return FileResponse(str(_STATIC_DIR / "index.html"))
+            return FileResponse(
+                str(_STATIC_DIR / "index.html"),
+                headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+            )
     else:
         @app.get("/")
         async def index_placeholder():
