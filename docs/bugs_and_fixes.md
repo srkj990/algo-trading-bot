@@ -235,3 +235,44 @@ Updated `config.py` env default from `"4"` to `"3"`:
 
 ### Commit
 `fix: sync consecutive_loss_limit default in config.py from 4 to 3` (commit d7c224e)
+
+---
+
+## [2026-05-31] Backtest ignores consecutive_loss_limit and daily_max_loss_pct
+
+### Symptom
+May 27 backtest data shows 4 consecutive STOP_LOSS trades after an earlier TRAILING_STOP loss:
+
+| Entry | Exit | Reason | Net P&L | Consec losses at entry |
+|-------|------|--------|---------|----------------------|
+| 10:18 | 10:38 | TRAILING_STOP | −₹16 | 1 |
+| 10:38 | 10:40 | STOP_LOSS | −₹629 | 2 |
+| 10:56 | 11:00 | STOP_LOSS | −₹674 | **3 → limit** |
+| 11:07 | 11:11 | STOP_LOSS | −₹767 | should be blocked |
+| 11:19 | 11:36 | STOP_LOSS | −₹632 | should be blocked |
+| 14:37 | 14:38 | STOP_LOSS | −₹967 | should be blocked |
+
+With `consecutive_loss_limit=3`, trades 4-6 should have been blocked. The live session would have stopped at trade 3. The backtest produced −₹2,366 in avoidable losses.
+
+### Root Cause
+`backtesting.py:_enter_ranked_candidates()` had no `consecutive_loss_limit` or `daily_max_loss_pct` check. The live session check in `orchestration/session.py` (line 732) was never mirrored in the backtest, causing backtest P&L to diverge from live trading behaviour.
+
+### Fix
+Added `_consecutive_losses_today()` helper and two early-return guards at the top of `_enter_ranked_candidates()` in `backtesting.py`:
+```python
+# Consecutive loss guard
+if consec_limit > 0 and self._consecutive_losses_today(trade_day) >= consec_limit:
+    return  # block all new entries for the rest of this candle cycle
+
+# Daily max loss guard
+if day_pnl < -(starting_equity * daily_max_loss_pct):
+    return
+```
+Both guards mirror the exact logic in `session.py` so backtest and live results are now consistent.
+
+### Files Changed
+- `backtesting.py`
+- `tests/unit/test_session_entry_sizing.py` (updated expected qty after max_symbol_allocation removal)
+
+### Commit
+`fix: enforce consecutive_loss_limit and daily_max_loss_pct in backtest` (commit 5bdc614)
