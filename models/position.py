@@ -91,6 +91,7 @@ class Position:
                 if trailing_distance is not None
                 else self.best_price * (1 - trailing_pct / 100)
             )
+            candidate = max(candidate, self.entry_price)
             self.trailing_stop = max(self.trailing_stop, candidate)
         else:
             self.best_price = min(self.best_price, latest_close)
@@ -105,6 +106,7 @@ class Position:
                 if trailing_distance is not None
                 else self.best_price * (1 + trailing_pct / 100)
             )
+            candidate = min(candidate, self.entry_price)
             self.trailing_stop = min(self.trailing_stop, candidate)
 
         return self.trailing_stop != old_trailing

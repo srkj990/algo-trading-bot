@@ -172,6 +172,8 @@ class TickExitMonitor:
                 if (side == "BUY" and ltp > sl) or (side == "SELL" and ltp < sl):
                     return
             elif exit_reason == "TRAILING_STOP":
+                if not position.get("trailing_active"):
+                    return
                 trail = float(position.get("trailing_stop") or 0)
                 if (side == "BUY" and ltp > trail) or (side == "SELL" and ltp < trail):
                     return
