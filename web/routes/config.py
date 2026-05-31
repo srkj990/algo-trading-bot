@@ -31,6 +31,7 @@ _pending_config_lock = threading.Lock()
 _backtest_result: dict | None = None
 _backtest_lock = threading.Lock()
 _backtest_thread: threading.Thread | None = None
+_backtest_cancel = threading.Event()
 
 
 # ── symbol / FNO reference data ───────────────────────────────────────────────
@@ -246,6 +247,8 @@ async def run_backtest(payload: dict) -> JSONResponse:
     if _backtest_thread is not None and _backtest_thread.is_alive():
         return JSONResponse({"error": "A backtest is already running."}, status_code=409)
 
+    _backtest_cancel.clear()
+
     try:
         cfg = _build_backtest_config(payload)
     except (ValueError, RuntimeError) as exc:
@@ -261,7 +264,10 @@ async def run_backtest(payload: dict) -> JSONResponse:
             log_event(f"[BACKTEST] Starting {cfg.engine_name} | {cfg.period} / {cfg.interval} | capital={cfg.capital:,.0f}")
             log_event(f"[BACKTEST] Universe: {', '.join(str(s) for s in cfg.universe)}")
             log_event(f"[BACKTEST] Strategy: {cfg.strategy_mode} — {', '.join(cfg.strategies)}")
-            engine = BacktestEngine(cfg)
+            def _on_trade(trade):
+                web_state.broadcast({"type": "backtest_trade", "trade": trade})
+
+            engine = BacktestEngine(cfg, log_fn=log_event, cancel_event=_backtest_cancel, trade_fn=_on_trade)
             summary = engine.run()
             paths = export_backtest_results(summary)
             result = _summarise(summary, paths)
@@ -293,6 +299,132 @@ async def get_backtest_results() -> JSONResponse:
             running = _backtest_thread is not None and _backtest_thread.is_alive()
             return JSONResponse({"status": "running" if running else "idle"})
         return JSONResponse({"status": "done", "result": _backtest_result})
+
+
+@router.post("/api/backtest/cancel")
+async def cancel_backtest() -> JSONResponse:
+    _backtest_cancel.set()
+    return JSONResponse({"ok": True})
+
+
+# ── bot override controls ──────────────────────────────────────────────────────
+
+@router.post("/api/override/pause")
+async def override_pause() -> JSONResponse:
+    """Pause new entries — existing positions still managed."""
+    ctx = web_state._context
+    if ctx is None:
+        return JSONResponse({"error": "No active session."}, status_code=400)
+    ctx.session_runtime_state["override_pause_entries"] = True
+    from logger import log_event
+    log_event("[OVERRIDE] New entries PAUSED by trader. Existing positions still managed.", "warning")
+    web_state.broadcast({"type": "override", "action": "pause", "ts": _ts()})
+    return JSONResponse({"ok": True, "action": "pause"})
+
+
+@router.post("/api/override/resume")
+async def override_resume() -> JSONResponse:
+    """Resume new entries after a pause."""
+    ctx = web_state._context
+    if ctx is None:
+        return JSONResponse({"error": "No active session."}, status_code=400)
+    ctx.session_runtime_state.pop("override_pause_entries", None)
+    ctx.session_runtime_state.pop("override_safe_mode", None)
+    from logger import log_event
+    log_event("[OVERRIDE] New entries RESUMED by trader.", "info")
+    web_state.broadcast({"type": "override", "action": "resume", "ts": _ts()})
+    return JSONResponse({"ok": True, "action": "resume"})
+
+
+@router.post("/api/override/safe_mode")
+async def override_safe_mode() -> JSONResponse:
+    """Safe mode: pause entries + move all open positions to breakeven stop,
+    halve remaining target distance, activate trailing immediately.
+    When all positions close, the session auto-stops."""
+    ctx = web_state._context
+    if ctx is None:
+        return JSONResponse({"error": "No active session."}, status_code=400)
+    ctx.session_runtime_state["override_safe_mode"] = True
+    ctx.session_runtime_state["override_pause_entries"] = True
+    # clear the per-position tightening flag so the next cycle re-applies
+    for pos in ctx.positions.values():
+        pos.pop("_safe_mode_tightened", None)
+    from logger import log_event
+    n = len(ctx.positions)
+    log_event(
+        f"[OVERRIDE] SAFE MODE activated — entries paused, {n} position(s) moved to "
+        "breakeven stop + halved target + trailing activated. Session auto-stops when flat.",
+        "warning",
+    )
+    web_state.broadcast({"type": "override", "action": "safe_mode", "ts": _ts()})
+    return JSONResponse({"ok": True, "action": "safe_mode", "positions_affected": n})
+
+
+@router.post("/api/override/emergency_exit")
+async def override_emergency_exit() -> JSONResponse:
+    """Close all open positions immediately (market order)."""
+    ctx = web_state._context
+    if ctx is None:
+        return JSONResponse({"error": "No active session."}, status_code=400)
+    if not ctx.positions:
+        return JSONResponse({"ok": True, "action": "emergency_exit", "closed": 0})
+
+    from logger import log_event
+    from datetime import datetime
+    from orchestration import positions as position_flow
+    from config import TRANSACTION_COST_MODEL_ENABLED, TRANSACTION_SLIPPAGE_PCT_PER_SIDE
+    from models.position_adapter import opposite_side, position_quantity
+
+    log_event("[OVERRIDE] EMERGENCY EXIT — closing all positions NOW.", "error")
+    exit_time = datetime.now()
+    closed = 0
+    for symbol, position in list(ctx.positions.items()):
+        try:
+            exit_price = position_flow.get_latest_exit_price(
+                ctx.engine, symbol, position, ctx.fetch_data, ctx.log_event,
+            )
+            ctx.place_order(
+                opposite_side(position),
+                position_quantity(position),
+                symbol,
+                note="Emergency exit override",
+                product=ctx.engine.order_product,
+                enforce_spread_check=False,
+                enforce_margin_check=False,
+                entry_price=exit_price,
+            )
+            position_flow.record_closed_trade(
+                ctx.trade_book, ctx.trade_store, symbol, position, exit_price,
+                "Emergency exit override", exit_time,
+                TRANSACTION_COST_MODEL_ENABLED,
+                float(TRANSACTION_SLIPPAGE_PCT_PER_SIDE or 0.0),
+            )
+            del ctx.positions[symbol]
+            closed += 1
+        except Exception as exc:
+            log_event(f"[OVERRIDE] Emergency exit failed for {symbol}: {exc}", "error")
+
+    from orchestration.context import persist_runtime_state
+    persist_runtime_state(ctx)
+    web_state.broadcast({"type": "override", "action": "emergency_exit", "closed": closed, "ts": _ts()})
+    log_event(f"[OVERRIDE] Emergency exit complete — {closed} position(s) closed.", "warning")
+    return JSONResponse({"ok": True, "action": "emergency_exit", "closed": closed})
+
+
+@router.get("/api/override/status")
+async def override_status() -> JSONResponse:
+    ctx = web_state._context
+    if ctx is None:
+        return JSONResponse({"paused": False, "safe_mode": False})
+    return JSONResponse({
+        "paused": bool(ctx.session_runtime_state.get("override_pause_entries")),
+        "safe_mode": bool(ctx.session_runtime_state.get("override_safe_mode")),
+    })
+
+
+def _ts():
+    from datetime import datetime
+    return datetime.now().strftime("%H:%M:%S")
 
 
 # ── backtest helpers ──────────────────────────────────────────────────────────
@@ -532,7 +664,9 @@ def _summarise(summary: dict, paths: tuple) -> dict:
     if not trades_df.empty:
         closed = trades_df.dropna(subset=["exit_time"])
         for _, row in closed.iterrows():
-            pnl = float(row.get("net_pnl") or row.get("pnl") or 0)
+            gross = float(row.get("pnl") or 0)
+            charges = float(row.get("estimated_charges") or 0)
+            net = float(row.get("net_pnl") or (gross - charges))
             trades_list.append({
                 "symbol": str(row.get("symbol", "")),
                 "side": str(row.get("side", "")),
@@ -541,7 +675,9 @@ def _summarise(summary: dict, paths: tuple) -> dict:
                 "entry_price": _ff(row.get("entry_price")),
                 "exit_price": _ff(row.get("exit_price")),
                 "quantity": int(row.get("quantity") or 0),
-                "pnl": round(pnl, 2),
+                "pnl": round(gross, 2),
+                "net_pnl": round(net, 2),
+                "charges": round(charges, 2),
                 "exit_reason": str(row.get("exit_reason", "")),
                 "strategy": str(row.get("strategy") or ""),
             })
@@ -555,6 +691,12 @@ def _summarise(summary: dict, paths: tuple) -> dict:
         except (TypeError, ValueError):
             return None
 
+    # ── regime analytics (B.13) ────────────────────────────────────────────────
+    regime_analytics = _compute_regime_analytics(trades_df, cfg.capital)
+
+    # ── failure analysis (B.15) ────────────────────────────────────────────────
+    failure_analysis = _compute_failure_analysis(trades_df)
+
     return {
         "engine": cfg.engine_name,
         "period": cfg.period,
@@ -566,15 +708,210 @@ def _summarise(summary: dict, paths: tuple) -> dict:
         "win_rate_pct": _safe(summary.get("win_rate_percent")),
         "max_drawdown_pct": _safe(summary.get("max_drawdown_percent")),
         "total_charges": _safe(summary.get("total_estimated_charges")),
+        "total_gross_pnl": _safe(summary.get("total_gross_pnl")),
         "total_net_pnl": _safe(summary.get("total_net_pnl")),
         "tick_entry_fills": int(summary.get("tick_entry_fills") or 0),
         "equity_curve": equity_points,
         "trades": trades_list,
+        "regime_analytics": regime_analytics,
+        "failure_analysis": failure_analysis,
         "files": {
             "summary": str(paths[0]),
             "trades": str(paths[1]),
             "equity": str(paths[2]),
         },
+    }
+
+
+def _compute_regime_analytics(trades_df, capital: float) -> list[dict]:
+    """Break strategy performance by time-of-day and exit-reason 'regime' proxies."""
+    import math
+    if trades_df is None or (hasattr(trades_df, "empty") and trades_df.empty):
+        return []
+
+    closed = trades_df.dropna(subset=["exit_time"]) if not trades_df.empty else trades_df
+    if closed.empty:
+        return []
+
+    def _pnl(row):
+        return float(row.get("net_pnl") or row.get("pnl") or 0)
+
+    def _hour(row):
+        try:
+            et = str(row.get("entry_time", ""))
+            return int(et[11:13]) if len(et) >= 13 else None
+        except Exception:
+            return None
+
+    def _session(row):
+        h = _hour(row)
+        if h is None:
+            return "UNKNOWN"
+        if h < 10:
+            return "MORNING (09:15-10:00)"
+        if h < 11:
+            return "MID MORNING (10:00-11:00)"
+        if h < 12:
+            return "PRE LUNCH (11:00-12:00)"
+        if h < 13:
+            return "LUNCH (12:00-13:00)"
+        if h < 14:
+            return "POST LUNCH (13:00-14:00)"
+        return "AFTERNOON (14:00+)"
+
+    # Group by session
+    buckets: dict[str, list] = {}
+    for _, row in closed.iterrows():
+        sess = _session(row)
+        buckets.setdefault(sess, []).append(row)
+
+    session_order = [
+        "MORNING (09:15-10:00)", "MID MORNING (10:00-11:00)",
+        "PRE LUNCH (11:00-12:00)", "LUNCH (12:00-13:00)",
+        "POST LUNCH (13:00-14:00)", "AFTERNOON (14:00+)",
+    ]
+    result = []
+    for sess in session_order:
+        rows = buckets.get(sess, [])
+        if not rows:
+            continue
+        pnls = [_pnl(r) for r in rows]
+        wins = sum(1 for p in pnls if p > 0)
+        net = sum(pnls)
+        result.append({
+            "regime": sess,
+            "trades": len(rows),
+            "win_rate": round(wins / len(rows) * 100, 1) if rows else 0.0,
+            "net_pnl": round(net, 2),
+            "avg_pnl": round(net / len(rows), 2) if rows else 0.0,
+            "return_pct": round(net / capital * 100, 2) if capital > 0 else 0.0,
+        })
+
+    # Also by exit reason
+    reason_buckets: dict[str, list] = {}
+    for _, row in closed.iterrows():
+        reason = str(row.get("exit_reason", "unknown") or "unknown")[:30]
+        reason_buckets.setdefault(reason, []).append(row)
+
+    by_reason = []
+    for reason, rows in sorted(reason_buckets.items(), key=lambda x: -len(x[1])):
+        pnls = [_pnl(r) for r in rows]
+        wins = sum(1 for p in pnls if p > 0)
+        net = sum(pnls)
+        by_reason.append({
+            "exit_reason": reason,
+            "trades": len(rows),
+            "win_rate": round(wins / len(rows) * 100, 1),
+            "net_pnl": round(net, 2),
+        })
+
+    return {"by_session": result, "by_exit_reason": by_reason}
+
+
+def _compute_failure_analysis(trades_df) -> dict:
+    """Compute loss cluster, time-based failure, and streak analysis."""
+    if trades_df is None or (hasattr(trades_df, "empty") and trades_df.empty):
+        return {}
+
+    closed = trades_df.dropna(subset=["exit_time"]) if not trades_df.empty else trades_df
+    if closed.empty:
+        return {}
+
+    def _pnl(row):
+        return float(row.get("net_pnl") or row.get("pnl") or 0)
+
+    pnls = [_pnl(row) for _, row in closed.iterrows()]
+
+    # Max consecutive losses
+    max_consec_losses = 0
+    cur_consec = 0
+    for p in pnls:
+        if p < 0:
+            cur_consec += 1
+            max_consec_losses = max(max_consec_losses, cur_consec)
+        else:
+            cur_consec = 0
+
+    # Max consecutive wins
+    max_consec_wins = 0
+    cur_consec = 0
+    for p in pnls:
+        if p > 0:
+            cur_consec += 1
+            max_consec_wins = max(max_consec_wins, cur_consec)
+        else:
+            cur_consec = 0
+
+    # Worst loss cluster: biggest N consecutive losses by cumulative loss
+    worst_cluster_pnl = 0.0
+    worst_cluster_len = 0
+    best_run_pnl = 0.0
+    best_run_len = 0
+    cur_loss = 0.0
+    cur_loss_len = 0
+    cur_win = 0.0
+    cur_win_len = 0
+    for p in pnls:
+        if p < 0:
+            cur_loss += p
+            cur_loss_len += 1
+            cur_win = 0.0
+            cur_win_len = 0
+            if cur_loss < worst_cluster_pnl:
+                worst_cluster_pnl = cur_loss
+                worst_cluster_len = cur_loss_len
+        else:
+            cur_win += p
+            cur_win_len += 1
+            cur_loss = 0.0
+            cur_loss_len = 0
+            if cur_win > best_run_pnl:
+                best_run_pnl = cur_win
+                best_run_len = cur_win_len
+
+    # Worst hour (most losses)
+    hour_losses: dict[int, float] = {}
+    hour_counts: dict[int, int] = {}
+    for _, row in closed.iterrows():
+        p = _pnl(row)
+        if p >= 0:
+            continue
+        try:
+            et = str(row.get("entry_time", ""))
+            h = int(et[11:13]) if len(et) >= 13 else -1
+        except Exception:
+            h = -1
+        if h >= 0:
+            hour_losses[h] = hour_losses.get(h, 0.0) + p
+            hour_counts[h] = hour_counts.get(h, 0) + 1
+
+    worst_hour = None
+    if hour_losses:
+        worst_h = min(hour_losses, key=lambda h: hour_losses[h])
+        worst_hour = {
+            "hour": f"{worst_h:02d}:00",
+            "losses": hour_counts[worst_h],
+            "total_loss": round(hour_losses[worst_h], 2),
+        }
+
+    # Loss concentration: what % of total loss comes from worst 20% of trades
+    loss_pnls = sorted([p for p in pnls if p < 0])
+    top20_count = max(1, len(loss_pnls) // 5)
+    total_loss = sum(loss_pnls)
+    top20_loss = sum(loss_pnls[:top20_count]) if loss_pnls else 0.0
+    loss_concentration_pct = round(top20_loss / total_loss * 100, 1) if total_loss < 0 else 0.0
+
+    return {
+        "max_consecutive_losses": max_consec_losses,
+        "max_consecutive_wins": max_consec_wins,
+        "worst_loss_cluster_pnl": round(worst_cluster_pnl, 2),
+        "worst_loss_cluster_len": worst_cluster_len,
+        "best_win_run_pnl": round(best_run_pnl, 2),
+        "best_win_run_len": best_run_len,
+        "worst_hour": worst_hour,
+        "loss_concentration_pct": loss_concentration_pct,
+        "total_losses": len(loss_pnls),
+        "total_wins": len([p for p in pnls if p > 0]),
     }
 
 

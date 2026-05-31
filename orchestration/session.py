@@ -198,6 +198,50 @@ def _get_risk_pause_status(context, now):
     return True, context.session_runtime_state.get("risk_pause_reason")
 
 
+def _apply_safe_mode_tightening(context) -> None:
+    """Move each open position to breakeven stop, halve remaining target distance,
+    and activate trailing immediately. Only applied once per position."""
+    for symbol, pos in list(context.positions.items()):
+        if pos.get("_safe_mode_tightened"):
+            continue
+        try:
+            entry   = float(pos.get("entry_price") or 0)
+            side    = str(pos.get("side") or "BUY").upper()
+            current_sl = float(pos.get("stop_loss") or 0)
+            current_tgt = float(pos.get("target") or 0)
+            if entry <= 0:
+                continue
+
+            # move stop to breakeven (only tighten, never loosen)
+            if side == "BUY":
+                new_sl = max(current_sl, entry)
+            else:
+                new_sl = min(current_sl, entry) if current_sl > 0 else entry
+
+            # halve remaining distance to target
+            if current_tgt > 0:
+                remaining = abs(current_tgt - entry)
+                if side == "BUY":
+                    new_tgt = entry + remaining * 0.5
+                else:
+                    new_tgt = entry - remaining * 0.5
+            else:
+                new_tgt = current_tgt
+
+            pos["stop_loss"]      = round(new_sl, 4)
+            pos["target"]         = round(new_tgt, 4)
+            pos["trailing_active"] = True
+            pos["_safe_mode_tightened"] = True
+
+            context.log_event(
+                f"[SAFE MODE] {symbol}: SL → {new_sl:.2f} (breakeven), "
+                f"Target → {new_tgt:.2f} (halved), trailing activated",
+                "warning",
+            )
+        except Exception as exc:
+            context.log_event(f"[SAFE MODE] Tightening failed for {symbol}: {exc}", "error")
+
+
 def _sync_exit_only_live_positions(context, now):
     if str(getattr(context.config, "execution_mode", "")).upper() != "LIVE":
         return False
@@ -536,7 +580,20 @@ def run_trading_session(context):
             continue
         symbol_snapshots = scan_result.symbol_snapshots
         ranked_candidates = scan_result.ranked_candidates
+        context._last_symbol_snapshots = symbol_snapshots  # used by explainability emitter
         position_flow.log_ranked_candidates(ranked_candidates, context.log_event)
+
+        # Warning Center — web-mode only, no-op in console mode
+        try:
+            from logger import is_web_mode
+            if is_web_mode():
+                from web import state as _web_state
+                from web.core.warning_engine import compute_warnings
+                _vix = context.session_runtime_state.get("_cached_vix")
+                _warnings, _market_intel = compute_warnings(context, symbol_snapshots, now, vix=_vix)
+                _web_state.set_warnings(_warnings, _market_intel)
+        except Exception:
+            pass
 
         if not symbol_snapshots and context.positions:
             context.log_event("[ERROR] No symbol data available for open positions", "error")
@@ -578,6 +635,19 @@ def run_trading_session(context):
             if _maybe_roll_dynamic_atm_positions(context, symbol_snapshots, now):
                 persist_runtime_state(context)
 
+        # safe mode: tighten open positions once, then auto-stop when flat
+        if context.session_runtime_state.get("override_safe_mode"):
+            _apply_safe_mode_tightening(context)
+            if not context.positions:
+                context.log_event(
+                    "[OVERRIDE] Safe mode: all positions closed — auto-stopping session.", "warning"
+                )
+                from logger import is_web_mode
+                if is_web_mode():
+                    from web import state as _web_state
+                    _web_state.request_stop()
+                break
+
         deployed_capital = get_deployed_capital(context.positions)
         context.log_event(f"[RISK] Current deployed capital: {deployed_capital:.2f}")
         current_time = time.time()
@@ -585,6 +655,8 @@ def run_trading_session(context):
 
         if getattr(cfg, "exit_only_mode", False):
             context.log_event("[SESSION] Exit-only mode active - new entries disabled")
+        elif context.session_runtime_state.get("override_pause_entries"):
+            context.log_event("[OVERRIDE] New entries paused by trader override")
         elif not cycle_state["allow_entries"]:
             context.log_event("[SESSION] New entries disabled in current window")
         elif cooldown_active:
@@ -1382,7 +1454,102 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
     context.last_entry_time = time.time()
     context.log_event(f"[RISK] Updated deployed capital: {deployed_capital + estimated_trade_capital:.2f}")
     persist_runtime_state(context)
+
+    # Emit "Why This Trade?" explainability event to the browser (web mode only)
+    try:
+        from logger import is_web_mode
+        if is_web_mode():
+            from web import state as _web_state
+            _emit_why_trade(context, candidate, symbol, actual_entry_price, qty, now, _web_state)
+    except Exception:
+        pass
+
     return True
+
+
+def _emit_why_trade(context, candidate, symbol, entry_price, qty, now, web_state):
+    """Broadcast a why_this_trade WS event so the browser can render the explainability panel."""
+    details = candidate.get("details") or {}
+    analytics = candidate.get("analytics") or {}
+    vwap_bias = candidate.get("vwap_bias") or (
+        next((
+            s.get("vwap_bias") for s in [context.positions.get(symbol, {})]
+        ), None)
+    )
+
+    # Build reasons (green checkmarks) from signal details
+    reasons_ok: list[str] = []
+    reasons_warn: list[str] = []
+
+    if candidate.get("vwap_bias") == "above" or candidate.get("signal") == "BUY":
+        reasons_ok.append("Above VWAP")
+    elif candidate.get("vwap_bias") == "below" and candidate.get("signal") == "SELL":
+        reasons_ok.append("Below VWAP (sell bias)")
+
+    if candidate.get("agreement_count", 0) >= 2:
+        reasons_ok.append(f"{candidate['agreement_count']} strategies agree")
+
+    score = candidate.get("score", 0.0)
+    if score >= 0.6:
+        reasons_ok.append(f"Strong signal score ({score:.2f})")
+    elif score >= 0.4:
+        reasons_ok.append(f"Moderate signal score ({score:.2f})")
+
+    if analytics.get("delta"):
+        delta = float(analytics["delta"])
+        if 0.3 <= abs(delta) <= 0.7:
+            reasons_ok.append(f"Delta in range ({delta:.2f})")
+
+    # Warnings from current active warnings
+    try:
+        from web.core.warning_engine import get_active_ids
+        active_ids = get_active_ids()
+        if any("iv_expansion" in wid for wid in active_ids):
+            reasons_warn.append("IV expanding (check premium cost)")
+        if any("vwap_broad_weakness" in wid for wid in active_ids):
+            reasons_warn.append("Broad market below VWAP")
+        if any("lunch_chop_zone" in wid for wid in active_ids):
+            reasons_warn.append("Lunch chop zone active")
+        if any("late_otm_risk" in wid for wid in active_ids):
+            reasons_warn.append("Afternoon session — theta risk elevated")
+        if any("vix_elevated" in wid for wid in active_ids):
+            reasons_warn.append("VIX elevated — wider ranges expected")
+    except Exception:
+        pass
+
+    # Signal quality
+    try:
+        from web.core.warning_engine import compute_signal_quality_score
+        sq = compute_signal_quality_score(
+            getattr(context, "_last_symbol_snapshots", {}),
+            context.session_runtime_state.get("_cached_vix"),
+            now,
+        )
+    except Exception:
+        sq = {"score": 0, "label": "N/A"}
+
+    web_state.broadcast({
+        "type": "why_this_trade",
+        "symbol": symbol,
+        "side": candidate.get("signal"),
+        "entry_price": round(float(entry_price), 2),
+        "qty": qty,
+        "score": round(float(score), 4),
+        "confidence_pct": min(100, round(float(score) * 100)),
+        "strategy": candidate.get("strategy") or candidate.get("signal"),
+        "reasons_ok": reasons_ok,
+        "reasons_warn": reasons_warn,
+        "signal_quality": sq,
+        "analytics": {
+            "underlying": analytics.get("underlying"),
+            "underlying_price": analytics.get("underlying_price"),
+            "option_type": analytics.get("option_type"),
+            "iv": round(float(analytics["iv"]) * 100, 1) if analytics.get("iv") else None,
+            "delta": round(float(analytics["delta"]), 3) if analytics.get("delta") else None,
+            "dte": analytics.get("days_to_expiry"),
+        },
+        "ts": now.strftime("%H:%M:%S"),
+    })
 
 
 def handle_keyboard_interrupt(context):

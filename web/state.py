@@ -26,11 +26,16 @@ if TYPE_CHECKING:
 _lock = threading.Lock()
 _context: "TradingContext | None" = None
 _session_thread: threading.Thread | None = None
-_stop_event = threading.Event()
+_stop_event = threading.Event()        # signals the trading loop to stop
+_server_exit_event = threading.Event() # signals main.py to exit the process
 _log_ring: deque[dict[str, Any]] = deque(maxlen=500)
 _ws_clients: set[asyncio.Queue] = set()          # one Queue per connected tab
 _session_status: str = "idle"                    # idle | running | stopped
 _web_loop: asyncio.AbstractEventLoop | None = None  # set by server at startup
+
+# ── warning center state ──────────────────────────────────────────────────────
+_active_warnings: list[dict[str, Any]] = []      # warnings from latest cycle
+_market_intel: dict[str, Any] = {}               # market intelligence summary
 
 
 # ── lifecycle ─────────────────────────────────────────────────────────────────
@@ -47,10 +52,17 @@ def attach_context(ctx: "TradingContext") -> None:
 
 
 def clear_context() -> None:
-    global _context, _session_thread
+    global _context, _session_thread, _active_warnings, _market_intel
     with _lock:
         _context = None
         _session_thread = None
+        _active_warnings = []
+        _market_intel = {}
+    try:
+        from web.core.warning_engine import clear_warnings
+        clear_warnings()
+    except Exception:
+        pass
 
 
 def set_session_thread(t: threading.Thread) -> None:
@@ -82,6 +94,14 @@ def reset_stop_event() -> None:
     _stop_event.clear()
 
 
+def get_server_exit_event() -> threading.Event:
+    return _server_exit_event
+
+
+def request_server_exit() -> None:
+    _server_exit_event.set()
+
+
 def is_session_alive() -> bool:
     with _lock:
         return _session_thread is not None and _session_thread.is_alive()
@@ -107,6 +127,20 @@ def push_log(line: str, level: str = "info") -> None:
 def get_log_history() -> list[dict[str, Any]]:
     with _lock:
         return list(_log_ring)
+
+
+# ── warning center ────────────────────────────────────────────────────────────
+
+def set_warnings(warnings: list[dict[str, Any]], market_intel: dict[str, Any]) -> None:
+    global _active_warnings, _market_intel
+    with _lock:
+        _active_warnings = list(warnings)
+        _market_intel = dict(market_intel)
+
+
+def get_warnings() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    with _lock:
+        return list(_active_warnings), dict(_market_intel)
 
 
 # ── WebSocket client registry ─────────────────────────────────────────────────
@@ -236,7 +270,13 @@ def snapshot() -> dict[str, Any]:
         "pause_reason": ctx.session_runtime_state.get("risk_pause_reason", ""),
         "consecutive_losses": consecutive_losses,
         "daily_loss_pct": _f(daily_loss_pct),
+        "override_paused": bool(ctx.session_runtime_state.get("override_pause_entries")),
+        "override_safe_mode": bool(ctx.session_runtime_state.get("override_safe_mode")),
     }
+
+    with _lock:
+        active_warnings = list(_active_warnings)
+        market_intel = dict(_market_intel)
 
     return {
         "status": status,
@@ -244,6 +284,8 @@ def snapshot() -> dict[str, Any]:
         "trade_book": trade_book,
         "session": session,
         "risk": risk,
+        "warnings": active_warnings,
+        "market_intel": market_intel,
         "ts": datetime.now().strftime("%H:%M:%S"),
     }
 

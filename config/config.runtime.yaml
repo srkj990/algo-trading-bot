@@ -22,7 +22,7 @@ data_cache:
   per_cycle_enabled: true # used: enables one-cycle in-memory reuse of fetched datasets
 
 session_defaults:
-  exit_only_default: true # used: default session behavior; true manages exits only and blocks fresh entries
+  exit_only_default: false # used: default session behavior; 'true' manages exits only and blocks fresh entries ; Set to `false` to allow entries
   live_broker_resync_interval_seconds: 60 # used: how often live exit-only sessions reconcile broker positions
   paper_trading_override: false # set true to bypass weekend + market-hours checks for paper/testing runs
 

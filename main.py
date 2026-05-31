@@ -60,14 +60,16 @@ def _run_web_session():
         log_event(f"[WEB] Browser UI running at http://localhost:{_WEB_PORT}")
         log_event(f"[WEB] Configure and start your session from the browser.")
         log_event(f"[WEB] API docs at http://localhost:{_WEB_PORT}/docs")
-        log_event("[WEB] Press Ctrl+C to stop the server.")
+        log_event("[WEB] Press Ctrl+C to shut down the server.")
 
-        # block main thread until Ctrl+C or server shutdown
-        web_state.get_stop_event().wait()
+        # block main thread until Ctrl+C — session STOP only pauses the trading
+        # loop but keeps the server alive so the user can reconfigure and restart
+        web_state.get_server_exit_event().wait()
 
     except KeyboardInterrupt:
         log_event("\n[WEB] Shutting down...")
         web_state.request_stop()
+        web_state.request_server_exit()
     finally:
         web_state.set_status("stopped")
         session_log_path = finalize_session_logger()

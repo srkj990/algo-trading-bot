@@ -1,9 +1,11 @@
-# Zerodha Algo Trading Bot
+# Algo Trading Bot
 
 Algorithmic trading and backtesting system for Indian markets (NSE/BSE/NFO/BFO).
 Supports six trading engines across three execution modes with shared signal, risk, and position logic.
 
 For day-to-day operator instructions, read [HOW_TO_USE.md](./HOW_TO_USE.md).
+
+The system is operated entirely through a browser-based web UI — no console interaction required. Launch with `venv\Scripts\python main.py`, open `http://localhost:8000`, and configure/start/stop/reconfigure from there.
 
 ---
 
@@ -11,11 +13,13 @@ For day-to-day operator instructions, read [HOW_TO_USE.md](./HOW_TO_USE.md).
 
 | Mode | Entry point | Real orders | Use for |
 | --- | --- | --- | --- |
-| **Backtest** | `backtesting.py` | No | Historical simulation |
-| **Paper** | `main.py` | No — simulated fills | Market-hours dry run |
-| **Live** | `main.py` | Yes — Kite / Upstox | Production trading |
+| **Backtest** | Web UI → Backtest tab | No | Historical simulation |
+| **Paper** | Web UI → Live tab → PAPER | No — simulated fills | Market-hours dry run |
+| **Live** | Web UI → Live tab → LIVE | Yes — Kite / Upstox | Production trading |
 
-**Paper mode now simulates fills.** `executor.place_order` returns a synthetic `OrderResult` in PAPER mode so positions are tracked in memory exactly as they would be in LIVE mode. This enables the full position lifecycle (stop-loss, trailing, target, exit) to run during paper sessions without connecting to a broker.
+**Paper mode simulates fills.** `executor.place_order` returns a synthetic `OrderResult` in PAPER mode so positions are tracked in memory exactly as they would be in LIVE mode. This enables the full position lifecycle (stop-loss, trailing, target, exit) to run during paper sessions without connecting to a broker.
+
+**Weekend / off-hours paper testing** is supported by checking the "Weekend / Off-hours paper test mode" checkbox in the configure form — this bypasses market-hours and weekend guards (PAPER only).
 
 ---
 
@@ -98,34 +102,114 @@ In LIVE + KITE mode, `build_trading_context` automatically starts `KiteTickerMan
 
 | Path | Purpose |
 | --- | --- |
-| `main.py` | Thin launcher for live / paper sessions |
-| `backtesting.py` | Interactive candle-replay backtester |
-| `cli/configuration.py` | Interactive prompt flow; builds `SessionConfig`; prints startup config summary |
-| `display.py` | Centralized terminal display: ANSI colors, position/candidate/trade-book tables, banners, config summary, backtest summary; ANSI stripped before log-file writes |
+| `main.py` | Process entry point; starts FastAPI/uvicorn web server in a daemon thread; waits on `_server_exit_event` (set by Ctrl+C) |
+| `backtesting.py` | Candle-replay backtester; called from web UI or directly |
+| `cli/configuration.py` | `SessionConfig` builder; used by web routes to translate form payloads |
+| `display.py` | Terminal display helpers: ANSI tables, banners; ANSI stripped before log-file writes |
+| `logger.py` | `log_event`, `enable_web_mode`, `is_web_mode`; routes logs to both file and web ring buffer |
 | `orchestration/context.py` | Wires engine, broker, data, logger, config into `TradingContext`; starts WebSocket ticker |
-| `orchestration/session.py` | Main 60-second supervision loop; calls scan, entry, position management, tick entry |
+| `orchestration/session.py` | Main 60-second supervision loop: scan, entry, position management, tick entry, safe-mode tightening, warning engine call |
 | `orchestration/signal_workflow.py` | Per-symbol scan / signal evaluation; `get_stable_signal_data` candle gating |
-| `orchestration/positions.py` | Position lifecycle helpers: exits, trailing, partial exits, square-off, trade recording |
+| `orchestration/positions.py` | Position lifecycle: exits, trailing, partial exits, square-off, trade recording |
 | `engines/` | Six engine classes; each owns `get_cycle_state`, signal normalization, exit evaluation, adaptive position builders |
-| `engines/common.py` | Shared helpers: `build_position`, `resolve_trade_targets`, `update_trailing_stop`, capital limits |
+| `engines/common.py` | `build_position`, `resolve_trade_targets`, `update_trailing_stop`, capital limits |
 | `engines/base.py` | `TradingEngine` abstract base class |
 | `executor.py` | `place_order`: validation, margin check, spread check, broker submission, paper fill simulation |
-| `brokers/clients.py` | Concrete `KiteBrokerClient` and `UpstoxBrokerClient` implementations |
-| `brokers/base.py` | `BrokerClient` ABC; `OrderResult`, `Quote`, `OrderRequest`, `OrderStatus` types |
-| `tick_entry/` | Tick-based entry system: engine config, trigger levels, `TickEntryManager`, backtest simulator |
-| `data_providers/` | Provider plugin system: Kite, Upstox, YFinance; shared `MarketDataService` |
+| `brokers/clients.py` | `KiteBrokerClient`, `UpstoxBrokerClient` |
+| `brokers/base.py` | `BrokerClient` ABC; `OrderResult`, `Quote`, `OrderRequest`, `OrderStatus` |
+| `tick_entry/` | Tick-based entry: engine config, trigger levels, `TickEntryManager`, backtest simulator |
+| `data_providers/` | Provider plugin system: Kite, Upstox, YFinance; `MarketDataService` |
 | `data_providers/kite_ticker.py` | KiteConnect WebSocket manager; `arm_breakout`, `get_ltp`, singleton helpers |
-| `signal_scoring.py` | Ranking scores; `evaluate_symbol_signal`, `rank_candidates` |
+| `signal_scoring.py` | `evaluate_symbol_signal`, `rank_candidates` |
 | `strategy.py` | All strategy signal functions |
 | `indicators.py` | `compute_atr`, `compute_rsi`, `compute_vwap` |
 | `risk_manager.py` | `position_size`, `atr_position_size`, `atr_stop_from_value`, `update_trailing_stop` |
 | `config.py` | Runtime config model, defaults, `get_runtime_config()` |
 | `config/config.runtime.yaml` | Local runtime overrides |
+| **Web layer** | |
+| `web/server.py` | FastAPI app; mounts routes; starts uvicorn in daemon thread; `_lifespan` shutdown hook |
+| `web/state.py` | Thread-safe shared state singleton: `_context`, `_log_ring`, `_ws_clients`, `_active_warnings`, `_market_intel`; `snapshot()` serialises all live state for the browser; two threading events: `_stop_event` (session) and `_server_exit_event` (process) |
+| `web/routes/config.py` | `POST /api/configure`, `/api/start`, `/api/stop`, `/api/reset`, `/api/backtest`, `/api/backtest/cancel`; backtest `_summarise` with regime analytics + failure analysis; 5 override endpoints |
+| `web/routes/session.py` | `GET /api/status`, `/api/state`, `/api/indices` (NIFTY/SENSEX/VIX), `/api/fno-data`, `/api/warnings/history` |
+| `web/core/warning_engine.py` | Advisory warning engine: 8 guard functions (VIX, IV, VWAP breadth, trend, time, risk, options, data freshness); `compute_signal_quality_score` (0–100); `_build_market_intel`; 200-entry warning ring buffer |
+| `web/static/index.html` | Single-page web UI: configure form, dashboard, backtest running + results views; WebSocket event handler; all JS inline |
 | `state/` | Runtime state persistence: positions, trade counts, regime cache |
-| `state/trade_store/` | Trade and order-audit records |
+| `state/trade_store/` | Trade records and order-audit trail |
 | `logs/` | Session logs |
 | `Results/BackTest/` | Backtest output: summary, trades CSV, equity CSV |
 | `tests/unit/` | Unit test suite |
+
+---
+
+## Web UI & Intelligence Layer
+
+### Server lifecycle (`main.py` + `web/server.py`)
+
+`main.py` starts FastAPI/uvicorn in a **daemon thread**. The main thread blocks on `_server_exit_event` (set only by Ctrl+C). Session stop/reconfigure do not exit the process — the server stays alive between sessions.
+
+Two threading events in `web/state.py`:
+
+| Event | Set by | Purpose |
+| --- | --- | --- |
+| `_stop_event` | `POST /api/stop`, Ctrl+C | Signals the trading loop to exit |
+| `_server_exit_event` | Ctrl+C only | Signals main thread to exit the process |
+
+### Thread-safe state (`web/state.py`)
+
+`TradingContext` is held in a module-level singleton behind `threading.Lock()`. `snapshot()` serialises all live state (positions, trade book, session, risk, warnings, market_intel) under the lock. WebSocket clients each get an `asyncio.Queue`; log pushes and broadcasts use `call_soon_threadsafe` to cross the thread boundary safely.
+
+### Warning engine (`web/core/warning_engine.py`)
+
+Called every scan cycle from `orchestration/session.py` when in web mode. All guards are **advisory only** — they never block trading.
+
+| Guard | Triggers on |
+| --- | --- |
+| VIX | > 22 critical, 18–22 warning, < 12 info |
+| IV expansion | > 25%/15m expansion, < −20%/15m crush, > 85th percentile |
+| VWAP breadth | ≥ 70% symbols below VWAP |
+| Trend | Choppy ADX + mixed signals |
+| Time | Entry cutoff < 15 min, lunch zone, opening 15 min, late OTM risk |
+| Risk | Consecutive losses, daily loss approaching limit |
+| Options | Late expiry, high cost ratio, spread warning |
+| Data freshness | Stale symbol snapshots |
+
+Signal quality score (0–100) combines: VWAP alignment (20 pts), EMA alignment (15 pts), ADX strength (15 pts), signal score distribution (20 pts), IV stability (15 pts), VIX environment (15 pts).
+
+### Bot override controls (`web/routes/config.py`)
+
+Five REST endpoints + runtime state flags in `session_runtime_state`:
+
+| Endpoint | Flag set | Effect |
+| --- | --- | --- |
+| `POST /api/override/pause` | `override_pause_entries = True` | Blocks new entries; existing positions unchanged |
+| `POST /api/override/resume` | both flags cleared | Normal operation |
+| `POST /api/override/safe_mode` | both flags + position tightening | Moves stops to breakeven, halves targets, activates trailing; auto-stops when flat |
+| `POST /api/override/emergency_exit` | closes all positions + pause | Immediate market-price exit of all positions |
+| `GET /api/override/status` | — | Returns `{paused, safe_mode}` |
+
+Safe mode tightening is applied once per position in `orchestration/session.py → _apply_safe_mode_tightening()` using the `_safe_mode_tightened` per-position flag to avoid re-applying on subsequent cycles.
+
+### Trade explainability (`why_this_trade` WS event)
+
+After each successful entry in `orchestration/session.py`, a `why_this_trade` WebSocket event is broadcast containing: symbol, side, entry_price, qty, confidence_pct, strategy, reasons_ok (conditions met), reasons_warn (cautions noted), signal_quality (score + label + breakdown), and analytics snapshot.
+
+### P&L fields
+
+Every closed trade carries three P&L values:
+
+| Field | Meaning |
+| --- | --- |
+| `pnl` | Gross P&L before transaction costs |
+| `estimated_charges` | Brokerage + STT + exchange fees + slippage model |
+| `net_pnl` | `pnl − estimated_charges` |
+
+All trade tables in the UI (live, backtest running, backtest results) show all three. Backtest summary tiles include `total_gross_pnl`, `total_charges`, and `total_net_pnl`.
+
+### Backtest analytics (`web/routes/config.py → _summarise`)
+
+`_compute_regime_analytics(trades_df, capital)` — groups closed trades into 6 time-of-day sessions (Opening Rush, Pre-Noon, Lunch, Post-Lunch, Afternoon, Closing) and by exit reason. Returns win%, net P&L, avg P&L per bucket.
+
+`_compute_failure_analysis(trades_df)` — computes: max consecutive losses/wins, worst loss cluster (P&L + length), best win run (P&L + length), worst hour, loss concentration % (% of total losses in the worst 20% of losing trades).
 
 ---
 
@@ -295,19 +379,15 @@ All `engine_defaults` values can be changed in `config.runtime.yaml` without tou
 ## Running the project
 
 ```powershell
-# Live or paper session
-run_main.bat
-# or
+# Start the web UI (all-in-one: live, paper, backtest)
 venv\Scripts\python main.py
-
-# Interactive backtest
-run_backtest.bat
-# or
-venv\Scripts\python backtesting.py
+# then open http://localhost:8000 in your browser
 
 # Unit tests
 venv\Scripts\python -m pytest
 ```
+
+`backtesting.py` can still be run directly for scripted/headless backtest workflows, but the web UI is the recommended interface.
 
 ---
 

@@ -1,5 +1,5 @@
 """
-FastAPI web server for the Zerodha Algo browser UI.
+FastAPI web server for the Algo Trading Bot browser UI.
 
 Lifecycle
 ---------
@@ -52,7 +52,7 @@ def _build_app() -> FastAPI:
     from web.routes.ws import router as ws_router
 
     app = FastAPI(
-        title="Zerodha Algo",
+        title="Algo Trading Bot",
         version="1.0",
         lifespan=_lifespan,
         docs_url="/docs",
@@ -72,7 +72,7 @@ def _build_app() -> FastAPI:
     else:
         @app.get("/")
         async def index_placeholder():
-            return {"message": "Zerodha Algo API running. Static UI not built yet."}
+            return {"message": "Algo Trading Bot API running. Static UI not built yet."}
 
     return app
 

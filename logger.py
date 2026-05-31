@@ -14,6 +14,10 @@ def enable_web_mode() -> None:
     _web_mode = True
 
 
+def is_web_mode() -> bool:
+    return _web_mode
+
+
 LOGGER_NAME = "algo_bot"
 LOG_DIR = Path("logs")
 _session_state = {

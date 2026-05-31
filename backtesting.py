@@ -170,8 +170,11 @@ def _supported_backtest_fno_choices():
 
 
 class BacktestEngine:
-    def __init__(self, config: BacktestConfig):
+    def __init__(self, config: BacktestConfig, log_fn=None, cancel_event=None, trade_fn=None):
         self.config = config
+        self._log = log_fn or (lambda *a, **k: None)
+        self._cancel = cancel_event
+        self._on_trade = trade_fn or (lambda t: None)
         self.cash = config.capital
         self.positions = {}
         self.trades = []
@@ -377,8 +380,23 @@ class BacktestEngine:
             raise RuntimeError("No historical data fetched for the selected universe.")
 
         timeline = sorted({index for df in history.values() for index in df.index})
-        for timestamp in timeline:
+        total = len(timeline)
+        step = max(1, total // 50)
+
+        for i, timestamp in enumerate(timeline):
+            if self._cancel and self._cancel.is_set():
+                raise RuntimeError("Cancelled by user")
             self._process_timestamp(history, timestamp)
+            if i % step == 0 or i == total - 1:
+                closed = len(self.trades)
+                wins = sum(1 for t in self.trades if t.get("pnl", 0) > 0)
+                running_pnl = sum(t.get("pnl", 0) for t in self.trades)
+                win_rate = wins * 100 // closed if closed else 0
+                self._log(
+                    f"[BACKTEST] {i+1}/{total} ({(i+1)*100//total}%) | "
+                    f"Trades={closed} | WinRate={win_rate}% | "
+                    f"P&L=₹{running_pnl:,.0f}"
+                )
 
         self._close_all_open_positions(history, timeline[-1])
         return self._build_summary()
@@ -504,7 +522,7 @@ class BacktestEngine:
             positions=self.positions,
             regime_cache=self.regime_cache,
             fetch_data=fetch_data,
-            log_event=lambda *args, **kwargs: None,
+            log_event=self._log,
             logger=logger,
             traded_symbols_today=self.traded_symbols_by_day[trade_day],
             trade_counts_today=self.trade_counts_by_day[trade_day],
@@ -971,7 +989,7 @@ class BacktestEngine:
                 trailing_atr_multiplier=self.config.trailing_atr_multiplier,
             ),
             runtime_config=get_runtime_config(),
-            log_event=lambda *args, **kwargs: None,
+            log_event=self._log,
         )
 
     def _manage_intraday_options_position(self, *, symbol, latest_candle, latest_close, timestamp):
@@ -1106,6 +1124,19 @@ class BacktestEngine:
                 trade["net_pnl"] = total_net_pnl
                 trade["partial_exit_count"] = len(position.get("partial_exit_events") or [])
                 trade["partial_exit_events"] = position.get("partial_exit_events") or []
+                self._on_trade({
+                    "symbol": symbol,
+                    "side": side,
+                    "entry_time": str(trade.get("entry_time", "")),
+                    "exit_time": str(timestamp),
+                    "entry_price": round(float(entry_price), 2),
+                    "exit_price": round(float(exit_price), 2),
+                    "quantity": quantity,
+                    "pnl": round(float(total_pnl), 2),
+                    "charges": round(float(total_estimated_charges), 2),
+                    "net_pnl": round(float(total_net_pnl), 2),
+                    "exit_reason": reason,
+                })
                 break
 
     def _estimate_transaction_charges(
@@ -1255,6 +1286,9 @@ class BacktestEngine:
         total_estimated_charges = float(
             closed_trades["estimated_charges"].fillna(0.0).sum()
         ) if not closed_trades.empty and "estimated_charges" in closed_trades.columns else 0.0
+        total_gross_pnl = float(
+            closed_trades["pnl"].fillna(0.0).sum()
+        ) if not closed_trades.empty and "pnl" in closed_trades.columns else 0.0
         total_net_pnl = float(
             closed_trades["net_pnl"].fillna(closed_trades["pnl"]).sum()
         ) if not closed_trades.empty and "pnl" in closed_trades.columns else 0.0
@@ -1272,6 +1306,7 @@ class BacktestEngine:
             "win_rate_percent": win_rate,
             "max_drawdown_percent": max_drawdown,
             "total_estimated_charges": total_estimated_charges,
+            "total_gross_pnl": total_gross_pnl,
             "total_net_pnl": total_net_pnl,
             "tick_entry_fills": tick_fills,
             "equity_curve": equity_df,
