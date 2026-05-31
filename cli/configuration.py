@@ -1172,9 +1172,12 @@ def build_session_config_from_dict(data: dict) -> SessionConfig:
     intraday_options_lot_mode: str | None = None
     intraday_options_entry_mode: str | None = None
     if engine.name == "intraday_options" and atm_option_config:
-        intraday_options_lot_mode = str(
-            runtime_config.fno.intraday_options_lot_mode or "CAPITAL_BASED"
-        ).upper()
+        _lot_mode_from_form = str(data.get("intraday_options_lot_mode", "")).strip().upper()
+        intraday_options_lot_mode = (
+            _lot_mode_from_form
+            if _lot_mode_from_form in {"ONE_LOT", "CAPITAL_BASED"}
+            else str(runtime_config.fno.intraday_options_lot_mode or "CAPITAL_BASED").upper()
+        )
         intraday_options_entry_mode = str(
             runtime_config.fno.intraday_options_entry_mode or "LIVE_STAGED"
         ).upper()

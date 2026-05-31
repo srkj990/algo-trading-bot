@@ -600,7 +600,12 @@ def _build_backtest_config(data: dict):
     one_trade_per_symbol_per_day = bool(data.get("one_trade_per_symbol_per_day", True))
     top_n = max(1, int(data.get("top_n", 1)))
 
-    intraday_options_lot_mode = str(runtime_config.fno.intraday_options_lot_mode or "CAPITAL_BASED").upper()
+    _lot_mode_from_form = str(data.get("intraday_options_lot_mode", "")).strip().upper()
+    intraday_options_lot_mode = (
+        _lot_mode_from_form
+        if _lot_mode_from_form in {"ONE_LOT", "CAPITAL_BASED"}
+        else str(runtime_config.fno.intraday_options_lot_mode or "CAPITAL_BASED").upper()
+    )
     intraday_options_entry_mode = str(runtime_config.fno.intraday_options_entry_mode or "LIVE_STAGED").upper()
 
     summary_lines.extend([

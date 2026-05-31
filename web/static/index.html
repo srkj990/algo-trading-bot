@@ -183,7 +183,7 @@
       </div>
       <div>
         <label class="section-label">Capital (₹)</label>
-        <input id="c-capital" type="number" value="100000" min="1"/>
+        <input id="c-capital" type="number" value="100000" min="1" oninput="autoCapPerTrade('c')"/>
       </div>
       <div>
         <label class="section-label">Risk Style</label>
@@ -274,6 +274,16 @@
       </div>
     </div>
 
+    <!-- Lot Mode (intraday_options only) -->
+    <div id="lot-mode-wrap" class="mt-4 hidden">
+      <label class="section-label">Lot Mode</label>
+      <select id="c-lot-mode">
+        <option value="CAPITAL_BASED" selected>Capital Based (auto-size from capital)</option>
+        <option value="ONE_LOT">One Lot (fixed single contract)</option>
+      </select>
+      <p class="text-xs text-slate-400 mt-1">Capital Based: qty = floor(max_capital_per_trade / entry_price)</p>
+    </div>
+
     <!-- Strategy -->
     <div class="mt-4 grid grid-cols-2 gap-4">
       <div id="strat-mode-wrap">
@@ -298,7 +308,7 @@
     <div class="mt-4 grid grid-cols-3 gap-4">
       <div>
         <label class="section-label">Max Open Positions</label>
-        <input id="c-max-pos" type="number" value="1" min="1"/>
+        <input id="c-max-pos" type="number" value="1" min="1" oninput="autoCapPerTrade('c')"/>
       </div>
       <div>
         <label class="section-label">Max Capital / Trade (₹)</label>
@@ -366,7 +376,7 @@
       </div>
       <div>
         <label class="section-label">Capital (₹)</label>
-        <input id="b-capital" type="number" value="100000" min="1"/>
+        <input id="b-capital" type="number" value="100000" min="1" oninput="autoCapPerTrade('b')"/>
       </div>
       <div>
         <label class="section-label">Risk Style</label>
@@ -473,6 +483,16 @@
       </div>
     </div>
 
+    <!-- Lot Mode (intraday_options only, backtest) -->
+    <div id="b-lot-mode-wrap" class="mt-4 hidden">
+      <label class="section-label">Lot Mode</label>
+      <select id="b-lot-mode">
+        <option value="CAPITAL_BASED" selected>Capital Based (auto-size from capital)</option>
+        <option value="ONE_LOT">One Lot (fixed single contract)</option>
+      </select>
+      <p class="text-xs text-slate-400 mt-1">Capital Based: qty = floor(max_capital_per_trade / entry_price)</p>
+    </div>
+
     <!-- Strategy (backtest) -->
     <div class="mt-4 grid grid-cols-2 gap-4">
       <div id="b-strat-mode-wrap">
@@ -497,7 +517,7 @@
     <div class="mt-4 grid grid-cols-3 gap-4">
       <div>
         <label class="section-label">Max Open Positions</label>
-        <input id="b-max-pos" type="number" value="1" min="1"/>
+        <input id="b-max-pos" type="number" value="1" min="1" oninput="autoCapPerTrade('b')"/>
       </div>
       <div>
         <label class="section-label">Max Capital / Trade (₹)</label>
@@ -1174,6 +1194,7 @@ function onEngineChange(scope) {
     tog('strat-mode-wrap',  !IS_IOPTS(eng));
     tog('fno-both-wrap',     eng === '3' || eng === '5');
     tog('fno-structure-wrap', IS_IOPTS(eng));
+    tog('lot-mode-wrap',     IS_IOPTS(eng));
     const strats = fno ? FNO_STRATEGIES : EQ_STRATEGIES;
     populateSelect('c-strat-name',  Object.values(strats));
     populateSelect('c-strat-multi', Object.values(strats));
@@ -1184,6 +1205,7 @@ function onEngineChange(scope) {
     tog('b-fno-section',       fno);
     tog('b-strat-mode-wrap',  !IS_IOPTS(eng));
     tog('b-fno-structure-wrap', IS_IOPTS(eng));
+    tog('b-lot-mode-wrap',    IS_IOPTS(eng));
     // hide BOTH for options engines
     const undEl = document.getElementById('b-underlying');
     if (undEl) {
@@ -1230,6 +1252,12 @@ function onBStructureChange() {
   const p = document.getElementById('b-structure').value === 'PAIR';
   tog('b-fno-pair-wrap',   p);
   tog('b-fno-strike-wrap', !p);
+}
+
+function autoCapPerTrade(pfx) {
+  const cap = parseFloat(document.getElementById(pfx + '-capital').value) || 0;
+  const pos = parseInt(document.getElementById(pfx + '-max-pos').value) || 1;
+  document.getElementById(pfx + '-max-per-trade').value = Math.round(cap / pos);
 }
 
 function onStratModeChange() {
@@ -1335,6 +1363,7 @@ async function submitLive() {
     payload.fno_underlying = scope === 'BOTH' ? 'BOTH' : document.getElementById('c-underlying').value;
     payload.fno_expiry     = document.getElementById('c-expiry').value;
     if (IS_IOPTS(eng)) {
+      payload.intraday_options_lot_mode = document.getElementById('c-lot-mode').value;
       payload.fno_structure = document.getElementById('c-structure').value;
       if (payload.fno_structure === 'PAIR') {
         payload.lower_pe_strike = parseInt(document.getElementById('c-lower-pe').value);
@@ -1491,6 +1520,7 @@ async function submitBacktest() {
     payload.fno_underlying = document.getElementById('b-underlying').value;
     payload.fno_expiry     = document.getElementById('b-expiry').value;
     if (IS_IOPTS(eng)) {
+      payload.intraday_options_lot_mode = document.getElementById('b-lot-mode').value;
       payload.fno_structure = document.getElementById('b-structure').value;
       if (payload.fno_structure === 'PAIR') {
         payload.lower_pe_strike = parseInt(document.getElementById('b-lower-pe').value);
