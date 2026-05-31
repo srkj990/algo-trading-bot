@@ -31,6 +31,8 @@ def should_enter_trade(
     entry_price: float | None = None,
     quantity: int | None = None,
 ) -> bool:
+    from executor import calculate_cost_aware_targets
+
     resolved_entry_price = float(entry_price if entry_price is not None else signal["latest_close"])
     resolved_quantity = int(quantity if quantity is not None else signal["quantity"])
     targets = resolve_trade_targets(
@@ -44,6 +46,41 @@ def should_enter_trade(
         trailing_atr_multiplier=float(getattr(context.config, "trailing_atr_multiplier", 0.0) or 0.0),
         engine_helper=context.engine,
     )
+
+    # For intraday_options the actual stop/target/trailing come from the engine's
+    # ATR-based adaptive levels, not from ASSET_CLASS_RISK_PROFILES percentages.
+    # Recalculate cost/profit using the real ATR-based target so the profitability
+    # check isn't gated on a percentage that never matches the actual exit level.
+    if context.engine.name == "intraday_options" and hasattr(context.engine, "get_trend_adaptive_level_spec"):
+        level_spec = context.engine.get_trend_adaptive_level_spec(
+            entry_price=resolved_entry_price,
+            side=str(signal.get("signal") or "BUY"),
+            atr=float(signal.get("atr") or 0.0),
+            signal_score=float(signal.get("score", 0.5) or 0.5),
+            analytics=signal.get("analytics") or {},
+            premium_volatility_distance=float(signal.get("premium_volatility_distance") or 0.0),
+            risk_style_name=context.config.risk_style_name,
+        )
+        real_target = float(level_spec["level3_target"])
+        real_stop = float(level_spec["stop_loss_price"])
+        atr_targets = calculate_cost_aware_targets(
+            entry_price=resolved_entry_price,
+            quantity=resolved_quantity,
+            asset_class="INTRADAY_OPTIONS",
+            risk_profile=str(context.config.risk_style_name),
+            signal_strength=float(signal.get("score", 0.5) or 0.5),
+            side=str(signal.get("signal") or "BUY"),
+        )
+        # Substitute ATR-based stop and target for the cost-ratio check
+        direction = 1.0 if str(signal.get("signal") or "BUY").upper() == "BUY" else -1.0
+        gross = abs(real_target - resolved_entry_price) * resolved_quantity
+        costs = float(atr_targets["expected_costs"])
+        targets["stop_loss"] = real_stop
+        targets["target"] = real_target
+        targets["is_profitable"] = (gross - costs) > 0
+        targets["expected_gross_profit"] = gross
+        targets["expected_net_profit"] = gross - costs
+        targets["cost_to_profit_ratio"] = costs / gross if gross > 0 else 0.0
 
     signal["asset_class"] = targets["asset_class"]
     signal["cost_aware_targets"] = targets

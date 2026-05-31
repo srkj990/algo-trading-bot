@@ -329,3 +329,39 @@ CONSERVATIVE cuts losses faster (tighter stop, shorter target). AGGRESSIVE lets 
 
 ### Commit
 `fix: apply risk style scaling to intraday_options stop/target/trailing levels`
+
+---
+
+## [2026-05-31] CONSERVATIVE risk style blocks more intraday_options entries than expected
+
+### Symptom
+Switching to CONSERVATIVE risk style produced significantly fewer trades than BALANCED or AGGRESSIVE. Risk style is supposed to affect exit levels and position sizing, not entry frequency.
+
+### Root Cause
+`orchestration/signal_workflow.py:should_enter_trade()` calls `resolve_trade_targets()` which calls `calculate_cost_aware_targets()` using `ASSET_CLASS_RISK_PROFILES["INTRADAY_OPTIONS"][risk_style_name]`. For CONSERVATIVE the profile has `target_percent=12%` vs BALANCED `15%`.
+
+A smaller target percentage → smaller expected gross profit → the fixed transaction costs represent a larger fraction → `cost_to_profit_ratio` exceeds `intraday_options_max_entry_cost_ratio=0.20` for more trades → entry is blocked.
+
+But the **actual** target at runtime is ATR-based (from `get_trend_adaptive_level_spec()`), not a percentage. The profitability check was using a profile percentage (12%) that has no relation to the actual exit price the trade will use (ATR × 2.0 at CONSERVATIVE scaling ≈ ₹10 on a ₹180 entry = 5.5%).
+
+### Fix
+**`orchestration/signal_workflow.py` — `should_enter_trade()`**
+
+For `intraday_options`, after `resolve_trade_targets()` computes cost metadata, recalculate `is_profitable`, `cost_to_profit_ratio`, `expected_gross_profit`, `expected_net_profit` using the real ATR-based target from `get_trend_adaptive_level_spec()`:
+```python
+level_spec = context.engine.get_trend_adaptive_level_spec(
+    entry_price=..., atr=..., analytics=..., risk_style_name=..., ...
+)
+real_target = level_spec["level3_target"]
+gross = abs(real_target - entry_price) * quantity
+targets["is_profitable"] = (gross - costs) > 0
+targets["cost_to_profit_ratio"] = costs / gross
+```
+
+This means the entry filter now uses the same target the trade will actually aim for, so CONSERVATIVE entries are evaluated correctly against their real ATR-based profit potential — not a stale profile percentage.
+
+### Files Changed
+- `orchestration/signal_workflow.py`
+
+### Commit
+`fix: use ATR-based target in should_enter_trade profitability check for intraday_options`
