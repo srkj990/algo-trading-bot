@@ -199,15 +199,27 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         signal_score,
         analytics,
         premium_volatility_distance=None,
+        risk_style_name="BALANCED",
     ):
+        from config import ASSET_CLASS_RISK_PROFILES
         regime = self._runner_regime_label(analytics)
         base_atr = max(float(atr or 0.0), float(entry_price) * 0.015)
         normalized_score = min(1.0, max(0.0, float(signal_score or 0.0)))
         conviction = 1.0 + (normalized_score * self._adaptive_conviction_score_weight)
 
-        stop_multiplier = self._adaptive_stop[regime]
-        target_multiplier = self._adaptive_target[regime]
-        trailing_multiplier = self._adaptive_trailing[regime]
+        _profiles = ASSET_CLASS_RISK_PROFILES["INTRADAY_OPTIONS"]
+        _style = str(risk_style_name or "BALANCED").upper()
+        if _style not in _profiles:
+            _style = "BALANCED"
+        _base = _profiles["BALANCED"]
+        _chosen = _profiles[_style]
+        sl_scale = float(_chosen["sl_percent"]) / float(_base["sl_percent"])
+        target_scale = float(_chosen["target_percent"]) / float(_base["target_percent"])
+        trailing_scale = float(_chosen["trailing_percent"]) / float(_base["trailing_percent"])
+
+        stop_multiplier = self._adaptive_stop[regime] * sl_scale
+        target_multiplier = self._adaptive_target[regime] * target_scale
+        trailing_multiplier = self._adaptive_trailing[regime] * trailing_scale
 
         stop_distance = max(float(entry_price) * self._adaptive_min_stop_pct, base_atr * stop_multiplier)
         target_distance = max(float(entry_price) * self._adaptive_min_target_pct, base_atr * target_multiplier * conviction)
@@ -287,6 +299,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         order_product,
         premium_volatility_distance=None,
         extra_fields=None,
+        risk_style_name="BALANCED",
     ):
         level_spec = self.get_trend_adaptive_level_spec(
             entry_price=entry_price,
@@ -295,6 +308,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             signal_score=signal_score,
             analytics=analytics,
             premium_volatility_distance=premium_volatility_distance,
+            risk_style_name=risk_style_name,
         )
         trailing_stop = float(level_spec["stop_loss_price"])
         exit_quantities = self._build_runner_lot_plan(quantity, lot_size)

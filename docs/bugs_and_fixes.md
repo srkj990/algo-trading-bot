@@ -276,3 +276,56 @@ Both guards mirror the exact logic in `session.py` so backtest and live results 
 
 ### Commit
 `fix: enforce consecutive_loss_limit and daily_max_loss_pct in backtest` (commit 5bdc614)
+
+---
+
+## [2026-05-31] intraday_options risk style has no effect — BALANCED and AGGRESSIVE produce identical P&L
+
+### Symptom
+Backtests run with BALANCED vs AGGRESSIVE risk style for `intraday_options` engine produced identical P&L. Switching risk style had no observable effect on stop distance, target distance, or trailing behaviour.
+
+### Root Cause
+`engines/intraday_options.py:get_trend_adaptive_level_spec()` uses class-level `_adaptive_stop`, `_adaptive_target`, `_adaptive_trailing` dicts populated from `config.runtime.yaml` (`adaptive_stop_multiplier_normal`, etc.). These yaml values are identical regardless of which risk style is selected.
+
+`build_trend_adaptive_position()` was called without a `risk_style_name` parameter from both the backtest path (`backtesting.py:920`) and the live entry path (`orchestration/session.py:1454`). The `risk_style_name` only reached `calculate_cost_aware_targets()` inside `resolve_trade_targets()`, which is used purely for cost/profit metadata — its stop/target/trailing outputs are entirely overwritten by `build_trend_adaptive_position()`.
+
+Result: `ASSET_CLASS_RISK_PROFILES["INTRADAY_OPTIONS"]["BALANCED/AGGRESSIVE"]["sl_percent"]` values were never applied to the actual stop, target, or trailing levels.
+
+### Fix
+**`engines/intraday_options.py` — `get_trend_adaptive_level_spec()`**
+
+Added `risk_style_name="BALANCED"` parameter. Computes per-axis scale factors relative to the BALANCED baseline using `ASSET_CLASS_RISK_PROFILES["INTRADAY_OPTIONS"]`:
+```python
+sl_scale = chosen["sl_percent"] / base["sl_percent"]          # AGGRESSIVE: 12/10 = 1.2
+target_scale = chosen["target_percent"] / base["target_percent"]  # AGGRESSIVE: 20/15 = 1.333
+trailing_scale = chosen["trailing_percent"] / base["trailing_percent"]  # AGGRESSIVE: 6/4.8 = 1.25
+stop_multiplier = self._adaptive_stop[regime] * sl_scale
+target_multiplier = self._adaptive_target[regime] * target_scale
+trailing_multiplier = self._adaptive_trailing[regime] * trailing_scale
+```
+
+**`engines/intraday_options.py` — `build_trend_adaptive_position()`**
+Added `risk_style_name="BALANCED"` parameter and passes it through to `get_trend_adaptive_level_spec()`.
+
+**`orchestration/session.py`**
+Passes `risk_style_name=cfg.risk_style_name` to `build_trend_adaptive_position()` at the live entry path.
+
+**`backtesting.py`**
+Passes `risk_style_name=self.config.risk_style_name` to `build_trend_adaptive_position()` at the backtest entry path.
+
+### Effect
+| Style | Stop (NORMAL) | Target (NORMAL) | Trailing (NORMAL) |
+|-------|--------------|-----------------|-------------------|
+| CONSERVATIVE | ATR × 1.76 | ATR × 2.00 | ATR × 0.583 |
+| BALANCED | ATR × 2.20 | ATR × 2.50 | ATR × 0.700 |
+| AGGRESSIVE | ATR × 2.64 | ATR × 3.33 | ATR × 0.875 |
+
+CONSERVATIVE cuts losses faster (tighter stop, shorter target). AGGRESSIVE lets winners run further and accepts wider individual losses. The yaml regime-adaptive multipliers remain the calibration base; the risk style scales them proportionally.
+
+### Files Changed
+- `engines/intraday_options.py`
+- `orchestration/session.py`
+- `backtesting.py`
+
+### Commit
+`fix: apply risk style scaling to intraday_options stop/target/trailing levels`

@@ -1469,6 +1469,7 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
                 candidate.get("premium_volatility_distance") or 0.0
             ),
             extra_fields=position_extra_fields,
+            risk_style_name=cfg.risk_style_name,
         )
     elif engine.name in {"intraday_equity", "delivery_equity"} and hasattr(engine, "build_trend_adaptive_position"):
         context.positions[symbol] = engine.build_trend_adaptive_position(

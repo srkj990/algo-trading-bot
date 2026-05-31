@@ -945,6 +945,7 @@ class BacktestEngine:
                             "realized_pnl_parts": 0.0,
                             "realized_charges_parts": 0.0,
                         },
+                        risk_style_name=self.config.risk_style_name,
                     )
                 except ValueError:
                     continue
