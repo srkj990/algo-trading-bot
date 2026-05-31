@@ -717,7 +717,51 @@ class BacktestEngine:
         )
         return daily.dropna()
 
+    def _consecutive_losses_today(self, trade_day) -> int:
+        day_str = trade_day.isoformat()
+        closed_today = [
+            t for t in self.trades
+            if t.get("exit_time") and str(t["exit_time"])[:10] == day_str
+        ]
+        closed_today.sort(key=lambda t: str(t["exit_time"]), reverse=True)
+        count = 0
+        for t in closed_today:
+            if float(t.get("net_pnl", t.get("pnl", 0)) or 0) < 0:
+                count += 1
+            else:
+                break
+        return count
+
     def _enter_ranked_candidates(self, ranked_candidates, timestamp, history=None):
+        trade_day = pd.Timestamp(timestamp).date()
+        risk_cfg = get_runtime_config().risk_controls
+
+        # Consecutive loss guard — mirrors session.py risk check
+        consec_limit = int(risk_cfg.consecutive_loss_limit or 0)
+        if consec_limit > 0 and self._consecutive_losses_today(trade_day) >= consec_limit:
+            self._log(
+                f"[RISK] Consecutive loss limit reached ({consec_limit}) — entries blocked",
+                "warning",
+            )
+            return
+
+        # Daily max loss guard — mirrors session.py risk check
+        daily_max_loss_pct = float(risk_cfg.daily_max_loss_pct or 0)
+        if daily_max_loss_pct > 0:
+            day_str = trade_day.isoformat()
+            day_pnl = sum(
+                float(t.get("net_pnl", t.get("pnl", 0)) or 0)
+                for t in self.trades
+                if t.get("exit_time") and str(t["exit_time"])[:10] == day_str
+            )
+            starting_equity = float(self.config.capital)
+            if day_pnl < -(starting_equity * daily_max_loss_pct):
+                self._log(
+                    f"[RISK] Daily max loss exceeded ({daily_max_loss_pct*100:.1f}%) — entries blocked",
+                    "warning",
+                )
+                return
+
         for candidate in ranked_candidates[: self.config.top_n]:
             if len(self.positions) >= self.config.max_positions:
                 break

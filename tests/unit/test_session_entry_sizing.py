@@ -81,7 +81,7 @@ class SessionEntrySizingTests(unittest.TestCase):
             log_event=Mock(),
             place_order=Mock(
                 return_value=SimpleNamespace(
-                    filled_quantity=150,
+                    filled_quantity=975,
                     average_price=100.0,
                     order_id="TEST-2",
                 )
@@ -136,8 +136,10 @@ class SessionEntrySizingTests(unittest.TestCase):
             )
 
         self.assertTrue(entered)
-        self.assertEqual(context.place_order.call_args.args[1], 150)
-        self.assertEqual(context.positions["NFO:TESTCE"]["quantity"], 150)
+        # qty = floor(max_capital_per_trade / entry_price) rounded to lot size
+        # floor(100000 / 100) = 1000 -> (1000 // 75) * 75 = 975
+        self.assertEqual(context.place_order.call_args.args[1], 975)
+        self.assertEqual(context.positions["NFO:TESTCE"]["quantity"], 975)
 
     def test_intraday_options_one_lot_mode_overrides_capital_based_qty(self) -> None:
         engine = IntradayOptionsEngine(sl_percent=10.0, target_percent=20.0, trailing_percent=7.5)
