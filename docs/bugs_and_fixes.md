@@ -179,3 +179,37 @@ Key effect: tighter trailing (ATR×0.7) vs activation (ATR×1.0) means trailing 
 
 ### Commit
 `feat: add lot mode selector and auto capital-per-trade to UI` (commit 9e05110)
+
+---
+
+## [2026-05-31] Zero trades on small capital — max_symbol_allocation blocks intraday_options
+
+### Symptom
+Backtest `backtest_intraday_options_20260531_203440` with capital=₹20,000: **0 trades executed** despite valid signals.
+
+### Root Cause
+`engines/intraday_options.py:apply_entry_allocation_limit()` called `super()` which applies `max_symbol_allocation: 0.2` (20% of capital cap per symbol) **on top of** the already-capital-bounded quantity.
+
+Execution chain for ₹20,000 capital, entry=₹210:
+1. `qty = int(20000 / 210) = 95` (capital-bounded)
+2. `super().apply_entry_allocation_limit()`: `max_symbol_capital = 20000 × 0.2 = ₹4,000`
+3. `symbol_cap_qty = int(4000 / 210) = 19`
+4. `capped = min(95, 19) = 19`
+5. Lot rounding: `(19 // 75) * 75 = 0` → **trade skipped**
+
+Blocking condition: `entry_price > capital × max_symbol_allocation / lot_size` → `entry_price > 20000 × 0.2 / 75 = ₹53.33` — triggered by every normal premium entry.
+
+### Fix
+`engines/intraday_options.py:apply_entry_allocation_limit()` — removed `super()` call. Capital is already bounded by `max_capital_per_trade` before this method is called; the `max_symbol_allocation` cap is redundant and harmful for lot-based contracts. Now only lot-size rounding is applied:
+```python
+lot_size = get_contract_lot_size(symbol)
+return (quantity // lot_size) * lot_size
+```
+
+Minimum capital to trade = `lot_size × entry_price` (e.g. ₹75 × ₹200 = ₹15,000 for one NIFTY lot at ₹200 premium).
+
+### Files Changed
+- `engines/intraday_options.py`
+
+### Commit
+`fix: remove max_symbol_allocation cap from intraday_options apply_entry_allocation_limit` (commit 09999ae)
