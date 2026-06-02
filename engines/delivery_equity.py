@@ -21,10 +21,11 @@ class DeliveryEquityEngine(TradingEngine):
     max_hold_days = int(settings["max_hold_days"])
     supported_strategies = {
         "1": "MA",
-        "2": "RSI",
-        "3": "VWAP",
-        "4": "BREAKOUT",
-        "5": "ORB",
+        "2": "MA_LONG",
+        "3": "RSI",
+        "4": "VWAP",
+        "5": "BREAKOUT",
+        "6": "ORB",
     }
     market_open = time(9, 15)
     market_close = time(15, 30)
@@ -68,7 +69,10 @@ class DeliveryEquityEngine(TradingEngine):
             }
 
         current_time = now.time()
-        if current_time < self.market_open or current_time >= self.market_close:
+        # Daily candles from data providers carry a midnight timestamp (00:00).
+        # Treat those as valid delivery-session bars so the backtest can scan/enter.
+        is_daily_bar = current_time == time(0, 0)
+        if not is_daily_bar and (current_time < self.market_open or current_time >= self.market_close):
             return {
                 "manage_positions": False,
                 "allow_entries": False,

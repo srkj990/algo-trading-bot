@@ -314,6 +314,16 @@ def refresh_broker_token(broker_code=None):
     return os.environ.get(token_env_name)
 
 
+def _print_public_ip():
+    try:
+        import urllib.request
+        public_ip = urllib.request.urlopen("https://api.ipify.org", timeout=5).read().decode()
+        print(f"\nYour public IP : {public_ip}")
+        print("Add this IP to Kite developer console → App Settings → Allowed IPs if not already added.")
+    except Exception:
+        print("\n(Could not fetch public IP — check manually at https://api.ipify.org)")
+
+
 def main():
     _load_dotenv(ENV_PATH)
     print("Refreshing access token using common broker auth flow")
@@ -326,6 +336,7 @@ def main():
     )
     refresh_broker_token(broker.code)
     print("\nAccess token updated successfully in .env")
+    _print_public_ip()
 
 
 if __name__ == "__main__":

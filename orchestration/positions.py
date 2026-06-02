@@ -235,19 +235,32 @@ def execute_partial_position_exit(
     place_order: Callable[..., Any],
     transaction_cost_model_enabled: bool,
     slippage_pct_per_side: float,
+    exit_limit_price_buffer_pct: float = 0.0,
 ) -> float:
     exit_qty = normalize_partial_exit_quantity(position, exit_quantity)
     if exit_qty <= 0:
         return float(exit_price)
+    exit_side = opposite_side(position)
+    order_type = "MARKET"
+    limit_price = None
+    if exit_limit_price_buffer_pct > 0:
+        order_type = "LIMIT"
+        buffer = float(exit_price) * exit_limit_price_buffer_pct
+        if exit_side == "SELL":
+            limit_price = max(0.01, float(exit_price) - buffer)
+        else:
+            limit_price = float(exit_price) + buffer
     order_result = place_order(
-        opposite_side(position),
+        exit_side,
         exit_qty,
         position["symbol"],
         note=reason,
-        product=engine.order_product,
+        product=(position.get("order_product") or engine.order_product),
         enforce_spread_check=False,
         enforce_margin_check=False,
         entry_price=float(exit_price),
+        order_type=order_type,
+        price=limit_price,
     )
     if order_result is not None and order_result.average_price is not None:
         exit_price = float(order_result.average_price)
@@ -295,6 +308,7 @@ def close_position_symbols(
     slippage_pct_per_side: float,
     symbol_snapshots: dict[str, dict[str, Any]] | None = None,
     exit_time: datetime | None = None,
+    exit_limit_price_buffer_pct: float = 0.0,
 ) -> bool:
     changed = False
     exit_time = exit_time or datetime.now()
@@ -304,15 +318,24 @@ def close_position_symbols(
             continue
         exit_price = get_latest_exit_price(engine, symbol, position, fetch_data, log_event, symbol_snapshots=symbol_snapshots)
         log_order_signal_banner("EXIT", build_exit_position_lines(position, exit_price, reason))
+        exit_side = opposite_side(position)
+        order_type = "MARKET"
+        limit_price = None
+        if exit_limit_price_buffer_pct > 0:
+            order_type = "LIMIT"
+            buffer = float(exit_price) * exit_limit_price_buffer_pct
+            limit_price = max(0.01, float(exit_price) - buffer) if exit_side == "SELL" else float(exit_price) + buffer
         order_result = place_order(
-            opposite_side(position),
+            exit_side,
             position_quantity(position),
             symbol,
             note=reason,
-            product=engine.order_product,
+            product=(position.get("order_product") or engine.order_product),
             enforce_spread_check=False,
             enforce_margin_check=False,
             entry_price=exit_price,
+            order_type=order_type,
+            price=limit_price,
         )
         if order_result is not None and order_result.average_price is not None:
             exit_price = float(order_result.average_price)
@@ -550,6 +573,7 @@ def force_square_off_positions(
     log_event,
     transaction_cost_model_enabled,
     slippage_pct_per_side,
+    exit_limit_price_buffer_pct: float = 0.0,
 ):
     if not positions:
         return False
@@ -560,15 +584,24 @@ def force_square_off_positions(
     for symbol, position in list(positions.items()):
         exit_price = get_latest_exit_price(engine, symbol, position, fetch_data, log_event)
         log_order_signal_banner("FORCE SQUARE OFF", build_exit_position_lines(position, exit_price, "Intraday square-off"))
+        exit_side = opposite_side(position)
+        order_type = "MARKET"
+        limit_price = None
+        if exit_limit_price_buffer_pct > 0:
+            order_type = "LIMIT"
+            buffer = float(exit_price) * exit_limit_price_buffer_pct
+            limit_price = max(0.01, float(exit_price) - buffer) if exit_side == "SELL" else float(exit_price) + buffer
         order_result = place_order(
-            opposite_side(position),
+            exit_side,
             position_quantity(position),
             symbol,
             note="Intraday square-off",
-            product=engine.order_product,
+            product=(position.get("order_product") or engine.order_product),
             enforce_spread_check=False,
             enforce_margin_check=False,
             entry_price=exit_price,
+            order_type=order_type,
+            price=limit_price,
         )
         if order_result is not None and order_result.average_price is not None:
             exit_price = float(order_result.average_price)
@@ -601,6 +634,7 @@ def manage_open_positions(
     log_event,
     transaction_cost_model_enabled,
     slippage_pct_per_side,
+    exit_limit_price_buffer_pct: float = 0.0,
 ):
     state_changed = False
     processed_pair_ids = set()
@@ -728,6 +762,7 @@ def manage_open_positions(
                     place_order,
                     transaction_cost_model_enabled,
                     slippage_pct_per_side,
+                    exit_limit_price_buffer_pct=exit_limit_price_buffer_pct,
                 )
                 if hasattr(engine, "apply_runner_partial_exit"):
                     engine.apply_runner_partial_exit(position, action, exit_price, snapshot)
@@ -773,15 +808,24 @@ def manage_open_positions(
                 f"Entry={position_entry_price(position):.2f} | Qty={position_quantity(position)}"
             )
             log_order_signal_banner("EXIT", build_exit_position_lines(position, exit_price, exit_reason))
+            _exit_side = opposite_side(position)
+            _order_type = "MARKET"
+            _limit_price = None
+            if exit_limit_price_buffer_pct > 0:
+                _order_type = "LIMIT"
+                _buf = float(exit_price) * exit_limit_price_buffer_pct
+                _limit_price = max(0.01, float(exit_price) - _buf) if _exit_side == "SELL" else float(exit_price) + _buf
             order_result = place_order(
-                opposite_side(position),
+                _exit_side,
                 position_quantity(position),
                 symbol,
                 note=f"Exit {position_side(position)} via {exit_reason}",
-                product=engine.order_product,
+                product=(position.get("order_product") or engine.order_product),
                 enforce_spread_check=False,
                 enforce_margin_check=False,
                 entry_price=exit_price,
+                order_type=_order_type,
+                price=_limit_price,
             )
             if order_result is not None and order_result.average_price is not None:
                 exit_price = float(order_result.average_price)
@@ -813,7 +857,7 @@ def manage_open_positions(
                 position_quantity(position),
                 symbol,
                 note=f"Close {position_side(position)} via {signal_exit_reason}",
-                product=engine.order_product,
+                product=(position.get("order_product") or engine.order_product),
                 enforce_spread_check=False,
                 enforce_margin_check=False,
                 entry_price=exit_price,

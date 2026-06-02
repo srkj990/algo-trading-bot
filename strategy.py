@@ -138,6 +138,26 @@ def ma_strategy(df):
     return "HOLD"
 
 
+def ma_long_strategy(df):
+    """MA50 vs MA200 crossover — suited for multi-week delivery positions."""
+    df = df.copy()
+    df["ma50"]  = df["Close"].rolling(50).mean()
+    df["ma200"] = df["Close"].rolling(200).mean()
+
+    latest = df.iloc[-1]
+    ma50  = float(latest["ma50"])
+    ma200 = float(latest["ma200"])
+
+    if pd.isna(ma50) or pd.isna(ma200):
+        return "HOLD"
+
+    if ma50 > ma200:
+        return "BUY"
+    if ma50 < ma200:
+        return "SELL"
+    return "HOLD"
+
+
 def rsi_strategy(df):
     df = df.copy()
     df["rsi"] = compute_rsi(df["Close"])
@@ -772,6 +792,8 @@ def strategy_trap_reversal(
 def _evaluate_legacy_signal(df, strategy_name):
     if strategy_name == "MA":
         signal = confirm_signal(df, ma_strategy)
+    elif strategy_name == "MA_LONG":
+        signal = confirm_signal(df, ma_long_strategy)
     elif strategy_name == "RSI":
         signal = confirm_signal(df, rsi_strategy)
     elif strategy_name == "BREAKOUT":

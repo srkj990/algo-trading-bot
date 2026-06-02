@@ -851,6 +851,9 @@ def place_order(
     resolved_price = price
     if normalized_order_type == "LIMIT" and resolved_price is None:
         resolved_price = entry_price
+    if normalized_order_type == "LIMIT" and resolved_price is not None:
+        tick = 0.05
+        resolved_price = round(round(float(resolved_price) / tick) * tick, 2)
 
     request = OrderRequest(
         symbol=symbol,

@@ -4,6 +4,50 @@ Track record of bugs found and fixes applied for audit and future reference.
 
 ---
 
+## [2026-06-03] Partial and forced-exit orders use MARKET type, reject NRML product, ignore tick rounding
+
+### Symptom
+Partial exits (runner level exits), forced square-offs, and candle-close managed exits all used `MARKET` order type and hardcoded `engine.order_product` (MIS) regardless of the actual position product. For F&O NRML positions this caused "Wrong product type" rejections. On NSE F&O, MARKET orders also rejected with "Market orders without market protection not allowed via API".
+
+Additionally, limit prices computed as `ltp × buffer` produced non-₹0.05-aligned floats, causing "Order price is not a multiple of tick size" rejections.
+
+### Fix
+**`orchestration/positions.py`** — All three position-exit paths (`execute_partial_position_exit`, `close_position_symbols`, `force_square_off_positions`, `manage_open_positions`) now:
+- Use LIMIT order with `exit_limit_price_buffer_pct` buffer when that config is > 0
+- Use `position.get("order_product") or engine.order_product` for product (respects NRML)
+
+**`executor.py`** — LIMIT price rounding to nearest ₹0.05 applied at order submission (not just in the tick-exit path).
+
+### Files Changed
+- `orchestration/positions.py` — `exit_limit_price_buffer_pct` parameter added to all exit functions
+- `executor.py` — LIMIT price auto-rounded to nearest ₹0.05 tick
+
+---
+
+## [2026-06-03] MA_LONG strategy added to delivery_equity (MA50 vs MA200 crossover)
+
+### Description
+New strategy `MA_LONG` added for `delivery_equity`. Uses MA50 / MA200 crossover — appropriate for multi-week delivery positions where short MA20/MA50 crossover is too noisy. The existing `MA` strategy (MA20/MA50) remains available.
+
+### Changes
+- `strategy.py` — `ma_long_strategy()` function; wired in `_evaluate_legacy_signal()`
+- `signal_scoring.py` — score function for `MA_LONG`
+- `engines/delivery_equity.py` — `supported_strategies` updated to include `MA_LONG` as strategy `"2"` (existing strategies renumbered)
+
+---
+
+## [2026-06-03] FormingCandlePreview — sub-1m entry via forming candle + tick LTP
+
+### Description
+New module `tick_entry/forming_candle.py`. Synthesises a partial forming candle from live WebSocket LTP and appends it to closed-candle history, then runs the engine's signal scanner with `require_closed_signal_candle=False`. Returns `FORMING_TICK` candidates if the LTP has crossed the ORB/momentum threshold and held for at least `confirm_ticks` consecutive ticks.
+
+Activation: `intraday_options` engine, `forming_tick_enabled=True`, KiteTickerManager connected. LIVE and PAPER only — not used in backtest.
+
+### Files Changed
+- `tick_entry/forming_candle.py` — new module (FormingCandlePreview class)
+
+---
+
 ## [2026-06-03] Trail-Only Exit — target activates trailing instead of closing position
 
 ### Symptom

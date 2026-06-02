@@ -16,6 +16,7 @@ A practical decision framework for selecting engines, strategies, and risk param
 8. [Key Config Knobs by Scenario](#key-config-knobs-by-scenario)
 9. [Decision Workflow](#decision-workflow)
 10. [Common Mistakes](#common-mistakes)
+11. [SL / Target / Trailing Parameters — Formulas and Examples](#sl--target--trailing-parameters--formulas-and-examples)
 
 ---
 
@@ -524,3 +525,321 @@ STEP 6 — RUN BACKTEST FIRST
 | Over-allocating to a single symbol | Max loss on one bad trade is too high | Keep `max_symbol_allocation` at default (20–25%) or lower |
 | Running options without checking IV percentile | Buying when IV is high → IV crush erases gains even if direction is right | Check `max_buy_iv_percentile`; lower it on high-VIX days |
 | Skipping paper mode before live | Surprises in order flow, fills, timing | Always run 1–2 days in paper mode when switching engine or strategy |
+
+---
+
+## SL / Target / Trailing Parameters — Formulas and Examples
+
+This section explains exactly how stop-loss, target, trailing stop, and trailing activation are calculated for each engine, with worked examples.
+
+### Glossary
+
+| Term | Meaning |
+|---|---|
+| `entry_price` | Price at which the position was filled |
+| `atr` | Average True Range of the instrument at entry time |
+| `base_atr` | `max(atr, entry_price × atr_floor_pct)` — ATR floored to avoid near-zero values |
+| `stop_distance` | Absolute rupee distance between entry and stop loss |
+| `trailing_distance` | Absolute rupee distance the trailing stop trails below best_price |
+| `trailing_activation_distance` | best_price must move this far from entry before trailing stop activates |
+| `best_price` | Highest price seen since entry (BUY) or lowest (SELL) |
+| `trailing_active` | Flag; once True, trailing stop fires on reversal |
+| `conviction` | Multiplier `1.0 + signal_score × weight` — high-scoring signals get wider targets |
+| `exit_mode` | `TRAIL_ONLY` (default): target activates trailing; `HARD_TARGET`: exit at target price |
+
+---
+
+### 1. Intraday Equity (`intraday_equity`)
+
+**Instrument**: NSE equity stocks — 1-minute candles, MIS, squareoff 15:15.
+
+**Regime classification** (determines multipliers):
+
+| Signal Score | ATR Ratio | Range Ratio | Regime |
+|---|---|---|---|
+| ≥ 0.035 OR range_ratio ≥ 0.006 | any | any | EXPANSION |
+| ≤ 0.008 AND atr_ratio ≤ 0.003 | low | low | SIDEWAYS |
+| otherwise | — | — | NORMAL |
+
+**ATR multipliers per regime** (from `config.runtime.yaml`):
+
+| | Stop | Target | Trailing |
+|---|---|---|---|
+| SIDEWAYS | 1.6× | 1.1× | 0.8× |
+| NORMAL | 1.4× | 1.6× | 1.0× |
+| EXPANSION | 1.4× | 2.2× | 1.15× |
+
+**Formulas**:
+```
+base_atr   = max(atr, entry_price × 0.0015)
+conviction = 1.0 + min(1.0, signal_score) × 0.5
+
+stop_distance     = max(entry_price × 0.0025,  base_atr × stop_mult)
+target_distance   = max(entry_price × 0.0045,  base_atr × target_mult × conviction)
+trailing_distance = max(entry_price × 0.002,   base_atr × trail_mult)
+trailing_distance = max(trailing_distance, volatility_distance)   [market-breadth adjusted]
+
+For BUY:
+  stop_loss    = entry_price − stop_distance
+  target       = entry_price + target_distance × 1.6   [level3]
+  trailing_stop = stop_loss   (starts at SL, ratchets up)
+
+trailing_activation_distance = max(trailing_distance, level1_distance × 0.8)
+  where level1_distance = target_distance × 0.5
+```
+
+**Worked example** — SBIN.NS BUY entry ₹500, ATR = ₹5, signal_score = 0.025 → NORMAL regime:
+```
+base_atr   = max(5, 500 × 0.0015) = max(5, 0.75) = 5.0
+conviction = 1.0 + 0.025 × 0.5 = 1.0125
+
+stop_distance     = max(500 × 0.0025, 5.0 × 1.4) = max(1.25, 7.0) = 7.0
+target_distance   = max(500 × 0.0045, 5.0 × 1.6 × 1.0125) = max(2.25, 8.1) = 8.1
+trailing_distance = max(500 × 0.002, 5.0 × 1.0) = max(1.0, 5.0) = 5.0
+
+stop_loss    = 500 − 7.0  = ₹493.00
+target       = 500 + 8.1 × 1.6 = ₹512.96   [level3 = target_distance × 1.6]
+trailing_stop starts at ₹493.00
+
+trailing_activation_distance = max(5.0, 4.05 × 0.8) = max(5.0, 3.24) = 5.0
+→ trailing activates once best_price reaches ₹505.00 (entry + 5.0)
+
+After activation: trailing ratchets to best_price − 5.0 on every candle close.
+With TRAIL_ONLY exit_mode: when price hits ₹512.96 target, trailing continues
+  (no exit). Position exits only when price drops to trailing_stop.
+```
+
+**Partial levels** (for display / runner reference):
+```
+level1_target = entry + target_distance × 0.5 = ₹504.05
+level2_target = entry + target_distance       = ₹508.10
+level3_target = entry + target_distance × 1.6 = ₹512.96
+```
+
+---
+
+### 2. Delivery Equity (`delivery_equity`)
+
+**Instrument**: NSE equity stocks — daily candles, CNC, hold up to 5 days.
+
+**Regime classification**:
+
+| Condition | Regime |
+|---|---|
+| score ≥ 0.035 OR swing_range_ratio ≥ 0.035 OR atr_ratio ≥ 0.025 | EXPANSION |
+| score ≤ 0.010 AND range_ratio ≤ 0.015 AND atr_ratio ≤ 0.012 | SIDEWAYS |
+| otherwise | NORMAL |
+
+**ATR multipliers per regime**:
+
+| | Stop | Target | Trailing |
+|---|---|---|---|
+| SIDEWAYS | 2.4× | 1.6× | 1.2× |
+| NORMAL | 2.0× | 2.6× | 1.5× |
+| EXPANSION | 1.8× | 3.4× | 1.8× |
+
+**Formulas**:
+```
+base_atr   = max(atr, entry_price × 0.006)
+conviction = 1.0 + min(1.0, signal_score) × 0.75
+
+stop_distance     = max(entry_price × 0.018, base_atr × stop_mult)
+target_distance   = max(entry_price × 0.040, base_atr × target_mult × conviction)
+trailing_distance = max(entry_price × 0.012, base_atr × trail_mult)
+trailing_distance = max(trailing_distance, swing_range_distance × 1.2)
+
+For BUY:
+  stop_loss    = entry_price − stop_distance
+  target       = entry_price + target_distance × 1.5   [level3]
+  trailing_stop = stop_loss
+
+Special trailing activation (delivery only):
+  trailing_activation_distance = max(target_distance, atr × 0.5, 0.01)
+  → trailing only activates once price reaches the target level (reference only;
+    with TRAIL_ONLY the target is a floor, not a hard exit)
+```
+
+**Worked example** — INFY.NS BUY entry ₹1500, ATR = ₹30, signal_score = 0.02 → NORMAL regime:
+```
+base_atr   = max(30, 1500 × 0.006) = max(30, 9) = 30
+conviction = 1.0 + 0.02 × 0.75 = 1.015
+
+stop_distance     = max(1500 × 0.018, 30 × 2.0) = max(27, 60) = 60.0
+target_distance   = max(1500 × 0.040, 30 × 2.6 × 1.015) = max(60, 79.2) = 79.2
+trailing_distance = max(1500 × 0.012, 30 × 1.5) = max(18, 45) = 45.0
+
+stop_loss    = 1500 − 60 = ₹1440.00
+target       = 1500 + 79.2 × 1.5 = ₹1618.80   [level3]
+trailing_stop starts at ₹1440.00
+
+trailing_activation_distance = max(79.2, 15, 0.01) = 79.2
+→ trailing activates only once best_price reaches ₹1579.20 (entry + 79.2)
+
+With TRAIL_ONLY: when price hits ₹1618.80, trailing continues above that level.
+  At best_price ₹1650, trailing_stop = 1650 − 45 = ₹1605.00. Exit on reversal.
+```
+
+**Note**: `delivery_equity` always used trail-only internally (`include_target=False` in evaluate_exit). The `exit_mode` flag has no additional effect here.
+
+---
+
+### 3. Intraday Options (`intraday_options`)
+
+**Instrument**: NSE/NFO ATM index options — 1-minute candles, MIS, squareoff 15:15.
+
+**All distances are relative to the option premium price** (not underlying price).
+
+**Regime classification** (from analytics volatility_regime field):
+
+| volatility_regime | Stop | Target | Trailing |
+|---|---|---|---|
+| SIDEWAYS | 2.0× | 1.1× | 0.8× |
+| NORMAL | 1.7× | 1.7× | 1.0× |
+| EXPANSION | 1.7× | 2.3× | 1.15× |
+
+**Risk-style scaling** (CONSERVATIVE / BALANCED / AGGRESSIVE):
+
+The ATR multipliers above are further scaled by the risk style's `sl_percent`, `target_percent`, `trailing_percent` relative to BALANCED values. BALANCED = 10%/20%/7.5% → multiplier = 1.0×.
+
+**Formulas**:
+```
+base_atr   = max(atr, entry_price × 0.015)   [premium ATR, floored at 1.5%]
+conviction = 1.0 + min(1.0, signal_score) × 0.5
+
+stop_distance     = max(entry_price × 0.05,   base_atr × stop_mult × risk_scale)
+target_distance   = max(entry_price × 0.08,   base_atr × target_mult × conviction × risk_scale)
+trailing_distance = max(entry_price × 0.035,  base_atr × trail_mult × risk_scale)
+trailing_distance = max(trailing_distance, premium_volatility_distance)
+
+For BUY_CE / BUY_PE:
+  stop_loss    = entry_price − stop_distance
+  target       = entry_price + target_distance × 1.6   [level3]
+  trailing_stop = stop_loss
+
+trailing_activation_distance = max(trailing_distance, level1_distance × 0.8)
+  where level1_distance = target_distance × 0.5
+```
+
+**Worked example** — NIFTY CE BUY at premium ₹80, ATR = ₹6, signal_score = 0.04 → NORMAL, BALANCED:
+```
+base_atr   = max(6, 80 × 0.015) = max(6, 1.2) = 6.0
+conviction = 1.0 + 0.04 × 0.5 = 1.02
+
+stop_distance     = max(80 × 0.05, 6 × 1.7) = max(4.0, 10.2) = 10.2
+target_distance   = max(80 × 0.08, 6 × 1.7 × 1.02) = max(6.4, 10.4) = 10.4
+trailing_distance = max(80 × 0.035, 6 × 1.0) = max(2.8, 6.0) = 6.0
+
+stop_loss    = 80 − 10.2 = ₹69.80
+target       = 80 + 10.4 × 1.6 = ₹96.64   [level3]
+trailing_stop starts at ₹69.80
+
+level1_target = 80 + 10.4 × 0.5 = ₹85.20
+level2_target = 80 + 10.4       = ₹90.40
+trailing_activation_distance = max(6.0, 5.2 × 0.8) = max(6.0, 4.16) = 6.0
+→ trailing activates once best_price ≥ ₹86.00 (entry + 6)
+
+With TRAIL_ONLY and multi-lot runner exits:
+  Level1 hit (₹85.20): 30% lots exit, stop moves to entry (breakeven)
+  Level2 hit (₹90.40): 40% lots exit, stop tightens, target → sentinel (1e9)
+    → trailing now ratchets freely above ₹90.40
+  Remaining 30% exits when price drops to trailing_stop
+```
+
+**Fixed-premium runner exits** (when `runner_partial_exit_lot_threshold` exceeded):
+```
+runner_level1_premium_target_pct: 8.0  → level1 = entry + entry × 8% = ₹86.40
+runner_level2_premium_target_pct: 15.0 → level2 = entry + entry × 15% = ₹92.00
+```
+
+---
+
+### 4. Futures / Options Equity and Intraday Futures
+
+**Instrument**: NRML or MIS F&O contracts.
+
+These engines use `build_position()` from `engines/common.py` — the simpler percentage-based formula (no adaptive regime). The session risk style sets the ATR multipliers.
+
+**Formulas**:
+```
+resolve_trade_targets():
+  stop_distance     = atr × atr_stop_multiplier
+  stop_loss (BUY)   = entry_price − stop_distance
+  target    (BUY)   = entry_price + stop_distance × target_risk_reward
+  trailing_distance = atr × trailing_atr_multiplier
+  trailing_stop     = stop_loss (starts at SL)
+  trailing_activation_distance = max(trailing_distance, stop_distance)
+
+build_position() [percentage-based fallback]:
+  stop_loss (BUY) = entry_price × (1 − sl_pct / 100)
+  target    (BUY) = entry_price × (1 + target_pct / 100)
+  trailing_stop   = stop_loss
+```
+
+**Risk style multipliers** (intraday engines):
+
+| Style | ATR Stop Mult | ATR Trail Mult | Target RR | Risk % |
+|---|---|---|---|---|
+| CONSERVATIVE | 1.2× | 0.8× | 1.4× | 0.5% |
+| BALANCED | 1.35× | 0.9× | 1.5× | 1.0% |
+| AGGRESSIVE | 1.5× | 1.0× | 1.6× | 1.5% |
+
+**Risk style multipliers** (positional engines):
+
+| Style | ATR Stop Mult | ATR Trail Mult | Target RR | Risk % |
+|---|---|---|---|---|
+| CONSERVATIVE | 1.5× | 1.0× | 1.8× | 0.5% |
+| BALANCED | 1.65× | 1.25× | 2.0× | 1.0% |
+| AGGRESSIVE | 1.8× | 1.5× | 2.2× | 1.5% |
+
+**Worked example** — NIFTY Futures BUY at ₹22000, ATR = ₹80, BALANCED intraday:
+```
+stop_distance     = 80 × 1.35 = 108
+stop_loss         = 22000 − 108 = ₹21892
+target            = 22000 + 108 × 1.5 = ₹22162
+trailing_distance = 80 × 0.9 = 72
+trailing_stop starts at ₹21892
+trailing_activation_distance = max(72, 108) = 108
+→ trailing activates once best_price ≥ ₹22108 (entry + 108)
+```
+
+---
+
+### 5. How the Trailing Stop Moves (All Engines)
+
+Once `trailing_active = True`:
+
+```
+On every candle close (and intra-candle via WebSocket ticks for intraday_options):
+
+BUY position:
+  best_price = max(best_price, current_close)
+  new_candidate = best_price − trailing_distance
+  trailing_stop = max(trailing_stop, new_candidate)  ← only moves UP, never down
+
+SELL position:
+  best_price = min(best_price, current_close)
+  new_candidate = best_price + trailing_distance
+  trailing_stop = min(trailing_stop, new_candidate)  ← only moves DOWN, never up
+```
+
+**Example** — BUY, entry ₹500, trailing_distance ₹5, trailing_active=True:
+```
+Close ₹510 → best=510, trailing_stop = max(prev, 510−5) = 505
+Close ₹515 → best=515, trailing_stop = max(505, 510) = 510
+Close ₹512 → best=515 (no update), trailing_stop = 510 (no update)
+Close ₹509 → best=515, trailing_stop = 510 → LOW ≤ 510 → EXIT TRAILING_STOP
+```
+
+---
+
+### 6. TRAIL_ONLY vs HARD_TARGET Comparison
+
+| Scenario | HARD_TARGET | TRAIL_ONLY (default) |
+|---|---|---|
+| Price hits target ₹512, reverses | Exits at ₹512 | Trailing activates; trails freely |
+| Price blows through ₹512 to ₹520 | Exits at ₹512 (misses ₹8) | Trails to ₹515, exits on reversal |
+| Price hits target, whipsaws back | Exits at ₹512 | Exits at trailing stop (below entry possible if fast reversal) |
+| Best for | Sideways range-bound plays | Strong directional / trending days |
+
+**Config**: `execution_safety.exit_mode: "TRAIL_ONLY"` in `config.runtime.yaml`.
+**Per-session override**: Exit Mode dropdown in the web UI configure form.

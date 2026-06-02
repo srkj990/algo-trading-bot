@@ -133,6 +133,19 @@ Quality
 COMPLETED (2026-06-03)
 ---------------------
 
+Partial/Forced Exit Order Fixes
+  [x] orchestration/positions.py: LIMIT orders + position product used in all exit paths
+  [x] executor.py: LIMIT price auto-rounded to nearest ₹0.05
+
+MA_LONG Strategy (delivery_equity)
+  [x] strategy.py: ma_long_strategy() — MA50/MA200 crossover for multi-week delivery
+  [x] signal_scoring.py: score function for MA_LONG
+  [x] engines/delivery_equity.py: MA_LONG added to supported_strategies
+
+Forming Candle Preview (intraday_options sub-1m entry)
+  [x] tick_entry/forming_candle.py: FormingCandlePreview class
+  [x] Synthesises partial candle from live LTP, fires FORMING_TICK candidates
+
 Trail-Only Exit
   [x] exit_mode config flag (TRAIL_ONLY / HARD_TARGET) in config.py, config.runtime.yaml
   [x] models/position.py: update_trailing_stop — target-cross activates trailing, sets sentinel

@@ -16,7 +16,7 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertIn("MIS", runtime_config.orders.allowed_products)
         self.assertIn("MA", runtime_config.strategy.min_candles)
         self.assertIn(runtime_config.fno.intraday_options_lot_mode, {"ONE_LOT", "CAPITAL_BASED"})
-        self.assertIn(runtime_config.fno.intraday_options_entry_mode, {"LIVE_STAGED", "LEGACY_IMMEDIATE"})
+        self.assertIn(runtime_config.fno.intraday_options_entry_mode, {"LIVE_STAGED", "LEGACY_IMMEDIATE", "LIVE_TICK_CONFIRM"})
         self.assertGreaterEqual(runtime_config.fno.intraday_options_max_entry_cost_ratio, 0.0)
         self.assertGreaterEqual(runtime_config.fno.intraday_options_max_spread_pct, 0.0)
         self.assertGreaterEqual(runtime_config.fno.intraday_options_min_open_interest, 0)

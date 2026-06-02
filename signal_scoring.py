@@ -25,6 +25,12 @@ def get_strategy_score(strategy_name, df, signal_payload):
         if ma20 == ma20 and ma50 == ma50 and close > 0:
             score = abs(ma20 - ma50) / close
 
+    elif strategy_name == "MA_LONG" and len(df) >= MIN_CANDLES["MA_LONG"]:
+        ma50  = float(df["Close"].rolling(50).mean().iloc[-1])
+        ma200 = float(df["Close"].rolling(200).mean().iloc[-1])
+        if ma50 == ma50 and ma200 == ma200 and close > 0:
+            score = abs(ma50 - ma200) / close
+
     elif strategy_name == "RSI" and len(df) >= MIN_CANDLES["RSI"]:
         rsi = float(compute_rsi(df["Close"]).iloc[-1])
         if rsi == rsi:
