@@ -67,7 +67,9 @@ def merge_persisted_position_state(
 
 def update_trailing_stop(position: dict[str, Any], latest_close: float, trailing_pct: float) -> bool:
     typed_position = Position.from_mapping(position)
-    changed = typed_position.update_trailing_stop(latest_close, trailing_pct)
+    changed = typed_position.update_trailing_stop(
+        latest_close, trailing_pct, exit_mode=position.get("exit_mode", "TRAIL_ONLY")
+    )
     position.update(typed_position.to_dict())
     return changed
 

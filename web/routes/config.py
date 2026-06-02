@@ -606,7 +606,26 @@ def _build_backtest_config(data: dict):
         if _lot_mode_from_form in {"ONE_LOT", "CAPITAL_BASED"}
         else str(runtime_config.fno.intraday_options_lot_mode or "CAPITAL_BASED").upper()
     )
-    intraday_options_entry_mode = str(runtime_config.fno.intraday_options_entry_mode or "LIVE_STAGED").upper()
+    _entry_mode_from_form = str(data.get("intraday_options_entry_mode", "")).strip().upper()
+    intraday_options_entry_mode = (
+        _entry_mode_from_form
+        if _entry_mode_from_form in {"LIVE_STAGED", "LEGACY_IMMEDIATE", "LIVE_TICK_CONFIRM"}
+        else str(runtime_config.fno.intraday_options_entry_mode or "LIVE_STAGED").upper()
+    )
+    _max_trades_raw = data.get("max_trades_per_underlying")
+    bt_max_trades = max(1, min(10, int(_max_trades_raw))) if _max_trades_raw is not None and str(_max_trades_raw).strip() else None
+    _time_exit_raw = data.get("time_exit_minutes")
+    bt_time_exit_minutes = max(0, min(120, int(_time_exit_raw))) if _time_exit_raw is not None and str(_time_exit_raw).strip() else None
+    _forming_raw = data.get("forming_tick_enabled")
+    bt_forming_tick_enabled = bool(_forming_raw) if _forming_raw is not None else None
+    _confirm_raw = data.get("forming_tick_confirm_ticks")
+    bt_forming_tick_confirm_ticks = max(1, min(5, int(_confirm_raw))) if _confirm_raw is not None and str(_confirm_raw).strip() else None
+    _exit_mode_raw = str(data.get("exit_mode", "")).strip().upper()
+    bt_exit_mode = (
+        _exit_mode_raw
+        if _exit_mode_raw in {"TRAIL_ONLY", "HARD_TARGET"}
+        else str(runtime_config.execution_safety.exit_mode or "TRAIL_ONLY").upper()
+    )
 
     summary_lines.extend([
         f"Engine={engine_name}",
@@ -639,6 +658,11 @@ def _build_backtest_config(data: dict):
         intraday_options_entry_mode=intraday_options_entry_mode,
         summary_lines=summary_lines,
         option_backtest_settings=option_backtest_settings,
+        max_trades_per_underlying=bt_max_trades,
+        time_exit_minutes=bt_time_exit_minutes,
+        forming_tick_enabled=bt_forming_tick_enabled,
+        forming_tick_confirm_ticks=bt_forming_tick_confirm_ticks,
+        exit_mode=bt_exit_mode,
     )
 
 

@@ -263,7 +263,7 @@ Options:        intraday_options (intraday)   |  options_equity   (positional)
 **IV and premium filters (config.runtime.yaml → fno section):**
 - `max_buy_iv_percentile: 75.0` — avoids buying expensive premium (IV crush risk)
 - `min_contract_price: 8.0` — avoids illiquid sub-8 premiums
-- `intraday_options_max_hold_minutes: 30` — time stop; options bleed theta each minute
+- `intraday_options_max_hold_minutes: 15` — time stop; options bleed theta each minute (override per session via UI/CLI `time_exit_minutes`)
 - `intraday_options_vega_crush_block_percent: 20` — exits/blocks when IV drops sharply
 
 **Adaptive ATR levels for options (wider than equity):**
@@ -271,9 +271,9 @@ Options:        intraday_options (intraday)   |  options_equity   (positional)
 - NORMAL: stop ×1.7, target ×1.7 — symmetric R:R
 - EXPANSION: stop ×1.7, target ×2.3 — let winners run on strong expansion
 
-**Lot mode:** Default `CAPITAL_BASED` — lot size scales with your declared capital. Switch to `FIXED` if you want to control lots manually.
+**Lot mode:** Default `CAPITAL_BASED` — lot size scales with your declared capital. Switch to `ONE_LOT` if you want a fixed single contract.
 
-**Entry mode:** Default `LEGACY_IMMEDIATE` — enters on signal candle. Switch to `STAGED` (ATM_MOMENTUM) for a pullback-confirmation entry at a better fill price.
+**Entry mode:** Default `LIVE_STAGED` — closed candle signal + staged breakout confirmation for a better fill price. Switch to `LIVE_TICK_CONFIRM` for sub-1m forming-candle entry, or `LEGACY_IMMEDIATE` to bypass staged filters (not recommended).
 
 **Key knobs to tune:**
 - `intraday_options_max_hold_minutes` — reduce to `20` on choppy days to cut time risk
@@ -355,7 +355,7 @@ These are set in `config.runtime.yaml → risk_controls` and are independent of 
 | Control | Default | Purpose |
 |---|---|---|
 | `daily_max_loss_pct` | 3% | Blocks all new entries once daily loss exceeds 3% of capital |
-| `consecutive_loss_limit` | 4 | Blocks entries after 4 consecutive losses |
+| `consecutive_loss_limit` | 3 | Blocks entries after 3 consecutive losses |
 | `api_failure_pause_minutes` | 5 | Pauses after scan/API failures |
 | `abnormal_slippage_pause_pct` | 0.5% | Pauses if a live fill slips >0.5% from expected |
 

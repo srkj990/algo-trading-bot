@@ -112,6 +112,39 @@ false signals:
 In the bot, set strategy mode to MULTI and choose min_confirmations >= 2.
 
 
+Live Session Operational Notes (2026-06-02)
+--------------------------------------------
+Exit Orders (Kite F&O API requirements):
+  - Raw MARKET orders are rejected for F&O. All exits now use LIMIT with 1% buffer.
+  - Limit prices must be multiples of ₹0.05 (NSE tick size). executor.py rounds automatically.
+  - Exit product must match position product. NRML reconciled positions exit as NRML.
+
+Manual Position Pickup:
+  - In LIVE mode, bot polls broker every 60 seconds (live_broker_resync_interval_seconds).
+  - Manually opened positions are detected and added to algo management automatically.
+  - Only adds new positions; never removes algo-managed ones mid-session.
+  - Log: [RECON] Runtime sync detected manual broker position: <symbol>
+
+Reconciliation:
+  - Startup reconcile now includes both MIS and NRML options positions.
+  - Product stored in position["order_product"] at reconciliation, used for all exits.
+
+Kite IP Allowlist:
+  - Run auto_auth.py to refresh token. It now prints your public IP automatically.
+  - Add that IP in Kite developer console → App Settings → Allowed IPs.
+  - IP changes on router restart or ISP reconnect — re-run auto_auth.py to get new IP.
+
+Runner CWD:
+  - Each runner in runners/ sets CWD to its own folder.
+  - .env is found automatically via config.py-relative path fallback.
+  - state/ and logs/ are created inside the runner folder (isolated per engine).
+
+Backtest Notes:
+  - delivery_equity backtest requires no special setup — daily bars handled correctly.
+  - intraday_options backtest always uses LEGACY_RAW entry regardless of live entry mode setting.
+  - Tick simulation in backtest models intra-candle fills using option candle OHLC.
+
+
 Intraday Options Strategy Notes
 ---------------------------------
 Intraday options strategies emit BUY_CE, BUY_PE, or NO_TRADE.

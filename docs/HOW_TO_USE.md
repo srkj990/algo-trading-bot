@@ -284,6 +284,25 @@ Engine id: `6` | Name: `intraday_options`
 
 ---
 
+## Runtime Position Resync (Manual Positions)
+
+In LIVE sessions, the bot automatically polls the broker every `live_broker_resync_interval_seconds` (default 60 seconds) and injects any newly detected broker positions that are not already in the algo's position dict.
+
+This means if you open a position manually in Kite while a session is running, the bot will detect it within ~60 seconds and start managing it — arming stop-loss, trailing stop, and target exits automatically.
+
+You will see in the logs:
+```
+[RECON] Runtime sync detected manual broker position: NFO:NIFTY2660223300PE — added for management
+```
+
+**Notes:**
+- Works in LIVE mode only (not PAPER or BACKTEST — no broker to poll)
+- Only adds positions; never removes algo-managed positions mid-session
+- The position is reconciled using the same engine logic as startup (`reconcile_startup`), so SL/target/trailing levels are correctly set
+- Adjust the polling interval in `config.runtime.yaml → session_defaults.live_broker_resync_interval_seconds`
+
+---
+
 ## Exit-Only Mode
 
 When `exit_only_mode` is active (set in `config.runtime.yaml → session_defaults.exit_only_default: true` or via `cli/configuration.py`), the session manages and closes existing positions but places no new entries. Unlike the runtime Pause Entries override, exit-only mode is a config-level flag set before the session starts.
@@ -300,10 +319,13 @@ All in `config.runtime.yaml`. A process restart is required after changes.
 | `execution_safety.min_ranked_candidate_score` | 0.008 | Minimum signal score for entry |
 | `orders.max_live_order_notional` | 0 (off) | Hard cap per order |
 | `orders.margin_check_enabled` | true | Pre-flight margin check |
+| `orders.exit_limit_price_buffer_pct` | 0.01 | Buffer applied to exit LIMIT prices (1% default); 0 to disable |
 | `risk_controls.daily_max_loss_pct` | 0 (off) | Blocks entries after daily loss limit |
 | `risk_controls.consecutive_loss_limit` | 0 (off) | Blocks after N consecutive losses |
 | `fno.intraday_options_entry_mode` | `LIVE_STAGED` | `LIVE_STAGED` or `LEGACY_IMMEDIATE` |
 | `fno.intraday_options_max_entry_cost_ratio` | 0.30 | Max cost/profit ratio for options entry |
+| `session_defaults.live_broker_resync_interval_seconds` | 60 | How often (seconds) LIVE sessions poll broker for new manual positions |
+| `execution_safety.exit_mode` | `TRAIL_ONLY` | `TRAIL_ONLY` = target activates trailing (no hard ceiling); `HARD_TARGET` = exit immediately at target price |
 
 ---
 
@@ -346,6 +368,25 @@ Correct behavior — warnings are advisory only. The bot never auto-stops on war
 
 Safe Exit auto-stops only when all positions close. If there are no open positions when you activate it, it will stop immediately. If positions are open, it waits until each one exits naturally (via its tightened stop or halved target).
 
+### Exit order rejected — "Market orders without market protection are not allowed via API"
+
+This is a Kite API restriction for F&O instruments. Raw MARKET orders are not accepted. The bot uses LIMIT orders with a 1% buffer by default (`orders.exit_limit_price_buffer_pct = 0.01`). If you see this error after an older session config, check that `config.runtime.yaml` has `exit_limit_price_buffer_pct: 0.01` under the `orders` section and restart the session.
+
+### Exit order rejected — "Order price is not a multiple of tick size"
+
+NSE F&O tick size is ₹0.05. Limit prices from `LTP × (1 ± buffer)` can produce non-aligned floats. The executor now rounds all LIMIT prices to the nearest ₹0.05 automatically. If you see this error it means you are running an older version — update `executor.py`.
+
+### Exit order rejected — "Wrong product type" or NRML position exited as MIS
+
+This happens when a reconciled NRML position is exited with `product=MIS`. The fix stores `order_product` on the position dict at reconciliation time so exits use the correct product. Restart the session after updating `engines/intraday_options.py`.
+
+### Manual position not picked up by bot during live session
+
+In LIVE mode, the bot polls the broker every 60 seconds (configurable via `live_broker_resync_interval_seconds`) and automatically adds newly detected positions. If the position is still not showing after 60–90 seconds:
+1. Confirm the session is in LIVE mode (not PAPER)
+2. Check the log for `[RECON] Runtime sync detected manual broker position:`
+3. If absent, check the engine's `reconcile_startup()` supports the instrument type (intraday_options: MIS and NRML both supported)
+
 ### Backtest charges look high
 
 Check `transaction_costs` in `config.runtime.yaml`. The cost model estimates brokerage + STT + exchange fees. If `transaction_cost_model_enabled = false`, charges will show as zero.
@@ -360,4 +401,4 @@ Paper positions are persisted to `state/`. If `state/` was cleared, positions ar
 venv\Scripts\python -m pytest
 ```
 
-Expected: `116 passed, 1 pre-existing failure` (an intraday-options cycle-state boundary edge case unrelated to entry, exit, or risk).
+Expected: tests pass with 1 pre-existing failure (an intraday-options cycle-state boundary edge case unrelated to entry, exit, or risk).

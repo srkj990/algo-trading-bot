@@ -601,7 +601,9 @@ class IntradayOptionsEngineTests(unittest.TestCase):
         )
         self.assertLessEqual(position["stop_loss"], float(position["runner_level1_target"]))
         self.assertLessEqual(position["trailing_stop"], float(position["runner_level1_target"]))
-        self.assertEqual(position["target"], float(position["runner_level3_target"]))
+        # After level 2, sentinel 0.01 replaces hard target so trailing takes over
+        self.assertEqual(position["target"], 0.01)
+        self.assertTrue(position["trailing_active"])
 
     def test_evaluate_position_exit_ignores_runner_target_for_trailing_only_position(self) -> None:
         position = self.engine.build_trend_adaptive_position(

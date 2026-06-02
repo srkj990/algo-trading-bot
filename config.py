@@ -8,20 +8,24 @@ from typing import Any
 
 
 def _load_dotenv(path: str = ".env") -> None:
-    if not os.path.exists(path):
-        return
-
-    with open(path, encoding="utf-8") as env_file:
-        for raw_line in env_file:
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-
-            key, value = line.split("=", 1)
-            key = key.strip()
-            value = value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
-                os.environ[key] = value
+    # Resolve relative paths against this file's directory so runners started
+    # from a subdirectory (e.g. runners/06_intraday_options/) still find the
+    # project-root .env.
+    resolved = os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
+    candidates = [path, resolved]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            with open(candidate, encoding="utf-8") as env_file:
+                for raw_line in env_file:
+                    line = raw_line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    key = key.strip()
+                    value = value.strip().strip('"').strip("'")
+                    if key and key not in os.environ:
+                        os.environ[key] = value
+            return
 
 
 _load_dotenv()
@@ -313,6 +317,7 @@ class ExecutionSafetyConfig:
     reversal_exit_confirmation_candles: int
     trailing_activation_stop_distance_multiplier: float
     intraday_equity_entry_cutoff_minutes_before_squareoff: int
+    exit_mode: str = "TRAIL_ONLY"
 
     def validate(self) -> None:
         if self.min_ranked_candidate_score < 0:
@@ -333,6 +338,8 @@ class ExecutionSafetyConfig:
             raise ValueError(
                 "execution_safety.intraday_equity_entry_cutoff_minutes_before_squareoff must be >= 0"
             )
+        if self.exit_mode not in {"TRAIL_ONLY", "HARD_TARGET"}:
+            raise ValueError("execution_safety.exit_mode must be TRAIL_ONLY or HARD_TARGET")
 
 
 @dataclass(frozen=True)
@@ -414,6 +421,7 @@ class OrderValidationConfig:
     fill_confirmation_required: bool
     default_entry_order_type: str
     entry_limit_price_buffer_pct: float
+    exit_limit_price_buffer_pct: float
     max_spread_pct: float
     margin_check_enabled: bool
     margin_buffer_pct: float
@@ -558,9 +566,9 @@ class FnoConfig:
             raise ValueError(
                 "fno.intraday_options_lot_mode must be ONE_LOT or CAPITAL_BASED"
             )
-        if self.intraday_options_entry_mode not in {"LIVE_STAGED", "LEGACY_IMMEDIATE"}:
+        if self.intraday_options_entry_mode not in {"LIVE_STAGED", "LEGACY_IMMEDIATE", "LIVE_TICK_CONFIRM"}:
             raise ValueError(
-                "fno.intraday_options_entry_mode must be LIVE_STAGED or LEGACY_IMMEDIATE"
+                "fno.intraday_options_entry_mode must be LIVE_STAGED, LEGACY_IMMEDIATE, or LIVE_TICK_CONFIRM"
             )
         if self.intraday_options_max_entry_cost_ratio < 0:
             raise ValueError("fno.intraday_options_max_entry_cost_ratio must be >= 0")
@@ -618,6 +626,7 @@ def _default_runtime_config_map() -> dict[str, Any]:
         "strategy": {
             "min_candles": {
                 "MA": 50,
+                "MA_LONG": 200,
                 "RSI": 14,
                 "BREAKOUT": 20,
                 "VWAP": 1,
@@ -645,6 +654,7 @@ def _default_runtime_config_map() -> dict[str, Any]:
                     "30",
                 )
             ),
+            "exit_mode": os.getenv("EXECUTION_EXIT_MODE", "TRAIL_ONLY"),
         },
         "transaction_costs": {
             "enabled": _parse_bool(
@@ -727,6 +737,9 @@ def _default_runtime_config_map() -> dict[str, Any]:
             ).upper(),
             "entry_limit_price_buffer_pct": float(
                 os.getenv("ORDER_ENTRY_LIMIT_PRICE_BUFFER_PCT", "0")
+            ),
+            "exit_limit_price_buffer_pct": float(
+                os.getenv("ORDER_EXIT_LIMIT_PRICE_BUFFER_PCT", "0.01")
             ),
             "max_spread_pct": float(os.getenv("ORDER_MAX_SPREAD_PCT", "0.05")),
             "margin_check_enabled": _parse_bool(
@@ -955,7 +968,7 @@ def _default_runtime_config_map() -> dict[str, Any]:
                 "max_hold_days": 5,
                 "sleep_seconds": 300,
                 "cooldown_seconds": 0,
-                "data_period": "6mo",
+                "data_period": "1y",
                 "data_interval": "1d",
                 "adaptive_stop_multiplier_sideways": 2.4,
                 "adaptive_stop_multiplier_normal": 2.0,
@@ -1116,7 +1129,7 @@ def _default_runtime_config_map() -> dict[str, Any]:
             },
             "default_data": {
                 "intraday_equity": {"period": "5d", "interval": "5m"},
-                "delivery_equity": {"period": "6mo", "interval": "1d"},
+                "delivery_equity": {"period": "1y", "interval": "1d"},
                 "futures_equity": {"period": "2mo", "interval": "15m"},
                 "options_equity": {"period": "2mo", "interval": "15m"},
                 "intraday_futures": {"period": "5d", "interval": "5m"},
@@ -1174,6 +1187,9 @@ def _build_runtime_config() -> RuntimeConfig:
             ).upper(),
             entry_limit_price_buffer_pct=float(
                 merged["orders"]["entry_limit_price_buffer_pct"]
+            ),
+            exit_limit_price_buffer_pct=float(
+                merged["orders"]["exit_limit_price_buffer_pct"]
             ),
             max_spread_pct=float(merged["orders"]["max_spread_pct"]),
             margin_check_enabled=bool(merged["orders"]["margin_check_enabled"]),

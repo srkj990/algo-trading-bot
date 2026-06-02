@@ -284,6 +284,56 @@
       <p class="text-xs text-slate-400 mt-1">Capital Based: qty = floor(max_capital_per_trade / entry_price)</p>
     </div>
 
+    <!-- intraday_options advanced controls -->
+    <div id="iopts-advanced-wrap" class="mt-4 hidden grid grid-cols-2 gap-4">
+      <div>
+        <label class="section-label">Entry Mode</label>
+        <select id="c-entry-mode">
+          <option value="LIVE_STAGED" selected>Live Staged (closed candle + staged)</option>
+          <option value="LIVE_TICK_CONFIRM">Live Tick Confirm (forming-candle + tick LTP)</option>
+          <option value="LEGACY_IMMEDIATE">Legacy Immediate (bypass staged filters)</option>
+        </select>
+        <p class="text-xs text-slate-400 mt-1">Live Tick Confirm enables sub-1m entry via forming candle preview</p>
+      </div>
+      <div>
+        <label class="section-label">Max Trades / Underlying / Day</label>
+        <input type="number" id="c-max-trades" min="1" max="10" value="2" class="w-full bg-slate-700 border border-slate-500 rounded px-3 py-2 text-sm text-white">
+        <p class="text-xs text-slate-400 mt-1">Enforces daily cap per underlying (e.g. NIFTY). Live default: 2</p>
+      </div>
+      <div>
+        <label class="section-label">Time Exit Window (minutes)</label>
+        <select id="c-time-exit">
+          <option value="10">10 minutes</option>
+          <option value="15" selected>15 minutes</option>
+          <option value="20">20 minutes</option>
+          <option value="30">30 minutes</option>
+          <option value="0">Disabled</option>
+        </select>
+        <p class="text-xs text-slate-400 mt-1">Auto-exit after this many minutes (0 = rely on stop/target only)</p>
+      </div>
+      <div>
+        <label class="section-label">Forming-Candle Entry</label>
+        <select id="c-forming-tick" onchange="onFormingTickChange()">
+          <option value="true" selected>Enabled</option>
+          <option value="false">Disabled</option>
+        </select>
+        <p class="text-xs text-slate-400 mt-1">Enable sub-1m entry via live LTP + partial candle signal</p>
+      </div>
+      <div id="c-forming-confirm-wrap">
+        <label class="section-label">Confirm Ticks Required</label>
+        <input type="number" id="c-forming-confirm" min="1" max="5" value="2" class="w-full bg-slate-700 border border-slate-500 rounded px-3 py-2 text-sm text-white">
+        <p class="text-xs text-slate-400 mt-1">LTP must hold above/below threshold for N ticks before entry</p>
+      </div>
+      <div>
+        <label class="section-label">Reverse Signal</label>
+        <select id="c-reverse-signal">
+          <option value="false" selected>No (normal direction)</option>
+          <option value="true">Yes — flip BUY↔SELL</option>
+        </select>
+        <p class="text-xs text-slate-400 mt-1">Reverse every entry: BUY signal places a SELL order and vice versa</p>
+      </div>
+    </div>
+
     <!-- Strategy -->
     <div class="mt-4 grid grid-cols-2 gap-4">
       <div id="strat-mode-wrap">
@@ -294,11 +344,11 @@
           <option value="3">Auto-adaptive</option>
         </select>
       </div>
-      <div id="strat-name-wrap">
+      <div id="strat-name-wrap" class="hidden">
         <label class="section-label">Strategy</label>
         <select id="c-strat-name"></select>
       </div>
-      <div id="strat-multi-wrap" class="col-span-2 hidden">
+      <div id="strat-multi-wrap" class="col-span-2">
         <label class="section-label">Strategies (hold Ctrl/Cmd for multi-select)</label>
         <select id="c-strat-multi" multiple size="3" style="height:auto"></select>
       </div>
@@ -337,6 +387,16 @@
           <option value="UPSTOX">Upstox</option>
         </select>
       </div>
+    </div>
+
+    <!-- Exit mode -->
+    <div class="mt-4">
+      <label class="section-label">Exit Mode</label>
+      <select id="c-exit-mode">
+        <option value="TRAIL_ONLY" selected>Trail Only — trailing stop continues past target (no hard ceiling)</option>
+        <option value="HARD_TARGET">Hard Target — exit immediately when target price is hit</option>
+      </select>
+      <p class="text-xs text-slate-400 mt-1">Trail Only: when price reaches target, trailing activates and rides the move until reversal. Hard Target: closes the position at the exact target price.</p>
     </div>
 
     <!-- Weekend paper override -->
@@ -493,6 +553,52 @@
       <p class="text-xs text-slate-400 mt-1">Capital Based: qty = floor(max_capital_per_trade / entry_price)</p>
     </div>
 
+    <!-- intraday_options advanced controls (backtest) -->
+    <div id="b-iopts-advanced-wrap" class="mt-4 hidden grid grid-cols-2 gap-4">
+      <div>
+        <label class="section-label">Entry Mode</label>
+        <select id="b-entry-mode">
+          <option value="LIVE_STAGED" selected>Live Staged (closed candle + staged)</option>
+          <option value="LIVE_TICK_CONFIRM">Live Tick Confirm (forming-candle + tick LTP)</option>
+          <option value="LEGACY_IMMEDIATE">Legacy Immediate (bypass staged filters)</option>
+        </select>
+      </div>
+      <div>
+        <label class="section-label">Max Trades / Underlying / Day</label>
+        <input type="number" id="b-max-trades" min="1" max="10" value="2" class="w-full bg-slate-700 border border-slate-500 rounded px-3 py-2 text-sm text-white">
+        <p class="text-xs text-slate-400 mt-1">Daily cap per underlying (enforced in backtest)</p>
+      </div>
+      <div>
+        <label class="section-label">Time Exit Window (minutes)</label>
+        <select id="b-time-exit">
+          <option value="10">10 minutes</option>
+          <option value="15" selected>15 minutes</option>
+          <option value="20">20 minutes</option>
+          <option value="30">30 minutes</option>
+          <option value="0">Disabled</option>
+        </select>
+      </div>
+      <div>
+        <label class="section-label">Forming-Candle Entry</label>
+        <select id="b-forming-tick" onchange="onBFormingTickChange()">
+          <option value="true" selected>Enabled</option>
+          <option value="false">Disabled</option>
+        </select>
+      </div>
+      <div id="b-forming-confirm-wrap">
+        <label class="section-label">Confirm Ticks Required</label>
+        <input type="number" id="b-forming-confirm" min="1" max="5" value="2" class="w-full bg-slate-700 border border-slate-500 rounded px-3 py-2 text-sm text-white">
+      </div>
+      <div>
+        <label class="section-label">Reverse Signal</label>
+        <select id="b-reverse-signal">
+          <option value="false" selected>No (normal direction)</option>
+          <option value="true">Yes — flip BUY↔SELL</option>
+        </select>
+        <p class="text-xs text-slate-400 mt-1">Reverse every entry: BUY signal places a SELL order and vice versa</p>
+      </div>
+    </div>
+
     <!-- Strategy (backtest) -->
     <div class="mt-4 grid grid-cols-2 gap-4">
       <div id="b-strat-mode-wrap">
@@ -505,7 +611,7 @@
       </div>
       <div id="b-strat-name-wrap" class="hidden">
         <label class="section-label">Strategy</label>
-        <select id="b-strat-name"></select>
+        <select id="b-strat-name" onchange="_autoSetPeriodForStrategy()"></select>
       </div>
       <div id="b-strat-multi-wrap" class="col-span-2">
         <label class="section-label">Strategies (hold Ctrl/Cmd for multi-select)</label>
@@ -534,6 +640,16 @@
       <input id="b-one-trade" type="checkbox" checked style="width:auto;padding:0" class="accent-blue-500 w-4 h-4"/>
       <label for="b-one-trade" class="text-sm text-slate-300 cursor-pointer">One trade per symbol per day</label>
       <span class="text-xs text-slate-500">(uncheck to allow multiple entries in the same symbol on the same day)</span>
+    </div>
+
+    <!-- Exit mode (backtest) -->
+    <div class="mt-4">
+      <label class="section-label">Exit Mode</label>
+      <select id="b-exit-mode">
+        <option value="TRAIL_ONLY" selected>Trail Only — trailing stop continues past target (no hard ceiling)</option>
+        <option value="HARD_TARGET">Hard Target — exit immediately when target price is hit</option>
+      </select>
+      <p class="text-xs text-slate-400 mt-1">Trail Only: when price reaches target, trailing activates and rides the move until reversal. Hard Target: closes the position at the exact target price.</p>
     </div>
 
     <!-- Error banner (backtest) -->
@@ -742,10 +858,11 @@
   </div>
 
   <!-- Running metrics -->
-  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+  <div class="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-3">
     <div class="card p-3"><div class="section-label">Closed Trades</div><div id="btr-trades" class="text-xl font-bold font-mono">0</div></div>
     <div class="card p-3"><div class="section-label">Win Rate</div><div id="btr-winrate" class="text-xl font-bold font-mono">—</div></div>
-    <div class="card p-3"><div class="section-label">Running P&amp;L</div><div id="btr-pnl" class="text-xl font-bold font-mono pnl-zero">₹0</div></div>
+    <div class="card p-3"><div class="section-label">Gross P&amp;L</div><div id="btr-gross-pnl" class="text-xl font-bold font-mono pnl-zero">₹0</div></div>
+    <div class="card p-3"><div class="section-label">Net P&amp;L</div><div id="btr-net-pnl" class="text-xl font-bold font-mono pnl-zero">₹0</div></div>
     <div class="card p-3"><div class="section-label">Engine</div><div id="btr-engine" class="text-sm font-semibold text-slate-300 leading-snug">—</div></div>
   </div>
 
@@ -902,7 +1019,7 @@ let btEquityChart = null;
 let lastState = {};
 let currentTab = 'live';
 
-const EQ_STRATEGIES  = {MA:'MA', RSI:'RSI', VWAP:'VWAP', BREAKOUT:'BREAKOUT', ORB:'ORB'};
+const EQ_STRATEGIES  = {MA:'MA', MA_LONG:'MA_LONG', RSI:'RSI', VWAP:'VWAP', BREAKOUT:'BREAKOUT', ORB:'ORB'};
 const FNO_STRATEGIES = {
   ATM_MOMENTUM:'ATM_MOMENTUM', ATM_ORB:'ATM_ORB',
   ATM_VWAP_REVERSION:'ATM_VWAP_REVERSION', ATM_MULTI:'ATM_MULTI',
@@ -1197,6 +1314,7 @@ function onEngineChange(scope) {
     tog('fno-both-wrap',     eng === '3' || eng === '5');
     tog('fno-structure-wrap', IS_IOPTS(eng));
     tog('lot-mode-wrap',     IS_IOPTS(eng));
+    tog('iopts-advanced-wrap', IS_IOPTS(eng));
     const strats = fno ? FNO_STRATEGIES : EQ_STRATEGIES;
     populateSelect('c-strat-name',  Object.values(strats));
     populateSelect('c-strat-multi', Object.values(strats));
@@ -1208,6 +1326,7 @@ function onEngineChange(scope) {
     tog('b-strat-mode-wrap',  !IS_IOPTS(eng));
     tog('b-fno-structure-wrap', IS_IOPTS(eng));
     tog('b-lot-mode-wrap',    IS_IOPTS(eng));
+    tog('b-iopts-advanced-wrap', IS_IOPTS(eng));
     // hide BOTH for options engines
     const undEl = document.getElementById('b-underlying');
     if (undEl) {
@@ -1256,6 +1375,16 @@ function onBStructureChange() {
   tog('b-fno-strike-wrap', !p);
 }
 
+function onFormingTickChange() {
+  const enabled = document.getElementById('c-forming-tick').value === 'true';
+  tog('c-forming-confirm-wrap', enabled);
+}
+
+function onBFormingTickChange() {
+  const enabled = document.getElementById('b-forming-tick').value === 'true';
+  tog('b-forming-confirm-wrap', enabled);
+}
+
 function autoCapPerTrade(pfx) {
   const cap = parseFloat(document.getElementById(pfx + '-capital').value) || 0;
   const pos = parseInt(document.getElementById(pfx + '-max-pos').value) || 1;
@@ -1272,6 +1401,21 @@ function onBStratModeChange() {
   const m = document.getElementById('b-strat-mode').value;
   tog('b-strat-name-wrap',  m === '1');
   tog('b-strat-multi-wrap', m !== '1');
+  _autoSetPeriodForStrategy();
+}
+
+function _autoSetPeriodForStrategy() {
+  const eng = document.getElementById('b-engine').value;
+  if (eng !== '2') return; // delivery equity only
+  const mode = document.getElementById('b-strat-mode').value;
+  const name = document.getElementById('b-strat-name').value;
+  const periodEl = document.getElementById('b-period');
+  // MA_LONG (MA50/200) needs 200+ candles — 1y only gives ~49 usable candles, force 2y
+  if (mode === '1' && name === 'MA_LONG') {
+    periodEl.value = '2y';
+  } else if (periodEl.value === '2y') {
+    periodEl.value = '1y'; // reset back if switching away
+  }
 }
 
 // ── FNO expiry loading ────────────────────────────────────────────────────────
@@ -1358,6 +1502,7 @@ async function submitLive() {
     one_trade_per_symbol_per_day: true,
     strategy_mode:        document.getElementById('c-strat-mode').value,
     paper_trading_override: document.getElementById('c-paper-override').checked,
+    exit_mode: document.getElementById('c-exit-mode').value,
   };
 
   if (IS_FNO(eng)) {
@@ -1374,6 +1519,11 @@ async function submitLive() {
         payload.strike_offset_mode = document.getElementById('c-strike-mode').value;
       }
       payload.strategy_name = document.getElementById('c-strat-name').value;
+      payload.intraday_options_entry_mode = document.getElementById('c-entry-mode').value;
+      payload.max_trades_per_underlying = parseInt(document.getElementById('c-max-trades').value);
+      payload.time_exit_minutes = parseInt(document.getElementById('c-time-exit').value);
+      payload.forming_tick_enabled = document.getElementById('c-forming-tick').value === 'true';
+      payload.forming_tick_confirm_ticks = parseInt(document.getElementById('c-forming-confirm').value);
     }
   } else {
     payload.data_provider      = document.getElementById('c-data-provider').value;
@@ -1516,6 +1666,7 @@ async function submitBacktest() {
     top_n:                 parseInt(document.getElementById('b-top-n').value),
     one_trade_per_symbol_per_day: document.getElementById('b-one-trade').checked,
     strategy_mode:         document.getElementById('b-strat-mode').value,
+    exit_mode:             document.getElementById('b-exit-mode').value,
   };
 
   if (fno) {
@@ -1531,6 +1682,11 @@ async function submitBacktest() {
         payload.strike_offset_mode = document.getElementById('b-strike-mode').value;
       }
       payload.strategy_name = document.getElementById('b-strat-name').value;
+      payload.intraday_options_entry_mode = document.getElementById('b-entry-mode').value;
+      payload.max_trades_per_underlying = parseInt(document.getElementById('b-max-trades').value);
+      payload.time_exit_minutes = parseInt(document.getElementById('b-time-exit').value);
+      payload.forming_tick_enabled = document.getElementById('b-forming-tick').value === 'true';
+      payload.forming_tick_confirm_ticks = parseInt(document.getElementById('b-forming-confirm').value);
     }
   } else {
     payload.symbol_mode = document.getElementById('b-sym-mode').value;
@@ -1580,9 +1736,9 @@ function handleEvent(ev) {
     const btRunning = !document.getElementById('view-bt-running').classList.contains('hidden');
     if (btRunning && line.includes('[BACKTEST]')) {
       appendBtLog(line, ev.level);
-      // parse "[BACKTEST] 120/600 (20%) | Trades=5 | WinRate=60% | P&L=₹1,200"
-      const m = line.match(/\[BACKTEST\]\s+(\d+)\/(\d+)\s+\((\d+)%\)\s*\|\s*Trades=(\d+)\s*\|\s*WinRate=(\d+)%\s*\|\s*P&L=₹([\d,\-]+)/);
-      if (m) updateBtProgress(+m[1], +m[2], +m[3], +m[4], +m[5], m[6]);
+      // parse "[BACKTEST] 120/600 (20%) | Trades=5 | WinRate=60% | Gross=₹1,200 | Net=₹1,100"
+      const m = line.match(/\[BACKTEST\]\s+(\d+)\/(\d+)\s+\((\d+)%\)\s*\|\s*Trades=(\d+)\s*\|\s*WinRate=(\d+)%\s*\|\s*Gross=₹([\d,\-]+)\s*\|\s*Net=₹([\d,\-]+)/);
+      if (m) updateBtProgress(+m[1], +m[2], +m[3], +m[4], +m[5], m[6], m[7]);
     } else {
       appendLog(line, ev.level);
     }
@@ -1935,8 +2091,10 @@ function resetBtProgress() {
   document.getElementById('bt-progress-bar').style.width = '0%';
   setTxt('btr-trades', '0');
   setTxt('btr-winrate', '—');
-  const pnlEl = document.getElementById('btr-pnl');
-  if (pnlEl) { pnlEl.textContent = '₹0'; pnlEl.className = 'text-xl font-bold font-mono pnl-zero'; }
+  ['btr-gross-pnl','btr-net-pnl'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.textContent = '₹0'; el.className = 'text-xl font-bold font-mono pnl-zero'; }
+  });
   // reset live trades table
   const tbody = document.getElementById('btr-trades-body');
   if (tbody) tbody.innerHTML = '<tr><td colspan="11" class="text-slate-500 text-center py-3">No trades yet</td></tr>';
@@ -1977,18 +2135,22 @@ function appendBtTrade(t) {
   setTxt('btr-trade-count', `(${_btrTradeCount})`);
 }
 
-function updateBtProgress(current, total, pct, trades, winRate, pnlStr) {
+function updateBtProgress(current, total, pct, trades, winRate, grossStr, netStr) {
   setTxt('bt-progress-label', `${current.toLocaleString()} / ${total.toLocaleString()} candles`);
   setTxt('bt-progress-pct', `${pct}%`);
   document.getElementById('bt-progress-bar').style.width = `${pct}%`;
   setTxt('btr-trades', trades);
   setTxt('btr-winrate', trades > 0 ? `${winRate}%` : '—');
-  const raw = parseInt((pnlStr || '0').replace(/,/g, ''), 10) || 0;
-  const pnlEl = document.getElementById('btr-pnl');
-  if (pnlEl) {
-    pnlEl.textContent = `₹${raw.toLocaleString('en-IN')}`;
-    pnlEl.className = 'text-xl font-bold font-mono ' + (raw > 0 ? 'pnl-pos' : raw < 0 ? 'pnl-neg' : 'pnl-zero');
-  }
+  const setPnl = (id, str) => {
+    const v = parseInt((str || '0').replace(/,/g, ''), 10) || 0;
+    const el = document.getElementById(id);
+    if (el) {
+      el.textContent = `₹${v.toLocaleString('en-IN')}`;
+      el.className = 'text-xl font-bold font-mono ' + (v > 0 ? 'pnl-pos' : v < 0 ? 'pnl-neg' : 'pnl-zero');
+    }
+  };
+  setPnl('btr-gross-pnl', grossStr);
+  setPnl('btr-net-pnl',   netStr);
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

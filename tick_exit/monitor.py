@@ -130,7 +130,7 @@ class TickExitMonitor:
             ticker.arm_breakout(int(token), sl, exit_dir, make_exit_cb("STOP_LOSS"))
         if trail > 0 and trail != sl:
             ticker.arm_breakout(int(token), trail, exit_dir, make_exit_cb("TRAILING_STOP"))
-        if target > 0:
+        if target > 0 and target < 1e8:
             ticker.arm_breakout(int(token), target, entry_dir, make_exit_cb("TARGET"))
 
         # Continuous callback for intra-candle trailing ratchet
@@ -189,15 +189,25 @@ class TickExitMonitor:
                 "warning",
             )
 
+            _exit_side = opposite_side(position)
+            _orders_cfg = getattr(getattr(self._ctx, "runtime_config", None), "orders", None)
+            _exit_buf = float(getattr(_orders_cfg, "exit_limit_price_buffer_pct", 0.0) or 0.0)
+            _tick_order_type = "LIMIT" if _exit_buf > 0 else "MARKET"
+            _tick_limit_price = None
+            if _exit_buf > 0:
+                _buf_amt = float(ltp) * _exit_buf
+                _tick_limit_price = max(0.01, float(ltp) - _buf_amt) if _exit_side == "SELL" else float(ltp) + _buf_amt
             order_result = self._ctx.place_order(
-                opposite_side(position),
+                _exit_side,
                 position_quantity(position),
                 symbol,
                 note=f"TickExit {exit_reason}",
-                product=self._ctx.engine.order_product,
+                product=(position.get("order_product") or self._ctx.engine.order_product),
                 enforce_spread_check=False,
                 enforce_margin_check=False,
                 entry_price=ltp,
+                order_type=_tick_order_type,
+                price=_tick_limit_price,
             )
             exit_price = ltp
             if order_result and order_result.average_price:

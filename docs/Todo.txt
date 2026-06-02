@@ -113,13 +113,38 @@ Intraday Options Engine
   [x] Pair combined stop/target and combined P&L tracking
   [x] require_closed_signal_candle = True (tick entry most valuable here)
   [x] Stateful momentum confirmation and pullback workflow persisted across saves
+  [x] Startup reconciliation includes NRML positions (not MIS-only) — 2026-06-02
+  [x] Runtime broker resync injects manually opened positions during live sessions — 2026-06-02
+  [x] All exits use LIMIT with exit_limit_price_buffer_pct buffer (Kite F&O API requirement) — 2026-06-02
+  [x] Exit limit prices rounded to nearest ₹0.05 tick size in executor.py — 2026-06-02
+  [x] Exit orders use position["order_product"] (NRML/MIS) not engine default — 2026-06-02
+  [x] delivery_equity backtest: daily bar midnight timestamp handled in get_cycle_state — 2026-06-02
+  [x] _load_dotenv resolves .env relative to config.py directory (runner CWD fix) — 2026-06-02
+  [x] auto_auth.py prints public IP after successful login — 2026-06-02
 
 Quality
-  [x] 116-test unit suite (tests/unit/)
+  [x] Unit test suite (tests/unit/)
   [x] Type hints across orchestration, broker, engine, executor modules
   [x] pyproject.toml with mypy and ruff configuration
   [x] requirements-dev.txt for tooling dependencies
   [x] Backtest uses same resolve_trade_targets() and adaptive builders as live
+
+
+COMPLETED (2026-06-03)
+---------------------
+
+Trail-Only Exit
+  [x] exit_mode config flag (TRAIL_ONLY / HARD_TARGET) in config.py, config.runtime.yaml
+  [x] models/position.py: update_trailing_stop — target-cross activates trailing, sets sentinel
+  [x] engines/common.py: pass exit_mode through module-level wrapper
+  [x] tick_exit/monitor.py: skip TARGET arm when sentinel (target >= 1e8)
+  [x] engines/intraday_options.py: runner level2 uses sentinel not hard level3 target
+  [x] cli/configuration.py: exit_mode in SessionConfig + build_session_config_from_dict
+  [x] backtesting.py: BacktestConfig.exit_mode + wired into all position builders
+  [x] orchestration/session.py: exit_mode in position_extra_fields at entry
+  [x] web/static/index.html: Exit Mode dropdown on Live and Backtest configure tabs
+  [x] web/routes/config.py: parse exit_mode from backtest payload
+  [x] Unit tests: 6 new tests for trail-only and hard-target behavior
 
 
 OPEN

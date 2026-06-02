@@ -450,9 +450,8 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                 )
                 position["stop_loss"] = max(float(position["stop_loss"]), protected_level)
                 position["trailing_stop"] = max(float(position["trailing_stop"]), protected_level)
-                position["target"] = float(position["runner_level3_target"])
-                if self._strong_trend_persists(position, snapshot):
-                    position["trailing_active"] = True
+                position["target"] = 1e9  # sentinel — trailing takes over; runner_level3_target kept for logging
+                position["trailing_active"] = True
         else:
             if index == 0:
                 position["stop_loss"] = min(float(position["stop_loss"]), entry_price)
@@ -464,9 +463,8 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                 )
                 position["stop_loss"] = min(float(position["stop_loss"]), protected_level)
                 position["trailing_stop"] = min(float(position["trailing_stop"]), protected_level)
-                position["target"] = float(position["runner_level3_target"])
-                if self._strong_trend_persists(position, snapshot):
-                    position["trailing_active"] = True
+                position["target"] = 0.01  # sentinel — trailing takes over; runner_level3_target kept for logging
+                position["trailing_active"] = True
 
     def get_cycle_state(self, now):
         if now.weekday() >= 5:
@@ -1450,7 +1448,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                 entry_analytics=analytics,
                 engine_name=self.name,
                 execution_mode="LIVE",
-                order_product=self.order_product,
+                order_product=(item.get("product") or self.order_product).upper(),
                 premium_volatility_distance=float(premium_volatility_distance or 0.0),
                 extra_fields={
                     "reconciled_manual_position": True,
@@ -1473,6 +1471,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                 lot_size=lot_size,
                 engine_name=self.name,
                 execution_mode="LIVE",
+                order_product=(item.get("product") or self.order_product).upper(),
             )
             fallback["reconciled_manual_position"] = True
             return symbol, merge_persisted_position_state(fallback, persisted_position)
@@ -1486,7 +1485,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
 
         try:
             broker_positions = {}
-            for item in get_options_positions(product="MIS"):
+            for item in get_options_positions(product=None):
                 symbol, broker_position = self._build_reconciled_live_position(
                     item,
                     persisted_positions.get(

@@ -70,7 +70,9 @@ class Position:
             return (self.best_price - self.entry_price) * self.quantity
         return (self.entry_price - self.best_price) * self.quantity
 
-    def update_trailing_stop(self, latest_close: float, trailing_pct: float) -> bool:
+    def update_trailing_stop(
+        self, latest_close: float, trailing_pct: float, exit_mode: str = "TRAIL_ONLY"
+    ) -> bool:
         latest_close = float(latest_close)
         trailing_pct = float(trailing_pct)
         trailing_distance = self.trailing_distance
@@ -80,10 +82,14 @@ class Position:
         old_trailing = self.trailing_stop
         if self.side == PositionSide.BUY:
             self.best_price = max(self.best_price, latest_close)
+            if exit_mode == "TRAIL_ONLY" and latest_close >= self.target and self.target < 1e8:
+                self.trailing_active = True
+                self.target = 1e9
             if self.trailing_activation_distance and (
                 self.best_price - self.entry_price
             ) < self.trailing_activation_distance:
-                return False
+                if not self.trailing_active:
+                    return False
             if self.trailing_activation_distance:
                 self.trailing_active = True
             candidate = (
@@ -95,10 +101,14 @@ class Position:
             self.trailing_stop = max(self.trailing_stop, candidate)
         else:
             self.best_price = min(self.best_price, latest_close)
+            if exit_mode == "TRAIL_ONLY" and latest_close <= self.target and self.target > 0.02:
+                self.trailing_active = True
+                self.target = 0.01
             if self.trailing_activation_distance and (
                 self.entry_price - self.best_price
             ) < self.trailing_activation_distance:
-                return False
+                if not self.trailing_active:
+                    return False
             if self.trailing_activation_distance:
                 self.trailing_active = True
             candidate = (

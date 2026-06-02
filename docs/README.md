@@ -348,8 +348,16 @@ Colors are suppressed automatically when stdout is not a TTY (e.g., redirected t
 - Strategies: `ATM_MOMENTUM`, `ATM_ORB`, `ATM_VWAP_REVERSION`, `ATM_MULTI`, `ATM_BREAKOUT_EXPANSION`, `ATM_IV_EXPANSION`, `ATM_TRAP_REVERSAL`
 - Dynamic ATM strike selection and rolling for open long option flows
 - Greeks, IV, delta, spread, open-interest, expiry, cost, and vega-crush filters
-- Staged momentum entry: breakout confirmation + pullback re-entry sequence
-- Legacy immediate entry mode also available
+- **Entry modes** (selectable in UI and CLI):
+  - `LIVE_STAGED` (default) — closed candle signal + staged breakout confirmation
+  - `LIVE_TICK_CONFIRM` — closed candle signal + forming-candle preview (sub-1m) + live LTP entry
+  - `LEGACY_IMMEDIATE` — legacy bypass of staged filters (not recommended for new setups)
+- **FormingCandlePreview** (LIVE_TICK_CONFIRM only): synthesises partial candle from WebSocket LTP + previous close; evaluates signal before 1m bar closes; requires `forming_tick_confirm_ticks` consecutive ticks above/below threshold to confirm
+- **Per-session UI overrides** (available in both web and console):
+  - `max_trades_per_underlying` — daily cap per underlying (default 2; range 1–10)
+  - `time_exit_minutes` — auto-exit after N minutes (default 15; 0 = disabled)
+  - `forming_tick_enabled` — toggle forming-candle entry
+  - `forming_tick_confirm_ticks` — confirmation ticks required (default 2; range 1–5)
 - Trend-adaptive runner: premium-volatility-aware trailing; three-level partial exits
 - Require-closed-signal-candle flag (`require_closed_signal_candle = True`) — makes tick entry especially valuable here
 
@@ -396,6 +404,7 @@ First actionable is higher than the configured minimum because `confirm_signal()
 - Order audit trail and trade store under `state/trade_store/`
 - Per-cycle data caching to reduce redundant API calls
 - Startup position reconciliation from broker for F&O and delivery engines
+- **Runtime position resync**: in LIVE sessions, `_sync_exit_only_live_positions` polls the broker every `live_broker_resync_interval_seconds` (default 60s) and automatically injects newly detected manual positions into the algo's position dict for management
 - Runtime state persistence under `state/` across restarts
 
 ---
@@ -409,10 +418,10 @@ Key sections and fields:
 | Section | Notable fields |
 | --- | --- |
 | `execution_safety` | `min_ranked_candidate_score`, `reversal_exit_confirmation_candles`, `intraday_equity_entry_cutoff_minutes_before_squareoff` |
-| `orders` | `default_entry_order_type`, `entry_limit_price_buffer_pct`, `max_live_order_notional`, `max_spread_pct`, `margin_check_enabled`, `max_orders_per_minute` |
-| `session_defaults` | `exit_only_default`, `live_broker_resync_interval_seconds` |
+| `orders` | `default_entry_order_type`, `entry_limit_price_buffer_pct`, `exit_limit_price_buffer_pct` (default 0.01 — LIMIT buffer for all exit orders; set 0 to disable), `max_live_order_notional`, `max_spread_pct`, `margin_check_enabled`, `max_orders_per_minute` |
+| `session_defaults` | `exit_only_default`, `live_broker_resync_interval_seconds` (applies to both exit-only and normal LIVE sessions) |
 | `risk_controls` | `daily_max_loss_pct`, `consecutive_loss_limit`, `api_failure_pause_minutes`, `abnormal_slippage_pause_pct` |
-| `fno` | `intraday_options_lot_mode`, `intraday_options_entry_mode`, `intraday_options_max_entry_cost_ratio`, `intraday_options_max_spread_pct`, `intraday_options_min_open_interest`, `intraday_options_roll_trigger_pct`, `intraday_options_theta_exit_ratio` |
+| `fno` | `intraday_options_lot_mode`, `intraday_options_entry_mode` (`LIVE_STAGED`\|`LEGACY_IMMEDIATE`\|`LIVE_TICK_CONFIRM`), `intraday_options_max_hold_minutes`, `intraday_options_max_trades_per_underlying`, `intraday_options_max_entry_cost_ratio`, `intraday_options_max_spread_pct`, `intraday_options_min_open_interest`, `intraday_options_roll_trigger_pct`, `intraday_options_theta_exit_ratio` |
 | `engine_defaults.<engine>` | `sleep_seconds`, `cooldown_seconds`, `data_period`, `data_interval` — all engines |
 | `engine_defaults.intraday_equity` | `square_off_time`, `gap_threshold_percent`, `opening_range_candles`, `breakout_volume_multiplier`, adaptive level multipliers |
 | `engine_defaults.delivery_equity` | `max_symbol_allocation`, `max_hold_days`, `nifty_trend_ma_window`, `volatility_trailing_range_multiplier`, adaptive level multipliers |
@@ -433,6 +442,8 @@ All `engine_defaults` values can be changed in `config.runtime.yaml` without tou
 - Intraday-equity and intraday-futures backtests enforce entry cutoff and forced square-off so MIS positions are not carried overnight
 - Auto-adaptive backtests use a backtest-local regime cache; live runtime state is not mutated
 - Intraday-options backtests use real option contract symbols, premium candles, and lot-sized quantities
+- All exit orders use `LIMIT` type with `exit_limit_price_buffer_pct` (default 1%) buffer — Kite API does not support raw `MARKET` exits for F&O; limit prices are tick-aligned to ₹0.05 in `executor.py`
+- Exit orders use the product stored in `position["order_product"]` (set at entry or reconciliation), not the engine's default — NRML positions exit as NRML, MIS positions exit as MIS
 - `tick_entry_enabled=True` in `BacktestConfig` models early intra-candle fills rather than always filling at candle close; for `intraday_options` the simulation uses the option premium candle OHLC directly
 - Backtest trailing stop ratchet uses candle **High** (BUY) / **Low** (SELL) before exit evaluation — simulates the intra-candle favorable move before a spike-and-crash, matching live tick-exit behaviour
 - Backtests run correctly on weekends: `get_underlying_bias()` returns NEUTRAL when no live underlying data is available instead of crashing; the underlying bias filter is skipped rather than blocking all entries
@@ -458,7 +469,7 @@ venv\Scripts\python -m pytest
 ## Test Status
 
 ```
-192 passed, 1 pre-existing failure
+tests passed, 1 pre-existing failure
 ```
 
 The 1 failing test (`IntradayOptionsEngineTests.test_get_cycle_state_before_open_waits`) is a pre-existing edge-case in `engines/intraday_options.py` boundary logic unrelated to entry, exit, or risk features.

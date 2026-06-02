@@ -144,6 +144,12 @@ class BacktestConfig:
     # When True, entry fills are simulated at an estimated intra-candle price
     # (rather than candle close) to model early breakout entry via ticks.
     tick_entry_enabled: bool = True
+    # Session-level overrides (None = use yaml defaults)
+    max_trades_per_underlying: int | None = None
+    time_exit_minutes: int | None = None
+    forming_tick_enabled: bool | None = None
+    forming_tick_confirm_ticks: int | None = None
+    exit_mode: str = "TRAIL_ONLY"
 
 
 def _prompt_default(key, fallback):
@@ -201,11 +207,13 @@ class BacktestEngine:
             return IntradayFuturesEngine(sl_percent, target_percent, trailing_percent)
         if self.config.engine_name == "intraday_options":
             engine = IntradayOptionsEngine(sl_percent, target_percent, trailing_percent)
-            engine.momentum_entry_mode = (
-                "LEGACY_RAW"
-                if str(self.config.intraday_options_entry_mode).upper() == "LEGACY_IMMEDIATE"
-                else "STAGED"
-            )
+            # Backtest has no live WebSocket tick infrastructure, so STAGED mode never fires.
+            # All entry modes except LEGACY_IMMEDIATE run as LEGACY_RAW in backtest.
+            engine.momentum_entry_mode = "LEGACY_RAW"
+            if self.config.time_exit_minutes is not None:
+                engine.max_hold_minutes = int(self.config.time_exit_minutes)
+            if self.config.max_trades_per_underlying is not None:
+                engine.max_trades_per_underlying_per_day = int(self.config.max_trades_per_underlying)
             return engine
         return None
 
@@ -390,12 +398,13 @@ class BacktestEngine:
             if i % step == 0 or i == total - 1:
                 closed = len(self.trades)
                 wins = sum(1 for t in self.trades if t.get("pnl", 0) > 0)
-                running_pnl = sum(t.get("pnl", 0) for t in self.trades)
+                gross_pnl = sum(t.get("pnl", 0) for t in self.trades)
+                net_pnl   = sum(t.get("net_pnl", t.get("pnl", 0)) for t in self.trades)
                 win_rate = wins * 100 // closed if closed else 0
                 self._log(
                     f"[BACKTEST] {i+1}/{total} ({(i+1)*100//total}%) | "
                     f"Trades={closed} | WinRate={win_rate}% | "
-                    f"P&L=₹{running_pnl:,.0f}"
+                    f"Gross=₹{gross_pnl:,.0f} | Net=₹{net_pnl:,.0f}"
                 )
 
         self._close_all_open_positions(history, timeline[-1])
@@ -764,7 +773,8 @@ class BacktestEngine:
                 )
                 return
 
-        for candidate in ranked_candidates[: self.config.top_n]:
+        for _raw_candidate in ranked_candidates[: self.config.top_n]:
+            candidate = _raw_candidate
             if len(self.positions) >= self.config.max_positions:
                 break
             if candidate["symbol"] in self.positions:
@@ -779,6 +789,20 @@ class BacktestEngine:
                 and trade_identity in self.traded_symbols_by_day[trade_day]
             ):
                 continue
+
+            # Daily trade cap per underlying — mirrors session.py enforcement
+            if hasattr(self.engine_helper, "get_trade_frequency_key") and hasattr(self.engine_helper, "get_max_trades_per_day"):
+                freq_key = self.engine_helper.get_trade_frequency_key(
+                    candidate["symbol"], candidate.get("analytics")
+                )
+                max_trades = (
+                    self.config.max_trades_per_underlying
+                    if self.config.max_trades_per_underlying is not None
+                    else self.engine_helper.get_max_trades_per_day()
+                )
+                if freq_key and max_trades > 0:
+                    if int(self.trade_counts_by_day[trade_day].get(freq_key, 0)) >= max_trades:
+                        continue
 
             current_equity = self._current_equity({})
             deployed_capital = current_equity - self.cash
@@ -946,6 +970,7 @@ class BacktestEngine:
                             "partial_exit_events": [],
                             "realized_pnl_parts": 0.0,
                             "realized_charges_parts": 0.0,
+                            "exit_mode": self.config.exit_mode,
                         },
                         risk_style_name=self.config.risk_style_name,
                     )
@@ -976,6 +1001,7 @@ class BacktestEngine:
                         "expected_costs": actual_targets["expected_costs"],
                         "expected_net_profit": actual_targets["expected_net_profit"],
                         "cost_to_profit_ratio": actual_targets["cost_to_profit_ratio"],
+                        "exit_mode": self.config.exit_mode,
                     },
                 )
             else:
@@ -1003,6 +1029,7 @@ class BacktestEngine:
                     expected_costs=actual_targets["expected_costs"],
                     expected_net_profit=actual_targets["expected_net_profit"],
                     cost_to_profit_ratio=actual_targets["cost_to_profit_ratio"],
+                    exit_mode=self.config.exit_mode,
                 )
 
             if candidate["signal"] == "BUY":
@@ -1011,6 +1038,13 @@ class BacktestEngine:
                 self.cash += entry_price * qty
 
             self.traded_symbols_by_day[trade_day].add(trade_identity)
+            if hasattr(self.engine_helper, "get_trade_frequency_key"):
+                _freq_key = self.engine_helper.get_trade_frequency_key(
+                    candidate["symbol"], candidate.get("analytics")
+                )
+                if _freq_key:
+                    _day_counts = self.trade_counts_by_day[trade_day]
+                    self.trade_counts_by_day[trade_day][_freq_key] = int(_day_counts.get(_freq_key, 0)) + 1
             self.trades.append(
                 {
                     "symbol": candidate["symbol"],
@@ -1182,6 +1216,12 @@ class BacktestEngine:
                 trade["net_pnl"] = total_net_pnl
                 trade["partial_exit_count"] = len(position.get("partial_exit_events") or [])
                 trade["partial_exit_events"] = position.get("partial_exit_events") or []
+                try:
+                    _entry_ts = pd.Timestamp(trade["entry_time"])
+                    _exit_ts = pd.Timestamp(timestamp)
+                    trade["hold_minutes"] = int((_exit_ts - _entry_ts).total_seconds() // 60)
+                except Exception:
+                    trade["hold_minutes"] = None
                 self._on_trade({
                     "symbol": symbol,
                     "side": side,
@@ -1834,22 +1874,58 @@ def prompt_backtest_config():
         option_backtest_settings = None
 
     intraday_options_lot_mode = str(get_runtime_config().fno.intraday_options_lot_mode or "CAPITAL_BASED").upper()
-    intraday_options_entry_mode = str(get_runtime_config().fno.intraday_options_entry_mode or "LIVE_STAGED").upper()
+    bt_max_trades_per_underlying = None
+    bt_time_exit_minutes = None
+    bt_forming_tick_enabled = None
+    bt_forming_tick_confirm_ticks = None
     if engine_class.name == "intraday_options":
+        _entry_default_key = _prompt_default_int("intraday_options_entry_mode", 1)
+        intraday_options_entry_mode = prompt_choice(
+            f"Entry mode: Live Tick Confirm(1) / Live Staged(2) / Legacy Immediate(3)? [default {_entry_default_key}]: ",
+            [
+                {"key": 1, "value": "LIVE_TICK_CONFIRM"},
+                {"key": 2, "value": "LIVE_STAGED"},
+                {"key": 3, "value": "LEGACY_IMMEDIATE"},
+            ],
+            default=_entry_default_key,
+        )
+        _max_trades_default = _prompt_default_int("max_trades_per_underlying", 2)
+        bt_max_trades_per_underlying = prompt_int(
+            f"Max trades per underlying per day [default {_max_trades_default}]: ",
+            default=_max_trades_default,
+            minimum=1,
+        )
+        _time_exit_default = _prompt_default_int("time_exit_minutes", 15)
+        bt_time_exit_minutes = prompt_int(
+            f"Time exit window in minutes (0=disabled) [default {_time_exit_default}]: ",
+            default=_time_exit_default,
+            minimum=0,
+        )
+        _forming_default = _prompt_default_int("forming_tick_enabled", 1)
+        _forming_choice = prompt_choice(
+            f"Enable forming-candle entry? YES(1) / NO(2) [default {_forming_default}]: ",
+            [{"key": 1, "value": "YES"}, {"key": 2, "value": "NO"}],
+            default=_forming_default,
+        )
+        bt_forming_tick_enabled = _forming_choice == "YES"
+        if bt_forming_tick_enabled:
+            _confirm_default = _prompt_default_int("forming_tick_confirm_ticks", 2)
+            bt_forming_tick_confirm_ticks = prompt_int(
+                f"Confirm ticks for forming-candle signal [default {_confirm_default}]: ",
+                default=_confirm_default,
+                minimum=1,
+            )
         summary_lines.append(
             "Intraday options lot sizing="
             + ("1 lot default" if intraday_options_lot_mode == "ONE_LOT" else "capital based")
             + " (from config)"
         )
-        summary_lines.append(
-            "Intraday options entry mode="
-            + (
-                "live staged breakout confirmation"
-                if intraday_options_entry_mode == "LIVE_STAGED"
-                else "legacy immediate breakout"
-            )
-            + " (from config)"
-        )
+        summary_lines.append(f"Entry mode={intraday_options_entry_mode}")
+        summary_lines.append(f"Max trades/underlying/day={bt_max_trades_per_underlying}")
+        if bt_time_exit_minutes is not None:
+            summary_lines.append(f"Time exit={bt_time_exit_minutes}m" if bt_time_exit_minutes > 0 else "Time exit=disabled")
+    else:
+        intraday_options_entry_mode = str(get_runtime_config().fno.intraday_options_entry_mode or "LIVE_STAGED").upper()
 
     print_prompt_help(
         "Choose the risk style that controls ATR stop, trailing stop, and capital risk.",
@@ -2000,6 +2076,11 @@ def prompt_backtest_config():
         intraday_options_entry_mode=intraday_options_entry_mode,
         summary_lines=summary_lines,
         option_backtest_settings=option_backtest_settings,
+        max_trades_per_underlying=bt_max_trades_per_underlying,
+        time_exit_minutes=bt_time_exit_minutes,
+        forming_tick_enabled=bt_forming_tick_enabled,
+        forming_tick_confirm_ticks=bt_forming_tick_confirm_ticks,
+        exit_mode=str(get_runtime_config().execution_safety.exit_mode or "TRAIL_ONLY").upper(),
     )
 
 
@@ -2021,6 +2102,39 @@ def export_backtest_results(summary):
     lines.append(f"Max drawdown: {summary['max_drawdown_percent']:.2f}%")
     lines.append(f"Estimated charges: {summary['total_estimated_charges']:.2f}")
     lines.append(f"Estimated net P&L: {summary['total_net_pnl']:+.2f}")
+
+    # Extended diagnostics
+    trades_df = summary["trades"]
+    if not trades_df.empty and "exit_reason" in trades_df.columns:
+        closed = trades_df[trades_df["exit_time"].notna()].copy()
+        if not closed.empty:
+            wins = closed[closed["pnl"] > 0]
+            losses = closed[closed["pnl"] <= 0]
+            avg_win = float(wins["pnl"].mean()) if not wins.empty else 0.0
+            avg_loss = float(losses["pnl"].mean()) if not losses.empty else 0.0
+            gross_profit = float(wins["pnl"].sum())
+            gross_loss = abs(float(losses["pnl"].sum()))
+            profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else float("inf")
+            total_charges = float(closed["estimated_charges"].sum()) if "estimated_charges" in closed.columns else 0.0
+            charges_pct_of_gross = round(total_charges / gross_profit * 100, 1) if gross_profit > 0 else 0.0
+            tick_count = int(closed["tick_entry"].sum()) if "tick_entry" in closed.columns else 0
+            lines.append(f"Avg win: {avg_win:+.2f} | Avg loss: {avg_loss:+.2f} | Profit factor: {profit_factor}")
+            lines.append(f"Charges as % of gross profit: {charges_pct_of_gross:.1f}%")
+            lines.append(f"Tick entries: {tick_count} / {len(closed)}")
+            # Trades per day
+            if "entry_time" in closed.columns:
+                try:
+                    dates = pd.to_datetime(closed["entry_time"]).dt.date
+                    per_day = dates.value_counts()
+                    lines.append(f"Trades/day: min={per_day.min()} max={per_day.max()} avg={per_day.mean():.1f}")
+                except Exception:
+                    pass
+            # P&L breakdown by exit reason
+            reason_col = "exit_reason"
+            for reason, grp in closed.groupby(reason_col):
+                r_pnl = float(grp["pnl"].sum())
+                lines.append(f"  {reason}: {len(grp)} trades, net gross {r_pnl:+.2f}")
+
     summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     summary["trades"].to_csv(trades_path, index=False)

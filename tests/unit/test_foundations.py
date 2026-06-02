@@ -163,6 +163,82 @@ class PositionModelTests(unittest.TestCase):
         reason = evaluate_exit(position, {"High": 111.0, "Low": 100.0}, include_target=True)
         self.assertEqual(reason, "TARGET")
 
+    def test_trail_only_buy_target_cross_activates_trailing_and_sets_sentinel(self):
+        position = Position(
+            symbol="SBIN.NS",
+            side=PositionSide.BUY,
+            quantity=5,
+            entry_price=100.0,
+            stop_loss=95.0,
+            target=110.0,
+            trailing_stop=96.0,
+            trailing_distance=4.0,
+        )
+        position.update_trailing_stop(latest_close=110.0, trailing_pct=0.0, exit_mode="TRAIL_ONLY")
+        self.assertTrue(position.trailing_active)
+        self.assertEqual(position.target, 1e9)
+        self.assertEqual(position.trailing_stop, 106.0)
+
+    def test_trail_only_sell_target_cross_activates_trailing_and_sets_sentinel(self):
+        position = Position(
+            symbol="SBIN.NS",
+            side=PositionSide.SELL,
+            quantity=5,
+            entry_price=100.0,
+            stop_loss=106.0,
+            target=90.0,
+            trailing_stop=105.0,
+            trailing_distance=4.0,
+        )
+        position.update_trailing_stop(latest_close=90.0, trailing_pct=0.0, exit_mode="TRAIL_ONLY")
+        self.assertTrue(position.trailing_active)
+        self.assertEqual(position.target, 0.01)
+        self.assertEqual(position.trailing_stop, 94.0)
+
+    def test_hard_target_mode_does_not_set_sentinel(self):
+        position = Position(
+            symbol="SBIN.NS",
+            side=PositionSide.BUY,
+            quantity=5,
+            entry_price=100.0,
+            stop_loss=95.0,
+            target=110.0,
+            trailing_stop=96.0,
+            trailing_distance=4.0,
+        )
+        position.update_trailing_stop(latest_close=110.0, trailing_pct=0.0, exit_mode="HARD_TARGET")
+        self.assertEqual(position.target, 110.0)
+
+    def test_trail_only_sentinel_target_never_triggers_evaluate_exit(self):
+        position = Position(
+            symbol="SBIN.NS",
+            side=PositionSide.BUY,
+            quantity=5,
+            entry_price=100.0,
+            stop_loss=95.0,
+            target=1e9,
+            trailing_stop=108.0,
+            trailing_distance=4.0,
+            trailing_active=True,
+        )
+        reason = position.evaluate_exit(latest_high=200.0, latest_low=109.0, include_target=True)
+        self.assertIsNone(reason)
+
+    def test_trail_only_sentinel_exits_via_trailing_stop_on_reversal(self):
+        position = Position(
+            symbol="SBIN.NS",
+            side=PositionSide.BUY,
+            quantity=5,
+            entry_price=100.0,
+            stop_loss=95.0,
+            target=1e9,
+            trailing_stop=108.0,
+            trailing_distance=4.0,
+            trailing_active=True,
+        )
+        reason = position.evaluate_exit(latest_high=110.0, latest_low=107.0, include_target=True)
+        self.assertEqual(reason, ExitReason.TRAILING_STOP)
+
 
 class BrokerInterfaceTests(unittest.TestCase):
     def test_broker_client_cannot_be_instantiated_without_implementation(self):

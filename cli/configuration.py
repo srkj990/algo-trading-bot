@@ -98,7 +98,13 @@ class SessionConfig:
     min_confirmations: int | None
     intraday_options_lot_mode: str | None
     intraday_options_entry_mode: str | None
+    # New session-level overrides for intraday_options tuning
+    max_trades_per_underlying: int | None = None      # daily cap per underlying (overrides yaml)
+    time_exit_minutes: int | None = None              # max hold minutes (overrides yaml)
+    forming_tick_enabled: bool | None = None          # enable sub-1m forming-candle entry
+    forming_tick_confirm_ticks: int | None = None     # ticks required to confirm forming-candle signal
     paper_trading_override: bool = False
+    exit_mode: str = "TRAIL_ONLY"
 
 
 def validate_session_config(config: SessionConfig) -> SessionConfig:
@@ -131,10 +137,20 @@ def validate_session_config(config: SessionConfig) -> SessionConfig:
         raise ValueError("Live broker resync interval must be >= 0")
     if config.intraday_options_lot_mode not in {None, "ONE_LOT", "CAPITAL_BASED"}:
         raise ValueError("Intraday options lot mode must be ONE_LOT or CAPITAL_BASED")
-    if config.intraday_options_entry_mode not in {None, "LIVE_STAGED", "LEGACY_IMMEDIATE"}:
+    if config.intraday_options_entry_mode not in {
+        None, "LIVE_STAGED", "LEGACY_IMMEDIATE", "LIVE_TICK_CONFIRM"
+    }:
         raise ValueError(
-            "Intraday options entry mode must be LIVE_STAGED or LEGACY_IMMEDIATE"
+            "Intraday options entry mode must be LIVE_STAGED, LEGACY_IMMEDIATE, or LIVE_TICK_CONFIRM"
         )
+    if config.max_trades_per_underlying is not None and not (1 <= config.max_trades_per_underlying <= 10):
+        raise ValueError("max_trades_per_underlying must be between 1 and 10")
+    if config.time_exit_minutes is not None and not (0 <= config.time_exit_minutes <= 120):
+        raise ValueError("time_exit_minutes must be between 0 and 120")
+    if config.forming_tick_confirm_ticks is not None and not (1 <= config.forming_tick_confirm_ticks <= 5):
+        raise ValueError("forming_tick_confirm_ticks must be between 1 and 5")
+    if config.exit_mode not in {"TRAIL_ONLY", "HARD_TARGET"}:
+        raise ValueError("exit_mode must be TRAIL_ONLY or HARD_TARGET")
     return config
 
 
@@ -182,11 +198,19 @@ def log_session_config_summary(config: "SessionConfig") -> None:
         rows.append(("Min confirmations", str(config.min_confirmations)))
     if config.exit_only_mode:
         rows.append(("Exit-only mode", "ACTIVE — no new entries"))
+    rows.append(("Exit mode", config.exit_mode))
     if config.intraday_options_lot_mode:
         rows.append(("Options lot mode", config.intraday_options_lot_mode))
     if config.intraday_options_entry_mode:
         rows.append(("Options entry mode", config.intraday_options_entry_mode))
-
+    if config.max_trades_per_underlying is not None:
+        rows.append(("Max trades/day", str(config.max_trades_per_underlying)))
+    if config.time_exit_minutes is not None:
+        rows.append(("Time exit (min)", str(config.time_exit_minutes) if config.time_exit_minutes > 0 else "Disabled"))
+    if config.forming_tick_enabled is not None:
+        rows.append(("Forming-tick entry", "ON" if config.forming_tick_enabled else "OFF"))
+        if config.forming_tick_enabled and config.forming_tick_confirm_ticks is not None:
+            rows.append(("Confirm ticks", str(config.forming_tick_confirm_ticks)))
     _config_summary(log_event, rows, title="Session Configuration")
 
 
@@ -749,26 +773,58 @@ def collect_session_configuration() -> SessionConfig:
 
     intraday_options_lot_mode = None
     intraday_options_entry_mode = None
+    max_trades_per_underlying = None
+    time_exit_minutes = None
+    forming_tick_enabled = None
+    forming_tick_confirm_ticks = None
     if engine.name == "intraday_options" and atm_option_config:
         intraday_options_lot_mode = str(
             runtime_config.fno.intraday_options_lot_mode or "CAPITAL_BASED"
-        ).upper()
-        intraday_options_entry_mode = str(
-            runtime_config.fno.intraday_options_entry_mode or "LIVE_STAGED"
         ).upper()
         log_event(
             "[MAIN] Intraday options lot sizing from config: "
             + ("1 lot default" if intraday_options_lot_mode == "ONE_LOT" else "capital based")
         )
-        log_event(
-            "[MAIN] Intraday options entry mode from config: "
-            + (
-                "live staged breakout confirmation"
-                if intraday_options_entry_mode == "LIVE_STAGED"
-                else "legacy immediate breakout"
-            )
+        _entry_default_key = _prompt_default_int("intraday_options_entry_mode", 1)
+        intraday_options_entry_mode = cli_input.prompt_choice(
+            f"Entry mode: Live Tick Confirm(1) / Live Staged(2) / Legacy Immediate(3)? [default {_entry_default_key}]: ",
+            [
+                {"label": "LIVE_TICK_CONFIRM", "key": 1, "value": "LIVE_TICK_CONFIRM"},
+                {"label": "LIVE_STAGED", "key": 2, "value": "LIVE_STAGED"},
+                {"label": "LEGACY_IMMEDIATE", "key": 3, "value": "LEGACY_IMMEDIATE"},
+            ],
+            default=_entry_default_key,
         )
-
+        log_event(f"[MAIN] Intraday options entry mode: {intraday_options_entry_mode}")
+        _max_trades_default = _prompt_default_int("max_trades_per_underlying", 2)
+        max_trades_per_underlying = cli_input.prompt_int(
+            f"Max trades per underlying per day [default {_max_trades_default}]: ",
+            default=_max_trades_default,
+            minimum=1,
+        )
+        _time_exit_default = _prompt_default_int("time_exit_minutes", 15)
+        time_exit_minutes = cli_input.prompt_int(
+            f"Time exit window in minutes (0=disabled) [default {_time_exit_default}]: ",
+            default=_time_exit_default,
+            minimum=0,
+        )
+        _forming_default = _prompt_default_int("forming_tick_enabled", 1)
+        _forming_choice = cli_input.prompt_choice(
+            f"Enable forming-candle entry? YES(1) / NO(2) [default {_forming_default}]: ",
+            [
+                {"label": "YES", "key": 1, "value": "YES"},
+                {"label": "NO", "key": 2, "value": "NO"},
+            ],
+            default=_forming_default,
+        )
+        forming_tick_enabled = _forming_choice == "YES"
+        if forming_tick_enabled:
+            _confirm_default = _prompt_default_int("forming_tick_confirm_ticks", 2)
+            forming_tick_confirm_ticks = cli_input.prompt_int(
+                f"Confirm ticks required for forming-candle signal [default {_confirm_default}]: ",
+                default=_confirm_default,
+                minimum=1,
+            )
     auto_single_selection_mode = should_auto_select_top1(
         symbol_mode,
         selected_symbols,
@@ -901,6 +957,10 @@ def collect_session_configuration() -> SessionConfig:
         min_confirmations=min_confirmations,
         intraday_options_lot_mode=intraday_options_lot_mode,
         intraday_options_entry_mode=intraday_options_entry_mode,
+        max_trades_per_underlying=max_trades_per_underlying,
+        time_exit_minutes=time_exit_minutes,
+        forming_tick_enabled=forming_tick_enabled,
+        forming_tick_confirm_ticks=forming_tick_confirm_ticks,
     )
     )
     log_session_config_summary(session_config)
@@ -938,6 +998,12 @@ def build_session_config_from_dict(data: dict) -> SessionConfig:
     live_broker_resync_interval_seconds = int(
         runtime_config.session_defaults.live_broker_resync_interval_seconds
     )
+    _exit_mode_raw = str(data.get("exit_mode", "")).strip().upper()
+    exit_mode = (
+        _exit_mode_raw
+        if _exit_mode_raw in {"TRAIL_ONLY", "HARD_TARGET"}
+        else str(runtime_config.execution_safety.exit_mode or "TRAIL_ONLY").upper()
+    )
 
     # ── data / execution providers ────────────────────────────────────────────
     from data_fetcher import set_data_provider
@@ -970,7 +1036,11 @@ def build_session_config_from_dict(data: dict) -> SessionConfig:
     if engine_choice in {"3", "4", "5", "6"}:
         fno_underlying = str(data.get("fno_underlying", "NIFTY"))
         fno_expiry = str(data.get("fno_expiry", ""))
-        if not fno_expiry:
+        # Engine 6 ATM (non-PAIR) doesn't need the expiry to build selected_symbols —
+        # it only uses it at signal time. Defer to session start so we don't require
+        # a live Kite API key just to build the config (e.g. programmatic paper runners).
+        _defer_expiry = engine_choice == "6" and str(data.get("fno_structure", "SINGLE")).upper() != "PAIR"
+        if not fno_expiry and not _defer_expiry:
             available = get_available_expiries(
                 fno_underlying,
                 instrument_type="FUT" if "futures" in selected_engine_name else "OPT",
@@ -1139,7 +1209,7 @@ def build_session_config_from_dict(data: dict) -> SessionConfig:
         strategy_name: str | None = strategy_name_raw
         strategies: list[str] | None = None
         min_confirmations: int | None = None
-        engine.momentum_entry_mode = "LEGACY_RAW"
+        # momentum_entry_mode set after entry mode is resolved below
     elif engine.name == "intraday_equity" and str(data.get("strategy_mode", "2")) == "3":
         mode = "3"
         strategy_name = None
@@ -1171,6 +1241,10 @@ def build_session_config_from_dict(data: dict) -> SessionConfig:
     # ── intraday options config ───────────────────────────────────────────────
     intraday_options_lot_mode: str | None = None
     intraday_options_entry_mode: str | None = None
+    max_trades_per_underlying: int | None = None
+    time_exit_minutes: int | None = None
+    forming_tick_enabled: bool | None = None
+    forming_tick_confirm_ticks: int | None = None
     if engine.name == "intraday_options" and atm_option_config:
         _lot_mode_from_form = str(data.get("intraday_options_lot_mode", "")).strip().upper()
         intraday_options_lot_mode = (
@@ -1178,9 +1252,27 @@ def build_session_config_from_dict(data: dict) -> SessionConfig:
             if _lot_mode_from_form in {"ONE_LOT", "CAPITAL_BASED"}
             else str(runtime_config.fno.intraday_options_lot_mode or "CAPITAL_BASED").upper()
         )
-        intraday_options_entry_mode = str(
-            runtime_config.fno.intraday_options_entry_mode or "LIVE_STAGED"
-        ).upper()
+        _entry_mode_from_form = str(data.get("intraday_options_entry_mode", "")).strip().upper()
+        intraday_options_entry_mode = (
+            _entry_mode_from_form
+            if _entry_mode_from_form in {"LIVE_STAGED", "LEGACY_IMMEDIATE", "LIVE_TICK_CONFIRM"}
+            else str(runtime_config.fno.intraday_options_entry_mode or "LIVE_STAGED").upper()
+        )
+        engine.momentum_entry_mode = (
+            "LEGACY_RAW" if intraday_options_entry_mode == "LEGACY_IMMEDIATE" else "STAGED"
+        )
+        _max_trades_raw = data.get("max_trades_per_underlying")
+        if _max_trades_raw is not None and str(_max_trades_raw).strip():
+            max_trades_per_underlying = max(1, min(10, int(_max_trades_raw)))
+        _time_exit_raw = data.get("time_exit_minutes")
+        if _time_exit_raw is not None and str(_time_exit_raw).strip():
+            time_exit_minutes = max(0, min(120, int(_time_exit_raw)))
+        _forming_raw = data.get("forming_tick_enabled")
+        if _forming_raw is not None:
+            forming_tick_enabled = bool(_forming_raw)
+            _confirm_raw = data.get("forming_tick_confirm_ticks")
+            if _confirm_raw is not None and str(_confirm_raw).strip():
+                forming_tick_confirm_ticks = max(1, min(5, int(_confirm_raw)))
 
     session_config = validate_session_config(SessionConfig(
         engine_choice=engine_choice,
@@ -1215,7 +1307,12 @@ def build_session_config_from_dict(data: dict) -> SessionConfig:
         min_confirmations=min_confirmations,
         intraday_options_lot_mode=intraday_options_lot_mode,
         intraday_options_entry_mode=intraday_options_entry_mode,
+        max_trades_per_underlying=max_trades_per_underlying,
+        time_exit_minutes=time_exit_minutes,
+        forming_tick_enabled=forming_tick_enabled,
+        forming_tick_confirm_ticks=forming_tick_confirm_ticks,
         paper_trading_override=bool(data.get("paper_trading_override", False)),
+        exit_mode=exit_mode,
     ))
     log_session_config_summary(session_config)
     return session_config

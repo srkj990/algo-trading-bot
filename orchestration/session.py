@@ -288,8 +288,7 @@ def _apply_safe_mode_tightening(context) -> None:
 def _sync_exit_only_live_positions(context, now):
     if str(getattr(context.config, "execution_mode", "")).upper() != "LIVE":
         return False
-    if not bool(getattr(context.config, "exit_only_mode", False)):
-        return False
+    exit_only = bool(getattr(context.config, "exit_only_mode", False))
     resync_interval_seconds = int(
         getattr(context.config, "live_broker_resync_interval_seconds", 0) or 0
     )
@@ -309,16 +308,31 @@ def _sync_exit_only_live_positions(context, now):
         persisted_positions=existing_positions,
     )
     context.session_runtime_state["last_live_broker_resync_at"] = now.isoformat()
-    if reconciled_positions == existing_positions:
-        return False
 
     added = sorted(set(reconciled_positions) - set(existing_positions))
     removed = sorted(set(existing_positions) - set(reconciled_positions))
-    for symbol in added:
-        context.log_event(f"[RECON] Exit-only sync added live broker position: {symbol}")
-    for symbol in removed:
-        context.log_event(f"[RECON] Exit-only sync removed broker-flat position: {symbol}")
-    context.positions = reconciled_positions
+
+    if exit_only:
+        # Exit-only mode: mirror broker state exactly (add and remove)
+        if not added and not removed:
+            return False
+        for symbol in added:
+            context.log_event(f"[RECON] Exit-only sync added live broker position: {symbol}")
+        for symbol in removed:
+            context.log_event(f"[RECON] Exit-only sync removed broker-flat position: {symbol}")
+        context.positions = reconciled_positions
+    else:
+        # Normal mode: only inject newly detected broker positions; never remove
+        # algo-managed positions (they may be between signal and fill, or held
+        # intentionally while broker shows a different snapshot).
+        if not added:
+            return False
+        for symbol in added:
+            context.positions[symbol] = reconciled_positions[symbol]
+            context.log_event(
+                f"[RECON] Runtime sync detected manual broker position: {symbol} — added for management"
+            )
+
     return True
 
 
@@ -516,6 +530,24 @@ def run_trading_session(context):
         or getattr(get_runtime_config().session_defaults, "paper_trading_override", False)
     )
 
+    # Apply session-config overrides to the live engine instance
+    if engine.name == "intraday_options":
+        if getattr(cfg, "time_exit_minutes", None) is not None:
+            engine.max_hold_minutes = int(cfg.time_exit_minutes)
+        if getattr(cfg, "max_trades_per_underlying", None) is not None:
+            engine.max_trades_per_underlying_per_day = int(cfg.max_trades_per_underlying)
+
+    # Lazy expiry resolution for ATM engine — deferred from config-build time so
+    # programmatic paper runners don't need a live Kite API key just to start.
+    if engine.name == "intraday_options" and cfg.atm_option_config and not cfg.atm_option_config.get("expiry"):
+        from fno_data_fetcher import get_available_expiries as _get_expiries
+        _und = cfg.atm_option_config["underlying"]
+        _available = _get_expiries(_und, instrument_type="OPT")
+        if not _available:
+            raise RuntimeError(f"No OPT expiries found for {_und} — ensure Kite is logged in")
+        cfg.atm_option_config["expiry"] = _available[0]
+        context.log_event(f"[MAIN] ATM expiry resolved at session start: {_available[0]}")
+
     context.log_event("[MAIN] Trading session initialized")
     context.log_event(
         f"[MAIN] Engine={engine.name} | Mode={cfg.execution_mode} | ExitOnly={bool(getattr(cfg, 'exit_only_mode', False))} | "
@@ -524,6 +556,21 @@ def run_trading_session(context):
 
     from tick_exit.monitor import TickExitMonitor
     _tick_exit_monitor = TickExitMonitor(context)
+
+    # FormingCandlePreview — sub-1m entry via live LTP + partial forming candle
+    _forming_candle_preview = None
+    _forming_tick_enabled = bool(getattr(cfg, "forming_tick_enabled", False))
+    if (
+        _forming_tick_enabled
+        and getattr(engine, "name", "") == "intraday_options"
+        and str(getattr(cfg, "intraday_options_entry_mode", "")).upper() == "LIVE_TICK_CONFIRM"
+    ):
+        from tick_entry.forming_candle import FormingCandlePreview
+        _confirm_ticks = int(getattr(cfg, "forming_tick_confirm_ticks", None) or 2)
+        _forming_candle_preview = FormingCandlePreview(context, confirm_ticks=_confirm_ticks)
+        context.log_event(
+            f"[MAIN] FormingCandlePreview enabled | confirm_ticks={_confirm_ticks}"
+        )
     if _paper_override:
         context.log_event(
             "[MAIN] paper_trading_override=true — weekend/market-hours checks bypassed. "
@@ -592,6 +639,7 @@ def run_trading_session(context):
                 context.log_event,
                 TRANSACTION_COST_MODEL_ENABLED,
                 float(TRANSACTION_SLIPPAGE_PCT_PER_SIDE or 0.0),
+                exit_limit_price_buffer_pct=float(context.runtime_config.orders.exit_limit_price_buffer_pct or 0.0),
             ):
                 persist_runtime_state(context)
             log_positions(context.positions, context.log_event)
@@ -628,6 +676,29 @@ def run_trading_session(context):
         ranked_candidates = scan_result.ranked_candidates
         context._last_symbol_snapshots = symbol_snapshots  # used by explainability emitter
         position_flow.log_ranked_candidates(ranked_candidates, context.log_event)
+
+        # FormingCandlePreview — merge sub-1m FORMING_TICK candidates
+        if _forming_candle_preview is not None:
+            try:
+                ticker = getattr(context, "_ticker_manager", None)
+                if ticker and ticker.is_connected():
+                    ltp_map = {sym: ticker.get_ltp(sym) for sym in symbol_snapshots}
+                    ltp_map = {k: v for k, v in ltp_map.items() if v and v > 0}
+                    if ltp_map:
+                        history_map = {sym: snap.get("history") for sym, snap in symbol_snapshots.items() if snap.get("history") is not None}
+                        forming_candidates = _forming_candle_preview.scan(history_map, ltp_map)
+                        if forming_candidates:
+                            context.log_event(
+                                f"[FORMING-TICK] {len(forming_candidates)} candidate(s) from sub-1m scan"
+                            )
+                            # Prefer FORMING_TICK over CLOSED_1M for same underlying
+                            forming_underlyings = {c.get("trade_identity") or c.get("underlying_symbol") for c in forming_candidates}
+                            ranked_candidates = [
+                                c for c in ranked_candidates
+                                if (c.get("trade_identity") or c.get("underlying_symbol")) not in forming_underlyings
+                            ] + forming_candidates
+            except Exception:
+                pass
 
         # Warning Center — web-mode only, no-op in console mode
         try:
@@ -675,6 +746,7 @@ def run_trading_session(context):
                 context.log_event,
                 TRANSACTION_COST_MODEL_ENABLED,
                 float(TRANSACTION_SLIPPAGE_PCT_PER_SIDE or 0.0),
+                exit_limit_price_buffer_pct=float(context.runtime_config.orders.exit_limit_price_buffer_pct or 0.0),
             )
             if state_changed:
                 persist_runtime_state(context)
@@ -1452,6 +1524,7 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
         "expected_net_profit": actual_targets["expected_net_profit"],
         "cost_to_profit_ratio": actual_targets["cost_to_profit_ratio"],
         "cost_breakdown": actual_targets["cost_breakdown"],
+        "exit_mode": str(getattr(cfg, "exit_mode", "TRAIL_ONLY")),
     }
     if engine.name == "intraday_options" and cfg.atm_option_config and hasattr(engine, "build_trend_adaptive_position"):
         context.positions[symbol] = engine.build_trend_adaptive_position(
@@ -1643,18 +1716,27 @@ def handle_keyboard_interrupt(context):
             context.fetch_data,
             context.log_event,
         )
+        _exit_buf = float(context.runtime_config.orders.exit_limit_price_buffer_pct or 0.0)
+        _exit_side = opposite_side(position)
+        _exit_order_type = "LIMIT" if _exit_buf > 0 else "MARKET"
+        _exit_limit_price = None
+        if _exit_buf > 0:
+            _buf_amt = float(exit_price) * _exit_buf
+            _exit_limit_price = max(0.01, float(exit_price) - _buf_amt) if _exit_side == "SELL" else float(exit_price) + _buf_amt
         context.log_event(
-            f"[MAIN] Closing {symbol}: {position_side(position)} {position_quantity(position)} units at market"
+            f"[MAIN] Closing {symbol}: {position_side(position)} {position_quantity(position)} units ({_exit_order_type})"
         )
         context.place_order(
-            opposite_side(position),
+            _exit_side,
             position_quantity(position),
             symbol,
             note="User-initiated emergency close-out",
-            product=context.engine.order_product,
+            product=(position.get("order_product") or context.engine.order_product),
             enforce_spread_check=False,
             enforce_margin_check=False,
             entry_price=exit_price,
+            order_type=_exit_order_type,
+            price=_exit_limit_price,
         )
         position_flow.record_closed_trade(
             context.trade_book,

@@ -4,7 +4,72 @@ Track record of bugs found and fixes applied for audit and future reference.
 
 ---
 
-## [2026-05-31] TRAILING_STOP exits producing net losses
+## [2026-06-03] Trail-Only Exit — target activates trailing instead of closing position
+
+### Symptom
+In all engines, when price hit the fixed `target` level the position was closed immediately. Any further move beyond the target was lost. For strong trending moves, this cut off significant upside — position closed exactly at target while price continued to run.
+
+Example: entry 100, target 110, trailing distance 4. Price runs to 115. Old behavior: exits at 110, misses ₹5 further move. New behavior: trails from 115 with trailing stop at 111, exits at 111 on reversal.
+
+### Root Cause (design limitation, not a bug)
+The original `evaluate_exit()` in `models/position.py` returned `TARGET` whenever `latest_high >= target`. There was no mechanism to convert a target hit into a trailing-stop activation.
+
+### Fix
+**`models/position.py`** — `update_trailing_stop()` gains `exit_mode: str = "TRAIL_ONLY"` parameter. When `exit_mode == "TRAIL_ONLY"` and `latest_close >= target` (BUY) or `<= target` (SELL), the method:
+1. Sets `trailing_active = True`
+2. Replaces `target` with a sentinel (`1e9` for BUY, `0.01` for SELL) — unreachable by any real price
+3. Bypasses the `trailing_activation_distance` guard if trailing was already activated by target-cross
+
+`evaluate_exit()` is unchanged — the sentinel values `1e9` / `0.01` are never reached so TARGET exit never fires.
+
+**`engines/common.py`** — module-level `update_trailing_stop()` wrapper passes `exit_mode=position.get("exit_mode", "TRAIL_ONLY")` to the typed model.
+
+**`tick_exit/monitor.py`** — `_arm_position()` skips arming a TARGET WebSocket breakout callback when `target >= 1e8` (sentinel guard).
+
+**`engines/intraday_options.py`** — `apply_runner_partial_exit()` at level 2: instead of setting `target = runner_level3_target`, now sets sentinel (`1e9` BUY / `0.01` SELL`) and forces `trailing_active = True`. `runner_level3_target` is preserved in the position dict for logging.
+
+**`config.py`** + **`config/config.runtime.yaml`** — New `execution_safety.exit_mode` config field. Default: `"TRAIL_ONLY"`. Change to `"HARD_TARGET"` to restore old immediate-exit behavior.
+
+**`cli/configuration.py`** + **`web/static/index.html`** + **`web/routes/config.py`** — Exit Mode selector added to both live and backtest configure forms. Default pre-populated from runtime config.
+
+**`backtesting.py`** + **`orchestration/session.py`** — `exit_mode` stored in `position["exit_mode"]` at entry so it survives restarts and is accessible from any exit path.
+
+### Files Changed
+- `models/position.py` — `update_trailing_stop()`: exit_mode parameter + target-cross sentinel logic
+- `engines/common.py` — pass exit_mode through wrapper
+- `tick_exit/monitor.py` — sentinel guard on TARGET arm
+- `engines/intraday_options.py` — runner level2 uses sentinel instead of hard level3 target
+- `config.py` — `ExecutionSafetyConfig.exit_mode` field + validation
+- `config/config.runtime.yaml` — `execution_safety.exit_mode: "TRAIL_ONLY"`
+- `cli/configuration.py` — `exit_mode` in `SessionConfig` + validation + `build_session_config_from_dict`
+- `backtesting.py` — `BacktestConfig.exit_mode` + wired into all position builders
+- `orchestration/session.py` — `exit_mode` in `position_extra_fields` at entry
+- `web/static/index.html` — Exit Mode dropdowns on both Live and Backtest tabs
+- `web/routes/config.py` — parse `exit_mode` from backtest form payload
+- `tests/unit/test_foundations.py` — 6 new tests covering trail-only and hard-target behavior
+- `tests/unit/test_engine_workflows.py` — updated runner level2 assertion to expect sentinel
+
+---
+
+## [2026-06-01] Backtest produces 0 trades after entry mode default changed to LIVE_STAGED
+
+### Symptom
+After changing `intraday_options_entry_mode` default from `LEGACY_IMMEDIATE` to `LIVE_STAGED` in `config.runtime.yaml`, backtest produced 0 trades across an entire 5d/1m ATM_MULTI run. Log showed `Trades=0 | WinRate=0% | P&L=₹0` at every checkpoint from candle 1 through 750.
+
+### Root Cause
+`backtesting.py:_build_engine_helper()` mapped any non-`LEGACY_IMMEDIATE` entry mode to `momentum_entry_mode = "STAGED"` on the engine instance. The `STAGED` momentum entry pipeline requires 3 consecutive candles (breakout → confirmation → pullback) to complete, plus live WebSocket tick-based staging signals. In backtest, the **pullback detection** (`pullback_ready`) requires price to pull back near EMA/VWAP after the breakout — a market condition that rarely triggers in NIFTY 1m data within the 3-candle window. Combined with the `SIDEWAYS` regime blocker and range filters, the STAGED path effectively never produced a valid entry.
+
+### Fix
+**`backtesting.py:_build_engine_helper()`** — Always set `engine.momentum_entry_mode = "LEGACY_RAW"` in backtest regardless of the session's `intraday_options_entry_mode` config. The `LEGACY_RAW` path bypasses staged confirmation filters (delta/IV/VWAP checks still run) and directly evaluates breakout signals on closed candles — the correct behaviour for backtesting where there is no live tick data.
+
+The `intraday_options_entry_mode` setting still controls live session behavior (LIVE_STAGED → STAGED pipeline, LEGACY_IMMEDIATE → LEGACY_RAW) but is now ignored for backtest engine setup.
+
+### Files Changed
+- `backtesting.py`: `_build_engine_helper()` — removed conditional `"STAGED"` branch, always uses `"LEGACY_RAW"`
+
+---
+
+## [2026-06-01] Backtest overtrading + timing improvements (Phase 1–5)
 
 ### Symptom
 Backtest results showed TRAILING_STOP exits firing within 1–3 candles of entry with near-zero gross P&L, resulting in net losses after transaction charges (~₹29–52 per trade).
@@ -162,7 +227,303 @@ Key effect: tighter trailing (ATR×0.7) vs activation (ATR×1.0) means trailing 
 
 ---
 
-## [2026-05-31] UI: lot mode selector + auto capital-per-trade
+## [2026-06-02] Runtime broker resync misses manually opened positions
+
+### Symptom
+User opens a position manually in Kite (e.g. NIFTY 2nd Jun 23300 PE, qty=130, NRML, avg ₹29.65) while the bot is already running a live session. Bot never detects or manages the position — it is invisible to the algo until the session is restarted.
+
+```
+# Log shows only algo-entered positions; manually opened position absent:
+[SESSION] Open positions: {}
+[RECON] Loaded 0 live intraday options positions from broker
+```
+
+### Root Cause
+`orchestration/session.py:_sync_exit_only_live_positions()` already had periodic broker resync logic (calls `engine.reconcile_startup()` every `live_broker_resync_interval_seconds`) but was gated by:
+```python
+if not bool(getattr(context.config, "exit_only_mode", False)):
+    return False   # ← blocked all normal LIVE sessions
+```
+Normal sessions (non-exit-only) never ran the resync loop.
+
+### Fix
+**`orchestration/session.py` — `_sync_exit_only_live_positions()`**
+
+Removed the `exit_only_mode` gate. The function now runs in both exit-only and normal LIVE sessions, but behaves differently:
+
+- **Exit-only mode**: mirrors broker state exactly — adds new and removes broker-flat positions (unchanged)
+- **Normal mode**: only injects newly detected manual positions; never removes algo-managed positions to avoid disturbing positions mid-fill or intentionally held by the algo
+
+```python
+exit_only = bool(getattr(context.config, "exit_only_mode", False))
+# ... resync_interval throttle check ...
+added = sorted(set(reconciled_positions) - set(existing_positions))
+removed = sorted(set(existing_positions) - set(reconciled_positions))
+
+if exit_only:
+    # mirror broker state exactly
+    context.positions = reconciled_positions
+else:
+    # normal mode: only add newly detected manual positions
+    for symbol in added:
+        context.positions[symbol] = reconciled_positions[symbol]
+        context.log_event(
+            f"[RECON] Runtime sync detected manual broker position: {symbol} — added for management"
+        )
+```
+
+After the fix, a manually opened NRML position is detected within `live_broker_resync_interval_seconds` (default 60s) and added to the algo's position tracking. The bot then manages its SL, trailing stop, and target exactly like an algo-entered position.
+
+### Input Example
+1. Bot session running in LIVE mode (intraday_options engine)
+2. User manually opens NIFTY2660223300PE in Kite: qty=130, NRML, avg ₹29.65
+3. Within 60 seconds: `[RECON] Runtime sync detected manual broker position: NFO:NIFTY2660223300PE — added for management`
+4. Bot immediately arms tick-exit SL/target breakout callbacks and manages the position
+
+### Files Changed
+- `orchestration/session.py`: `_sync_exit_only_live_positions()` — removed `exit_only_mode` gate; split add-only vs mirror behavior
+- `config/config.runtime.yaml`: updated comment on `live_broker_resync_interval_seconds` to reflect it now covers both normal and exit-only sessions
+
+---
+
+## [2026-06-02] Exit orders use MARKET type — rejected by Kite API for F&O
+
+### Symptom
+All exit orders (STOP_LOSS, TARGET, TRAILING_STOP, TICK_EXIT) were placed as `order_type=MARKET`. For F&O instruments, Kite rejects raw MARKET orders via the API:
+
+```
+[WEB] Trading loop error: Market orders without market protection are not allowed via API.
+```
+
+### Root Cause
+`orchestration/positions.py` and `tick_exit/monitor.py` always passed `order_type="MARKET"` and `price=None` to `place_order()`. Kite API requires either `LIMIT` with a price, or market protection (not supported via the standard API path).
+
+### Fix
+Added `exit_limit_price_buffer_pct` config field (default `0.01` = 1%). All exit call sites now build a LIMIT order when this is set:
+
+```python
+if exit_limit_price_buffer_pct > 0:
+    _order_type = "LIMIT"
+    _buf = float(exit_price) * exit_limit_price_buffer_pct
+    # SELL exit: price slightly below LTP to get filled quickly
+    _limit_price = max(0.01, float(exit_price) - _buf) if _exit_side == "SELL" else float(exit_price) + _buf
+```
+
+For a SELL exit at LTP ₹50 with 1% buffer: limit price = ₹49.50 (filled at market depth immediately). For a BUY exit: ₹50.50.
+
+### Input Example
+- Position: NIFTY 23350 CE, BUY, qty=75
+- LTP at SL breach: ₹39.05
+- Old: `place_order(SELL, 75, order_type="MARKET")` → Kite rejects
+- New: `place_order(SELL, 75, order_type="LIMIT", price=38.66)` → accepted and filled
+
+### Files Changed
+- `config.py`: added `exit_limit_price_buffer_pct: float` to `OrderValidationConfig`; default `0.01` from env `ORDER_EXIT_LIMIT_PRICE_BUFFER_PCT`
+- `config/config.runtime.yaml`: added `exit_limit_price_buffer_pct: 0.01`
+- `orchestration/positions.py`: all 5 exit `place_order` calls updated
+- `orchestration/session.py`: passes `exit_limit_price_buffer_pct` to `manage_open_positions` and `force_square_off_positions`
+- `tick_exit/monitor.py`: exit order in `_fire_exit()` updated
+
+---
+
+## [2026-06-02] Exit orders use engine product (MIS) instead of position product (NRML)
+
+### Symptom
+Manually reconciled NRML options positions were being exited with `product="MIS"`. Kite rejects MIS exit orders for NRML positions:
+
+```
+[EXECUTION] Note: Exit BUY via TRAILING_STOP
+it places mis order and got rejected, because my order is nrml
+```
+
+### Root Cause
+All exit `place_order` calls in `orchestration/positions.py` and `tick_exit/monitor.py` used `product=engine.order_product` (hardcoded to `"MIS"` for `intraday_options`). The `position["order_product"]` field, which stores the broker's actual product (`NRML` for reconciled positions), was ignored.
+
+### Fix
+All exit call sites changed from `product=engine.order_product` to `product=(position.get("order_product") or engine.order_product)`. The `order_product` field is stored in the position dict by `build_trend_adaptive_position` and also by `_build_reconciled_live_position` (which now reads it from the broker response).
+
+```python
+# Before:
+product=engine.order_product,          # always "MIS"
+
+# After:
+product=(position.get("order_product") or engine.order_product),  # "NRML" when reconciled
+```
+
+`engines/intraday_options.py:_build_reconciled_live_position()` also updated to store the broker's actual product:
+```python
+order_product=(item.get("product") or self.order_product).upper(),
+```
+
+### Input Example
+- Broker position: NIFTY 23300 PE, NRML, reconciled at startup
+- Old: exit placed as `SELL 130 MIS` → rejected (position is NRML)
+- New: position dict has `order_product="NRML"`; exit placed as `SELL 130 NRML` → accepted
+
+### Files Changed
+- `orchestration/positions.py`: `product=` in all 5 exit paths changed to `(position.get("order_product") or engine.order_product)` (replace_all)
+- `tick_exit/monitor.py`: `_fire_exit()` exit `place_order` updated
+- `engines/intraday_options.py`: `_build_reconciled_live_position()` updated to store broker product
+
+---
+
+## [2026-06-02] Exit limit price not tick-aligned — Kite rejects "price not multiple of tick size"
+
+### Symptom
+LIMIT exit orders were placed with prices like ₹43.31 or ₹38.66. NSE F&O tick size is ₹0.05. Kite rejects prices not aligned to the tick grid:
+
+```
+Order price is not a multiple of tick size
+```
+
+Screenshot showed: LIMIT, MIS, price ₹43.31 (not a multiple of 0.05).
+
+### Root Cause
+Exit limit prices were computed as `LTP × (1 ± buffer_pct)` which produces arbitrary floats. No tick-size rounding was applied anywhere in the order placement path.
+
+### Fix
+**`executor.py`** — added tick rounding for all LIMIT orders before submission:
+
+```python
+if normalized_order_type == "LIMIT" and resolved_price is not None:
+    tick = 0.05
+    resolved_price = round(round(float(resolved_price) / tick) * tick, 2)
+```
+
+This applies to both entry and exit LIMIT orders, for all instruments.
+
+### Input Example
+- LTP at SL breach: ₹43.75; buffer 1%; raw limit price = ₹43.75 × 0.99 = ₹43.3125
+- Old: ₹43.31 → rejected
+- New: round(43.3125 / 0.05) × 0.05 = round(866.25) × 0.05 = 866 × 0.05 = ₹43.30 → accepted
+
+### Files Changed
+- `executor.py`: tick-size rounding added for LIMIT orders
+
+---
+
+## [2026-06-02] Intraday options reconciliation misses NRML positions at startup
+
+### Symptom
+User has a manually opened NRML intraday option position. After restarting the session, the bot logs:
+
+```
+[RECON] Loaded 0 live intraday options positions from broker
+```
+
+The NRML position is invisible despite being live on the broker.
+
+### Root Cause
+`engines/intraday_options.py:reconcile_startup()` called `get_options_positions(product="MIS")` — filtering to MIS only. NRML positions are returned by the broker but were silently discarded.
+
+### Fix
+Changed to `get_options_positions(product=None)` so all open options positions (MIS and NRML) are included in startup reconciliation.
+
+### Input Example
+- Broker: NIFTY 2nd Jun 23300 PE, qty=130, product=NRML
+- Old: `get_options_positions(product="MIS")` → position not returned → 0 loaded
+- New: `get_options_positions(product=None)` → position included → reconciled and managed
+
+### Files Changed
+- `engines/intraday_options.py`: `reconcile_startup()` — `product="MIS"` → `product=None`
+
+---
+
+## [2026-06-02] Delivery equity backtest produces 0 trades — midnight timestamp blocks market hours check
+
+### Symptom
+5-year delivery equity backtest with yfinance 1d data: 0 trades across 496 candles. Log showed `allow_scan=False` for every candle from the very first one.
+
+### Root Cause
+yfinance daily candles have `time(0, 0)` (midnight) as their timestamp. `engines/delivery_equity.py:get_cycle_state()` had a market-hours guard:
+
+```python
+if current_time < self.market_open or current_time >= self.market_close:
+    return {"allow_scan": False, ...}
+```
+
+`time(0, 0)` is before `market_open` (09:15), so every daily candle was blocked as "market closed".
+
+### Fix
+Added a `is_daily_bar` detection: any candle with `time(0, 0)` is treated as a valid daily bar and skips the market-hours guard entirely.
+
+```python
+is_daily_bar = current_time == time(0, 0)
+if not is_daily_bar and (current_time < self.market_open or current_time >= self.market_close):
+    return {"allow_scan": False, "reason": "Market closed for delivery execution"}
+```
+
+### Input Example
+- yfinance 1d bar: `2024-05-15 00:00:00` → `current_time = time(0, 0)`
+- Old: `time(0,0) < time(9,15)` → `allow_scan=False` → 0 trades across full 5-year backtest
+- New: `is_daily_bar=True` → guard skipped → scan proceeds → trades generated
+
+### Files Changed
+- `engines/delivery_equity.py`: `get_cycle_state()` — added `is_daily_bar` check
+
+---
+
+## [2026-06-02] Intraday options runner — `.env` not found when runner sets CWD to subfolder
+
+### Symptom
+Running `runners/06_intraday_options/main.py` (which sets `CWD` to its own folder via `cd /d "%~dp0"`) causes a crash at startup:
+
+```
+Missing required environment variable. Checked: KITE_API_KEY, ZERODHA_API_KEY
+```
+
+`.env` exists in the project root but the runner's CWD is `runners/06_intraday_options/`.
+
+### Root Cause
+`config.py:_load_dotenv()` opened `.env` relative to the process CWD (not relative to `config.py`'s location). When the runner changes CWD to its own subfolder, `".env"` resolves to `runners/06_intraday_options/.env` which does not exist.
+
+### Fix
+`_load_dotenv()` now also tries to find `.env` relative to `config.py`'s own directory (`__file__`), regardless of the process CWD:
+
+```python
+def _load_dotenv(path: str = ".env") -> None:
+    resolved = os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
+    candidates = [path, resolved]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            # load env vars ...
+            return
+```
+
+CWD-relative path is tried first (for backward compatibility). If not found, falls back to `config.py`-directory-relative path.
+
+### Input Example
+- CWD: `C:\WorkSpace_Siva\Zerodha\zerodha-alago\runners\06_intraday_options\`
+- `config.py` location: `C:\WorkSpace_Siva\Zerodha\zerodha-alago\config.py`
+- Old: looks for `runners/06_intraday_options/.env` → not found → crash
+- New: fallback looks for `C:\WorkSpace_Siva\Zerodha\zerodha-alago\.env` → found → loads
+
+### Files Changed
+- `config.py`: `_load_dotenv()` — try CWD path first, then `__file__`-relative path
+
+---
+
+## [2026-06-02] Public IP not shown after Kite auth — must manually check for IP allowlist
+
+### Symptom
+After successfully generating a Kite access token via `auto_auth.py`, the user did not know their public IP to add to the Kite developer console's Allowed IPs list. They had to manually visit `https://api.ipify.org` or run PowerShell to find it.
+
+### Fix
+Added `_print_public_ip()` called automatically after a successful token refresh:
+
+```python
+def _print_public_ip():
+    public_ip = urllib.request.urlopen("https://api.ipify.org", timeout=5).read().decode()
+    print(f"\nYour public IP : {public_ip}")
+    print("Add this IP to Kite developer console → App Settings → Allowed IPs if not already added.")
+```
+
+### Files Changed
+- `auto_auth.py`: added `_print_public_ip()` function; called from `main()` after successful auth
+
+---
+
+## [2026-06-01] UI: lot mode selector + auto capital-per-trade
 
 ### Symptom
 `intraday_options_lot_mode` was only settable by editing `config.runtime.yaml`. Users starting sessions from the web UI had no way to switch between ONE_LOT and CAPITAL_BASED sizing. Also, `max_capital_per_trade` field showed a static ₹50,000 default that did not update when capital or max_open_positions changed.
@@ -402,3 +763,73 @@ Effect on ₹20k capital: daily loss budget = `max(3%, 10%)` = 10% = ₹2,000 �
 
 ### Commit
 `fix: raise daily_max_loss_pct floor to 10% for capital <= 35k`
+
+---
+
+## [2026-06-01] Backtest overtrade + late entry/exit — full overhaul
+
+### Symptom
+`backtest_intraday_options_20260601_003515`: ATM_MULTI, BALANCED, 1m, 1 month.
+- 125 trades despite `intraday_options_max_trades_per_underlying: 2` in config
+- Net P&L = −₹24,756 with 56% win rate — system bled money through overtrading and charges
+- TIME_EXIT_30M exits: 26 trades, 69% losses, total loss −₹7,080
+
+### Root Causes
+
+**1. Backtest never enforced daily trade cap per underlying**
+`backtesting.py._enter_ranked_candidates()` never called `get_trade_frequency_key()` / `get_max_trades_per_day()` that the live session uses (`session.py:1158–1165`). Result: 17–18 trades/day instead of max 2.
+
+**2. TIME_EXIT hardcoded at 30m (then raised to 60m in yaml)**
+`engines/intraday_options.py.max_hold_minutes` was set from yaml `intraday_options_max_hold_minutes: 30` with no way to override per session.
+
+**3. Entry mode default was LEGACY_IMMEDIATE**
+`config.runtime.yaml fno.intraday_options_entry_mode: "LEGACY_IMMEDIATE"` bypassed staged option filters — changed to `LIVE_STAGED`.
+
+**4. No sub-1m forming-candle entry mechanism**
+Signal was evaluated only on fully-closed 1m candles. Moves that happened within a 1m bar were missed.
+
+### Fixes
+
+#### Phase 1: Backtest correctness
+- `backtesting.py._enter_ranked_candidates()`: Added daily cap check using engine's `get_trade_frequency_key()` + `get_max_trades_per_day()`. After a successful entry, increments `trade_counts_by_day[trade_day][freq_key]`.
+- `backtesting.py._build_engine_helper()`: Applies `config.time_exit_minutes` and `config.max_trades_per_underlying` as instance overrides on the engine.
+- `backtesting.py.export_backtest_results()`: Added extended diagnostics — avg win/loss, profit factor, charges %, tick entry count, trades/day stats, P&L by exit reason.
+- `backtesting.py._exit_position()`: Added `hold_minutes` field to trade records.
+
+#### Phase 2: FormingCandlePreview (sub-1m live entry)
+- New file: `tick_entry/forming_candle.py` — `FormingCandlePreview` class.
+  - Synthesises partial candle from last closed 1m close + current WebSocket LTP
+  - Runs signal scanner with `require_closed_signal_candle=False`
+  - Requires LTP to hold above/below threshold for `forming_tick_confirm_ticks` consecutive ticks
+  - Returns candidates marked `signal_source="FORMING_TICK"`
+- `orchestration/session.py`: Instantiates `FormingCandlePreview` when `entry_mode=LIVE_TICK_CONFIRM` and merges forming candidates into ranked list each cycle.
+
+#### Phase 3: TIME_EXIT configurable
+- `config/config.runtime.yaml`: Changed `intraday_options_max_hold_minutes: 30` → `15`.
+- `backtesting.py`/`session.py`: Accept `time_exit_minutes` from `BacktestConfig`/`SessionConfig` and override `engine.max_hold_minutes` at start.
+
+#### Phase 4: Entry mode cleanup
+- Added `LIVE_TICK_CONFIRM` as valid entry mode across `config.py`, `cli/configuration.py`, validation, and engine setup.
+- Default `intraday_options_entry_mode` changed from `LEGACY_IMMEDIATE` → `LIVE_STAGED`.
+
+#### Phase 5: UI controls
+- `web/static/index.html`: Added selectable controls (live + backtest tabs) for:
+  - Entry Mode (LIVE_STAGED / LIVE_TICK_CONFIRM / LEGACY_IMMEDIATE)
+  - Max Trades per Underlying per Day (1–10)
+  - Time Exit Window (10/15/20/30/disabled)
+  - Forming-Candle Entry toggle + Confirm Ticks
+- `cli/configuration.py`: Console prompts for same fields in both live and backtest CLI flows.
+- `BacktestConfig` / `SessionConfig`: New fields `max_trades_per_underlying`, `time_exit_minutes`, `forming_tick_enabled`, `forming_tick_confirm_ticks`.
+- `web/routes/config.py`: Parses new fields from backtest form payload.
+
+### Files Changed
+- `backtesting.py`
+- `engines/intraday_options.py` (via `max_hold_minutes`/`max_trades_per_underlying_per_day` instance override)
+- `config/config.runtime.yaml`
+- `config.py` (validation allows LIVE_TICK_CONFIRM)
+- `tick_entry/forming_candle.py` (new)
+- `orchestration/session.py`
+- `cli/configuration.py`
+- `web/routes/config.py`
+- `web/static/index.html`
+- `tests/unit/test_config_and_trade_store.py` (updated valid entry modes)
