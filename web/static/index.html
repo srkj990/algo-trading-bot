@@ -352,6 +352,11 @@
         <label class="section-label">Strategies (hold Ctrl/Cmd for multi-select)</label>
         <select id="c-strat-multi" multiple size="3" style="height:auto"></select>
       </div>
+      <div id="c-min-confirm-wrap" class="hidden">
+        <label class="section-label">Min Confirmations</label>
+        <input id="c-min-confirm" type="number" min="1" max="7" value="2"/>
+        <p class="text-xs text-slate-400 mt-1">Strategies that must agree before entry fires</p>
+      </div>
     </div>
 
     <!-- Position limits -->
@@ -616,6 +621,11 @@
       <div id="b-strat-multi-wrap" class="col-span-2">
         <label class="section-label">Strategies (hold Ctrl/Cmd for multi-select)</label>
         <select id="b-strat-multi" multiple size="3" style="height:auto"></select>
+      </div>
+      <div id="b-min-confirm-wrap" class="hidden">
+        <label class="section-label">Min Confirmations</label>
+        <input id="b-min-confirm" type="number" min="1" max="7" value="2"/>
+        <p class="text-xs text-slate-400 mt-1">Strategies that must agree before entry fires</p>
       </div>
     </div>
 
@@ -1020,6 +1030,16 @@ let lastState = {};
 let currentTab = 'live';
 
 const EQ_STRATEGIES  = {MA:'MA', MA_LONG:'MA_LONG', RSI:'RSI', VWAP:'VWAP', BREAKOUT:'BREAKOUT', ORB:'ORB'};
+// Ranked order for intraday_options strategy picker (best → situational)
+const IOPTS_STRATEGIES_ORDERED = [
+  'ATM_MULTI',              // #1 Best all-round
+  'ATM_ORB',                // #2 Morning directional
+  'ATM_BREAKOUT_EXPANSION', // #3 Huge trending moves
+  'ATM_TRAP_REVERSAL',      // #4 Fake breakout reversals
+  'ATM_MOMENTUM',           // #5 Strong trend continuation
+  'ATM_IV_EXPANSION',       // #6 Volatility ignition
+  'ATM_VWAP_REVERSION',     // #7 Sideways only
+];
 const FNO_STRATEGIES = {
   ATM_MOMENTUM:'ATM_MOMENTUM', ATM_ORB:'ATM_ORB',
   ATM_VWAP_REVERSION:'ATM_VWAP_REVERSION', ATM_MULTI:'ATM_MULTI',
@@ -1310,20 +1330,20 @@ function onEngineChange(scope) {
     tog('eq-section',       !fno);
     tog('fno-section',       fno);
     tog('provider-section', !fno);
-    tog('strat-mode-wrap',  !IS_IOPTS(eng));
+    tog('strat-mode-wrap',  true);
     tog('fno-both-wrap',     eng === '3' || eng === '5');
     tog('fno-structure-wrap', IS_IOPTS(eng));
     tog('lot-mode-wrap',     IS_IOPTS(eng));
     tog('iopts-advanced-wrap', IS_IOPTS(eng));
     const strats = fno ? FNO_STRATEGIES : EQ_STRATEGIES;
-    populateSelect('c-strat-name',  Object.values(strats));
-    populateSelect('c-strat-multi', Object.values(strats));
+    populateSelect('c-strat-name',  IS_IOPTS(eng) ? IOPTS_STRATEGIES_ORDERED : Object.values(strats));
+    populateSelect('c-strat-multi', IS_IOPTS(eng) ? IOPTS_STRATEGIES_ORDERED : Object.values(strats));
     if (IS_IOPTS(eng)) { document.getElementById('c-strat-mode').value = '1'; onStratModeChange(); }
     if (fno) loadFnoData('live');
   } else {
     tog('b-eq-section',       !fno);
     tog('b-fno-section',       fno);
-    tog('b-strat-mode-wrap',  !IS_IOPTS(eng));
+    tog('b-strat-mode-wrap',  true);
     tog('b-fno-structure-wrap', IS_IOPTS(eng));
     tog('b-lot-mode-wrap',    IS_IOPTS(eng));
     tog('b-iopts-advanced-wrap', IS_IOPTS(eng));
@@ -1334,8 +1354,8 @@ function onEngineChange(scope) {
       if (bothOpt) bothOpt.disabled = IS_IOPTS(eng);
     }
     const strats = fno ? FNO_STRATEGIES : EQ_STRATEGIES;
-    populateSelect('b-strat-name',  Object.values(strats));
-    populateSelect('b-strat-multi', Object.values(strats));
+    populateSelect('b-strat-name',  IS_IOPTS(eng) ? IOPTS_STRATEGIES_ORDERED : Object.values(strats));
+    populateSelect('b-strat-multi', IS_IOPTS(eng) ? IOPTS_STRATEGIES_ORDERED : Object.values(strats));
     if (IS_IOPTS(eng)) { document.getElementById('b-strat-mode').value = '1'; onBStratModeChange(); }
 
     // auto-set sensible period/interval for this engine
@@ -1393,14 +1413,16 @@ function autoCapPerTrade(pfx) {
 
 function onStratModeChange() {
   const m = document.getElementById('c-strat-mode').value;
-  tog('strat-name-wrap',  m === '1');
-  tog('strat-multi-wrap', m === '2');
+  tog('strat-name-wrap',    m === '1');
+  tog('strat-multi-wrap',   m === '2');
+  tog('c-min-confirm-wrap', m === '2');
 }
 
 function onBStratModeChange() {
   const m = document.getElementById('b-strat-mode').value;
-  tog('b-strat-name-wrap',  m === '1');
-  tog('b-strat-multi-wrap', m !== '1');
+  tog('b-strat-name-wrap',    m === '1');
+  tog('b-strat-multi-wrap',   m !== '1');
+  tog('b-min-confirm-wrap',   m === '2');
   _autoSetPeriodForStrategy();
 }
 
@@ -1536,11 +1558,13 @@ async function submitLive() {
   }
 
   const mode = document.getElementById('c-strat-mode').value;
+  payload.strategy_mode = mode;
   if (mode === '1') {
     payload.strategy_name = document.getElementById('c-strat-name').value;
   } else if (mode === '2') {
     const sel = document.getElementById('c-strat-multi');
     payload.strategies = Array.from(sel.selectedOptions).map(o => o.value);
+    payload.min_confirmations = parseInt(document.getElementById('c-min-confirm').value) || 2;
   }
 
   showCfgSpinner(true);
@@ -1697,11 +1721,13 @@ async function submitBacktest() {
   }
 
   const mode = document.getElementById('b-strat-mode').value;
+  payload.strategy_mode = mode;
   if (mode === '1') {
     payload.strategy_name = document.getElementById('b-strat-name').value;
   } else if (mode === '2') {
     const sel = document.getElementById('b-strat-multi');
     payload.strategies = Array.from(sel.selectedOptions).map(o => o.value);
+    payload.min_confirmations = parseInt(document.getElementById('b-min-confirm').value) || 2;
   }
 
   try {

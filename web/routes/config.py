@@ -570,10 +570,25 @@ def _build_backtest_config(data: dict):
     # ── strategy ──────────────────────────────────────────────────────────────
     strategy_mode_raw = str(data.get("strategy_mode", "2"))
     if engine_name == "intraday_options":
-        strategy_mode = "SINGLE"
-        strategy_name = str(data.get("strategy_name", "ATM_MOMENTUM"))
-        strategies = (strategy_name,)
-        min_confirmations = 1
+        if strategy_mode_raw == "2":
+            strategy_mode = "MULTI"
+            strategy_name = None
+            raw_strats = data.get("strategies", [])
+            if isinstance(raw_strats, str):
+                raw_strats = [s.strip() for s in raw_strats.split(",") if s.strip()]
+            valid_iopts = set(engine_cls.supported_strategies.values())
+            strategies = tuple(s.upper() for s in raw_strats if s.upper() in valid_iopts)
+            if not strategies:
+                strategies = ("ATM_MULTI", "ATM_BREAKOUT_EXPANSION")
+            min_confirmations = max(1, int(data.get("min_confirmations", max(1, len(strategies) - 1))))
+        else:
+            strategy_mode = "SINGLE"
+            strategy_name = str(data.get("strategy_name", "ATM_MOMENTUM")).upper()
+            valid_iopts = set(engine_cls.supported_strategies.values())
+            if strategy_name not in valid_iopts:
+                strategy_name = "ATM_MOMENTUM"
+            strategies = (strategy_name,)
+            min_confirmations = 1
     elif strategy_mode_raw == "3":
         strategy_mode = "AUTO_ADAPTIVE"
         strategy_name = None
