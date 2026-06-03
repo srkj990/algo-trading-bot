@@ -28,7 +28,7 @@ session_defaults:
   paper_trading_override: false # set true to bypass weekend + market-hours checks for paper/testing runs
 
 risk_controls:
-  daily_max_loss_pct: 0.03 # used: blocks new entries after realized daily loss exceeds 3% of capital
+  daily_max_loss_pct: 0.10 # used: blocks new entries after realized daily loss exceeds 10% of capital
   consecutive_loss_limit: 3 # used: blocks new entries after this many losing closed trades in a row
   api_failure_pause_minutes: 5 # used: pause duration after scan/entry/API-style failures and abnormal slippage events
   max_orders_per_minute: 10 # used: live-order rate cap enforced in the shared order wrapper
