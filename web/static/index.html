@@ -2180,12 +2180,15 @@ function ff(n) { return n!=null ? n.toLocaleString('en-IN',{minimumFractionDigit
 function shortSym(s) {
   if (!s) return '';
   // BFO/NFO option contract: ends in CE or PE
-  // Symbol format: BFO:SENSEX2660473700CE  or  NFO:NIFTY2460224800CE
-  // Extract option type (last 2 chars), then walk back digits to get strike
-  const optM = s.match(/^(?:BFO|NFO):[A-Z]+\d{6}(\d{4,6})([CP]E)$/);
+  // Kite weekly format: EXCHANGE:UNDERLYING + YYMD + STRIKE + CE/PE
+  // e.g. BFO:SENSEX2660473500PE → expiry=26604 (YY=26,M=6,DD=04), strike=73500
+  // e.g. NFO:NIFTY2460224800CE  → expiry=24602 (YY=24,M=6,DD=02), strike=24800
+  // Expiry is 5 digits (weekly) or 7 chars (monthly like 26JUN); strike is 4-6 digits.
+  const optM = s.match(/^(?:BFO|NFO):[A-Z]+\d{5}(\d{4,6})([CP]E)$/)
+             || s.match(/^(?:BFO|NFO):[A-Z]+\d{7}(\d{4,6})([CP]E)$/);
   if (optM) {
-    const optType = optM[2];              // CE or PE
-    const strike  = parseInt(optM[1],10); // e.g. 73700
+    const optType = optM[2];
+    const strike  = parseInt(optM[1], 10);
     return `${optType} ${strike}`;
   }
   return s.replace('NFO:','').replace('BFO:','').replace('.NS','').slice(0,18);
