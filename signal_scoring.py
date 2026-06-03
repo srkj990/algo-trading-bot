@@ -74,10 +74,12 @@ def evaluate_symbol_signal(
     if mode == "1":
         signal_payload = generate_signal_payload(data, strategy_name)
         signal = signal_payload["execution_signal"]
+        opt_sig = signal_payload.get("option_signal") or ""
         score = get_strategy_score(strategy_name, data, signal_payload)
+        _is_active = signal in {"BUY", "SELL"} or opt_sig in {"BUY_CE", "BUY_PE"}
         return {
             "signal": signal,
-            "agreement_count": 1 if signal in {"BUY", "SELL"} else 0,
+            "agreement_count": 1 if _is_active else 0,
             "score": score,
             "strategy": signal_payload.get("strategy", strategy_name),
             "details": {
@@ -102,24 +104,33 @@ def evaluate_symbol_signal(
     details = {}
     buy_count = 0
     sell_count = 0
+    # For ATM option strategies that return BUY_CE / BUY_PE instead of BUY / SELL,
+    # track CE vs PE votes separately so majority option type is surfaced.
+    ce_count = 0
+    pe_count = 0
 
     for strat in strategies:
         signal_payload = generate_signal_payload(data, strat)
         strat_signal = signal_payload["execution_signal"]
         strat_score = get_strategy_score(strat, data, signal_payload)
+        opt_sig = signal_payload.get("option_signal") or ""
         details[strat] = {
             "signal": strat_signal,
             "score": strat_score,
             "reason": signal_payload.get("reason"),
-            "option_signal": signal_payload.get("option_signal"),
+            "option_signal": opt_sig,
             "strength": signal_payload.get("strength", 0.0),
             "selected_profile": signal_payload.get("selected_profile"),
             "components": signal_payload.get("components"),
         }
-        if strat_signal == "BUY":
+        if strat_signal == "BUY" or opt_sig == "BUY_CE":
             buy_count += 1
-        elif strat_signal == "SELL":
+            if opt_sig == "BUY_CE":
+                ce_count += 1
+        elif strat_signal == "SELL" or opt_sig == "BUY_PE":
             sell_count += 1
+            if opt_sig == "BUY_PE":
+                pe_count += 1
 
     if buy_count >= min_confirmations and buy_count > sell_count:
         final_signal = "BUY"
@@ -135,6 +146,37 @@ def evaluate_symbol_signal(
         item["score"]
         for item in details.values()
         if item["signal"] == final_signal
+        or (final_signal == "BUY" and item.get("option_signal") == "BUY_CE")
+        or (final_signal == "SELL" and item.get("option_signal") == "BUY_PE")
+    )
+
+    # Resolve option_signal: majority vote among agreeing strategies.
+    # BUY → CE if more CE votes, BUY → PE if more PE votes (rare but possible with mixed strategies).
+    # SELL → PE (directional short via put).
+    resolved_option_signal = None
+    resolved_option_type = None
+    if final_signal == "BUY":
+        if ce_count >= pe_count and ce_count > 0:
+            resolved_option_signal = "BUY_CE"
+            resolved_option_type = "CE"
+        elif pe_count > ce_count:
+            resolved_option_signal = "BUY_PE"
+            resolved_option_type = "PE"
+    elif final_signal == "SELL":
+        if pe_count >= ce_count and pe_count > 0:
+            resolved_option_signal = "BUY_PE"
+            resolved_option_type = "PE"
+        elif ce_count > pe_count:
+            resolved_option_signal = "BUY_CE"
+            resolved_option_type = "CE"
+
+    # Pick best-scoring agreeing strategy's metadata for selected_profile / components
+    best_detail = max(
+        (v for v in details.values() if v["signal"] == final_signal
+         or (final_signal == "BUY" and v.get("option_signal") == "BUY_CE")
+         or (final_signal == "SELL" and v.get("option_signal") == "BUY_PE")),
+        key=lambda v: v["score"],
+        default={},
     )
 
     return {
@@ -143,12 +185,12 @@ def evaluate_symbol_signal(
         "score": score,
         "strategy": None,
         "details": details,
-        "reason": None,
-        "option_signal": None,
-        "option_type": None,
-        "strength": 0.0,
-        "selected_profile": None,
-        "components": None,
+        "reason": best_detail.get("reason"),
+        "option_signal": resolved_option_signal,
+        "option_type": resolved_option_type,
+        "strength": best_detail.get("strength", 0.0),
+        "selected_profile": best_detail.get("selected_profile"),
+        "components": best_detail.get("components"),
     }
 
 
