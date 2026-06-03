@@ -1754,24 +1754,61 @@ def prompt_multi_strategy_selection(strategy_options):
 
 def prompt_strategy_setup(engine_class):
     if engine_class.name == "intraday_options":
+        _IOPTS_STRATEGIES = {
+            "1": "ATM_MULTI",
+            "2": "ATM_ORB",
+            "3": "ATM_BREAKOUT_EXPANSION",
+            "4": "ATM_TRAP_REVERSAL",
+            "5": "ATM_MOMENTUM",
+            "6": "ATM_IV_EXPANSION",
+            "7": "ATM_VWAP_REVERSION",
+        }
         print_prompt_help(
-            "Choose the intraday options strategy to backtest.",
-            "3 for VWAP Reversion",
+            "Choose Single (one strategy) or Multi (combine strategies, entry fires when N agree).",
+            "1 for Single, 2 for Multi",
         )
-        strategy_name = prompt_choice(
-            f"Intraday options strategy: Momentum(1), ORB(2), VWAP Reversion(3), Multi-strategy(4), Breakout Expansion(5), IV Expansion(6), Trap Reversal(7) [default {_prompt_default_int('intraday_options_strategy', 1)}]: ",
-            [
-                {"key": 1, "value": "ATM_MOMENTUM"},
-                {"key": 2, "value": "ATM_ORB"},
-                {"key": 3, "value": "ATM_VWAP_REVERSION"},
-                {"key": 4, "value": "ATM_MULTI"},
-                {"key": 5, "value": "ATM_BREAKOUT_EXPANSION"},
-                {"key": 6, "value": "ATM_IV_EXPANSION"},
-                {"key": 7, "value": "ATM_TRAP_REVERSAL"},
-            ],
-            default=_prompt_default_int("intraday_options_strategy", 1),
+        iopts_mode = prompt_choice(
+            f"Strategy mode: Single(1) or Multi(2) [default {_prompt_default_int('intraday_options_strategy_mode', 1)}]: ",
+            [{"key": 1, "value": "SINGLE"}, {"key": 2, "value": "MULTI"}],
+            default=_prompt_default_int("intraday_options_strategy_mode", 1),
         )
-        return "SINGLE", strategy_name, (strategy_name,), 1
+        if iopts_mode == "SINGLE":
+            print_prompt_help(
+                "Ranked best → situational: ATM_MULTI is best all-round, ATM_VWAP_REVERSION is sideways-only.",
+                "1 for ATM_MULTI",
+            )
+            print("Intraday options strategies (ranked):")
+            for k, v in _IOPTS_STRATEGIES.items():
+                hints = {
+                    "ATM_MULTI": "best all-round",
+                    "ATM_ORB": "morning directional",
+                    "ATM_BREAKOUT_EXPANSION": "huge trending moves",
+                    "ATM_TRAP_REVERSAL": "fake breakout reversals",
+                    "ATM_MOMENTUM": "trend continuation",
+                    "ATM_IV_EXPANSION": "volatility ignition",
+                    "ATM_VWAP_REVERSION": "sideways only",
+                }
+                print(f"  {k}. {v}  ({hints.get(v, '')})")
+            strategy_name = prompt_choice(
+                f"Choose strategy [default {_prompt_default_int('intraday_options_strategy', 1)}]: ",
+                [{"key": int(k), "value": v} for k, v in _IOPTS_STRATEGIES.items()],
+                default=_prompt_default_int("intraday_options_strategy", 1),
+            )
+            return "SINGLE", strategy_name, (strategy_name,), 1
+        else:
+            strategies = prompt_multi_strategy_selection(_IOPTS_STRATEGIES)
+            print_prompt_help(
+                "How many of the selected strategies must agree before entry fires. "
+                "2 = balanced (recommended). 1 = any signal fires. 3+ = high-conviction only.",
+                "2",
+            )
+            min_confirmations = prompt_int(
+                f"Minimum confirmations [default {min(2, len(strategies))}]: ",
+                default=min(2, len(strategies)),
+                minimum=1,
+                maximum=len(strategies),
+            )
+            return "MULTI", None, strategies, min_confirmations
 
     if engine_class.name == "intraday_equity":
         print_prompt_help(

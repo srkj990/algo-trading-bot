@@ -225,29 +225,68 @@ def prompt_multi_strategy_selection(strategy_options):
         return strategies
 
 
+_IOPTS_STRATEGIES = {
+    "1": "ATM_MULTI",
+    "2": "ATM_ORB",
+    "3": "ATM_BREAKOUT_EXPANSION",
+    "4": "ATM_TRAP_REVERSAL",
+    "5": "ATM_MOMENTUM",
+    "6": "ATM_IV_EXPANSION",
+    "7": "ATM_VWAP_REVERSION",
+}
+_IOPTS_HINTS = {
+    "ATM_MULTI": "best all-round",
+    "ATM_ORB": "morning directional",
+    "ATM_BREAKOUT_EXPANSION": "huge trending moves",
+    "ATM_TRAP_REVERSAL": "fake breakout reversals",
+    "ATM_MOMENTUM": "trend continuation",
+    "ATM_IV_EXPANSION": "volatility ignition",
+    "ATM_VWAP_REVERSION": "sideways only",
+}
+
+
 def prompt_strategy_configuration(engine, default_confirmations):
     if engine.name == "intraday_options":
-        log_event("[SETUP] Intraday options strategy selection - choose the ATM options setup")
-        log_help("Choose the intraday options strategy to drive ATM option entries. Example: 3 for VWAP Reversion")
-        strategy_name = prompt_choice(
-            (
-                "Intraday options strategy: Momentum(1), ORB(2), "
-                "VWAP Reversion(3), Multi-strategy(4), Breakout Expansion(5), "
-                "IV Expansion(6), Trap Reversal(7) [default 1]: "
-            ),
+        log_event("[SETUP] Intraday options — choose Single (one strategy) or Multi (combine, N must agree)")
+        log_help("Single: pick one ATM strategy. Multi: pick several — entry fires only when N agree. Example: 1 for Single")
+        iopts_mode = prompt_choice(
+            "Strategy mode: Single(1) or Multi(2) [default 1]: ",
             [
-                {"label": "MOMENTUM", "key": 1, "value": "ATM_MOMENTUM"},
-                {"label": "ORB", "key": 2, "value": "ATM_ORB"},
-                {"label": "VWAP REVERSION", "key": 3, "value": "ATM_VWAP_REVERSION"},
-                {"label": "MULTI-STRATEGY", "key": 4, "value": "ATM_MULTI"},
-                {"label": "BREAKOUT EXPANSION", "key": 5, "value": "ATM_BREAKOUT_EXPANSION"},
-                {"label": "IV EXPANSION", "key": 6, "value": "ATM_IV_EXPANSION"},
-                {"label": "TRAP REVERSAL", "key": 7, "value": "ATM_TRAP_REVERSAL"},
+                {"label": "SINGLE", "key": 1, "value": "1"},
+                {"label": "MULTI",  "key": 2, "value": "2"},
             ],
             default=1,
         )
-        log_event(f"[MAIN] Intraday options strategy selected: {strategy_name}")
-        return "1", strategy_name, None, None
+        if iopts_mode == "1":
+            log_help("Ranked best→situational. Example: 1 for ATM_MULTI (best all-round)")
+            log_event("[SETUP] Available intraday options strategies (ranked):")
+            for k, v in _IOPTS_STRATEGIES.items():
+                log_event(f"[SETUP]   {k}. {v}  ({_IOPTS_HINTS.get(v, '')})")
+            strategy_name = prompt_choice(
+                "Choose strategy [default 1]: ",
+                [{"label": v, "key": int(k), "value": v} for k, v in _IOPTS_STRATEGIES.items()],
+                default=1,
+            )
+            log_event(f"[MAIN] Intraday options strategy selected: {strategy_name}")
+            return "1", strategy_name, None, None
+        else:
+            log_event("[SETUP] Available intraday options strategies (ranked):")
+            for k, v in _IOPTS_STRATEGIES.items():
+                log_event(f"[SETUP]   {k}. {v}  ({_IOPTS_HINTS.get(v, '')})")
+            strategies = prompt_multi_strategy_selection(_IOPTS_STRATEGIES)
+            strategy_count = len(strategies)
+            log_help(
+                "How many selected strategies must agree before entry fires. "
+                "2 = balanced (recommended), 1 = any fires, 3+ = high-conviction only. Example: 2"
+            )
+            min_confirmations = prompt_int(
+                f"Minimum confirmations [default {min(2, strategy_count)}]: ",
+                default=min(2, strategy_count),
+                minimum=1,
+                maximum=strategy_count,
+            )
+            log_event(f"[MAIN] Intraday options multi-strategy: {', '.join(strategies)} | min_confirmations={min_confirmations}")
+            return "2", None, strategies, min_confirmations
 
     if engine.name == "intraday_equity":
         log_event("[SETUP] Strategy mode - choose how intraday equity signals are generated")
