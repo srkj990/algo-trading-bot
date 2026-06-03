@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 
-STATE_DIR = Path("state")
+STATE_DIR = Path(__file__).parent / "state"
 
 
 class EngineState(TypedDict):

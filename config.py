@@ -118,14 +118,18 @@ def _normalize_yaml_lists(value: Any) -> Any:
 
 
 def _load_runtime_overrides() -> dict[str, Any]:
+    _config_dir = Path(__file__).parent
     candidates = (
-        "config/config.runtime.yaml",
-        "config/config.runtime.yml",
-        "config.runtime.yaml",
-        "config.runtime.yml",
+        _config_dir / "config" / "config.runtime.yaml",
+        _config_dir / "config" / "config.runtime.yml",
+        _config_dir / "config.runtime.yaml",
+        _config_dir / "config.runtime.yml",
+        Path("config/config.runtime.yaml"),
+        Path("config/config.runtime.yml"),
+        Path("config.runtime.yaml"),
+        Path("config.runtime.yml"),
     )
-    for file_name in candidates:
-        path = Path(file_name)
+    for path in candidates:
         if path.exists():
             return _normalize_yaml_lists(_load_simple_yaml(path))
     return {}
@@ -770,7 +774,7 @@ def _default_runtime_config_map() -> dict[str, Any]:
         },
         "trade_store": {
             "enabled": _parse_bool(os.getenv("TRADE_STORE_ENABLED", "1"), default=True),
-            "base_dir": os.getenv("TRADE_STORE_DIR", "state/trade_store"),
+            "base_dir": os.getenv("TRADE_STORE_DIR", str(Path(__file__).parent / "state" / "trade_store")),
             "include_paper_trades": _parse_bool(
                 os.getenv("TRADE_STORE_INCLUDE_PAPER", "1"),
                 default=True,

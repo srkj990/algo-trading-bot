@@ -22,7 +22,7 @@ _KITE_MIN_INTERVAL_SECONDS = {
     "instruments": 86400.0,
     "orders": 0.1,
 }
-_KITE_CACHE_DIR = Path("state") / "kite_cache"
+_KITE_CACHE_DIR = Path(__file__).parent / "state" / "kite_cache"
 
 
 @contextmanager
