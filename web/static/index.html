@@ -2120,7 +2120,7 @@ function appendBtTrade(t) {
   const exitTime  = (t.exit_time  || '').toString().slice(0, 16);
   const tr = document.createElement('tr');
   tr.innerHTML = `
-    <td>${t.symbol || ''}</td>
+    <td title="${t.symbol || ''}">${shortSym(t.symbol) || t.symbol || ''}</td>
     <td><span class="text-xs px-1 rounded ${sideCls}">${t.side || ''}</span></td>
     <td class="text-slate-400" style="font-size:.72rem">${entryTime}</td>
     <td class="text-slate-400" style="font-size:.72rem">${exitTime}</td>
