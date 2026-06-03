@@ -4,3 +4,5 @@ __pycache__/
 logs/
 state/
 venv/
+# Runner-local static copies — UI is served from web/static/ only
+runners/*/static/

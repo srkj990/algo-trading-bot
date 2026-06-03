@@ -63,19 +63,20 @@ def _build_app() -> FastAPI:
     app.include_router(config_router)
     app.include_router(ws_router)
 
-    if _STATIC_DIR.exists():
-        app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+    if not _STATIC_DIR.exists():
+        raise RuntimeError(
+            f"[WEB] Static directory not found: {_STATIC_DIR}\n"
+            "Ensure _STATIC_DIR is set to the project's web/static/ directory before starting."
+        )
 
-        @app.get("/")
-        async def index() -> FileResponse:
-            return FileResponse(
-                str(_STATIC_DIR / "index.html"),
-                headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
-            )
-    else:
-        @app.get("/")
-        async def index_placeholder():
-            return {"message": "Algo Trading Bot API running. Static UI not built yet."}
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+    @app.get("/")
+    async def index() -> FileResponse:
+        return FileResponse(
+            str(_STATIC_DIR / "index.html"),
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+        )
 
     return app
 
