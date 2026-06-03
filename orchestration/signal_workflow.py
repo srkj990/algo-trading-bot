@@ -145,7 +145,16 @@ def get_stable_signal_data(engine: Any, data: Any, now: datetime) -> Any:
     latest_naive = latest_dt.replace(tzinfo=None)
     current_minute = current_dt.replace(second=0, microsecond=0, tzinfo=None)
     if latest_naive >= current_minute and getattr(engine, "require_closed_signal_candle", False):
-        return data.iloc[:-1]
+        stripped = data.iloc[:-1]
+        # Guard: if stripping the forming candle crossed a day boundary, the stripped
+        # slice is entirely from a prior session (e.g. all of yesterday's 375 candles).
+        # Returning it would let strategies like ATM_ORB compute yesterday's opening
+        # range and fire a spurious signal at today's 09:15 timestamp.
+        # Instead return the full data — the strategies' own min-candle checks will
+        # correctly block premature entries on today's single first candle.
+        if not stripped.empty and stripped.index[-1].date() != latest_naive.date():
+            return data
+        return stripped
     return data
 
 
