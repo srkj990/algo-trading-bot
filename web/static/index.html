@@ -335,31 +335,28 @@
     </div>
 
     <!-- Strategy -->
-    <div class="mt-4">
-      <div class="grid grid-cols-2 gap-4">
-        <div id="strat-mode-wrap">
-          <label class="section-label">Strategy Mode</label>
-          <select id="c-strat-mode" onchange="onStratModeChange()">
-            <option value="1" selected>Single — one strategy</option>
-            <option value="2">Multi — combine strategies</option>
-            <option value="3">Auto-adaptive</option>
-          </select>
-          <p class="text-xs text-slate-400 mt-1">Multi: entry fires when N strategies agree (set confirmations below)</p>
-        </div>
-        <div id="strat-name-wrap" class="hidden">
-          <label class="section-label">Strategy</label>
-          <select id="c-strat-name"></select>
-        </div>
-        <div id="c-min-confirm-wrap" class="hidden">
-          <label class="section-label">Min Confirmations</label>
-          <input id="c-min-confirm" type="number" min="1" max="7" value="2"/>
-          <p class="text-xs text-slate-400 mt-1">How many selected strategies must agree (1 = any, 2 = majority)</p>
-        </div>
+    <div class="mt-4 p-3 rounded border border-slate-600 bg-slate-800/50">
+      <div id="strat-mode-wrap">
+        <label class="section-label">Strategy Mode</label>
+        <select id="c-strat-mode" onchange="onStratModeChange()" style="max-width:340px">
+          <option value="1" selected>Single — one strategy</option>
+          <option value="2">Multi — combine strategies (N must agree)</option>
+          <option value="3">Auto-adaptive</option>
+        </select>
+      </div>
+      <div id="strat-name-wrap" class="mt-3 hidden">
+        <label class="section-label">Strategy</label>
+        <select id="c-strat-name" style="max-width:340px"></select>
       </div>
       <div id="strat-multi-wrap" class="hidden mt-3">
-        <label class="section-label">Select Strategies — ranked best → situational (tick to include)</label>
-        <div id="c-strat-checkboxes" class="grid grid-cols-2 gap-1 mt-1"></div>
+        <label class="section-label">Select strategies to combine — tick to include (ranked best → situational)</label>
+        <div id="c-strat-checkboxes" class="grid grid-cols-2 gap-1 mt-2"></div>
         <select id="c-strat-multi" multiple class="hidden"></select>
+      </div>
+      <div id="c-min-confirm-wrap" class="hidden mt-3">
+        <label class="section-label">Min Confirmations</label>
+        <input id="c-min-confirm" type="number" min="1" max="7" value="2" style="max-width:120px"/>
+        <p class="text-xs text-slate-400 mt-1">How many of the selected strategies must agree before entry fires (1 = any, 2 = majority recommended)</p>
       </div>
     </div>
 
@@ -609,31 +606,28 @@
     </div>
 
     <!-- Strategy (backtest) -->
-    <div class="mt-4">
-      <div class="grid grid-cols-2 gap-4">
-        <div id="b-strat-mode-wrap">
-          <label class="section-label">Strategy Mode</label>
-          <select id="b-strat-mode" onchange="onBStratModeChange()">
-            <option value="1" selected>Single — one strategy</option>
-            <option value="2">Multi — combine strategies</option>
-            <option value="3">Auto-adaptive</option>
-          </select>
-          <p class="text-xs text-slate-400 mt-1">Multi: entry fires when N strategies agree (set confirmations below)</p>
-        </div>
-        <div id="b-strat-name-wrap" class="hidden">
-          <label class="section-label">Strategy</label>
-          <select id="b-strat-name" onchange="_autoSetPeriodForStrategy()"></select>
-        </div>
-        <div id="b-min-confirm-wrap" class="hidden">
-          <label class="section-label">Min Confirmations</label>
-          <input id="b-min-confirm" type="number" min="1" max="7" value="2"/>
-          <p class="text-xs text-slate-400 mt-1">How many selected strategies must agree (1 = any, 2 = majority)</p>
-        </div>
+    <div class="mt-4 p-3 rounded border border-slate-600 bg-slate-800/50">
+      <div id="b-strat-mode-wrap">
+        <label class="section-label">Strategy Mode</label>
+        <select id="b-strat-mode" onchange="onBStratModeChange()" style="max-width:340px">
+          <option value="1" selected>Single — one strategy</option>
+          <option value="2">Multi — combine strategies (N must agree)</option>
+          <option value="3">Auto-adaptive</option>
+        </select>
+      </div>
+      <div id="b-strat-name-wrap" class="mt-3 hidden">
+        <label class="section-label">Strategy</label>
+        <select id="b-strat-name" onchange="_autoSetPeriodForStrategy()" style="max-width:340px"></select>
       </div>
       <div id="b-strat-multi-wrap" class="hidden mt-3">
-        <label class="section-label">Select Strategies — ranked best → situational (tick to include)</label>
-        <div id="b-strat-checkboxes" class="grid grid-cols-2 gap-1 mt-1"></div>
+        <label class="section-label">Select strategies to combine — tick to include (ranked best → situational)</label>
+        <div id="b-strat-checkboxes" class="grid grid-cols-2 gap-1 mt-2"></div>
         <select id="b-strat-multi" multiple class="hidden"></select>
+      </div>
+      <div id="b-min-confirm-wrap" class="hidden mt-3">
+        <label class="section-label">Min Confirmations</label>
+        <input id="b-min-confirm" type="number" min="1" max="7" value="2" style="max-width:120px"/>
+        <p class="text-xs text-slate-400 mt-1">How many of the selected strategies must agree before entry fires (1 = any, 2 = majority recommended)</p>
       </div>
     </div>
 
