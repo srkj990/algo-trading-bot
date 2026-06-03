@@ -4,6 +4,83 @@ Track record of bugs found and fixes applied for audit and future reference.
 
 ---
 
+## [2026-06-03] All runners use hardcoded default values instead of config.runtime.yaml
+
+### Symptom
+Every runner `.bat` starts with `cd /d "%~dp0"`, changing the CWD to the runner's subdirectory (e.g. `runners/06_intraday_options/`). All `Path("relative/path")` references in the codebase resolved relative to that subdirectory rather than the project root, meaning:
+- `config/config.runtime.yaml` was never found → all runtime config values fell back to hardcoded defaults (e.g. `daily_max_loss_pct = 0.03` instead of the yaml value)
+- `state/kite_cache` instrument files were written to the runner subdirectory instead of project root
+- `state/` engine state (positions, trade counts) was scattered across runner subdirectories
+- `state/trade_store` trade records landed in runner subdirectories
+
+Symptom observed: after setting `daily_max_loss_pct: 0.15` in yaml, backtests still showed `Daily max loss exceeded (3.0%)` because the yaml was never loaded.
+
+### Root Cause
+`config.py:_load_runtime_overrides()` used `Path("config/config.runtime.yaml")` — a CWD-relative path. With CWD = `runners/06.../`, the file doesn't exist, so `_load_runtime_overrides()` returns `{}` and `RUNTIME_CONFIG` uses all hardcoded env-var defaults.
+
+### Fix
+All path references changed to `Path(__file__).parent`-relative (anchored to the `.py` file location, which is always the project root):
+- `config.py:_load_runtime_overrides()` — candidates list now starts with `Path(__file__).parent / "config" / "config.runtime.yaml"` (CWD fallbacks retained for compatibility)
+- `network_utils.py:_KITE_CACHE_DIR` — `Path(__file__).parent / "state" / "kite_cache"`
+- `state_store.py:STATE_DIR` — `Path(__file__).parent / "state"`
+- `config.py trade_store.base_dir` default — `Path(__file__).parent / "state" / "trade_store"`
+
+Note: `logger.py:LOG_DIR = Path("logs")` is intentionally CWD-relative so each runner writes logs to its own `logs/` subdirectory.
+
+### Files Changed
+- `config.py` — `_load_runtime_overrides()` + `trade_store.base_dir` default
+- `network_utils.py` — `_KITE_CACHE_DIR`
+- `state_store.py` — `STATE_DIR`
+
+---
+
+## [2026-06-03] BSE:SENSEX backtest fails — instrument token not found
+
+### Symptom
+`[DATA ERROR] RuntimeError: Kite instrument token not found for NSE:SENSEX` (and previously `BSE:SENSEX`). SENSEX backtest produced no data and failed immediately.
+
+### Root Cause
+SENSEX (BSE index token `265`) and NIFTY 50 (NSE index token `256265`) do not appear in the `instruments()` API response for their respective exchanges — they are index tokens that must be hardcoded. Additionally, `_safe_spot_symbol()` in `web/routes/config.py` had a fallback `f"NSE:{base_symbol}"` that produced `NSE:SENSEX` (wrong) for SENSEX, which also has no token.
+
+### Fix
+1. `data_providers/kite_provider.py` — Pre-seed `_instrument_cache` with `_KITE_INDEX_TOKENS = {"NSE:NIFTY 50": 256265, "BSE:SENSEX": 265, "NSE:SENSEX": 265}` (alias so either prefix works).
+2. `web/routes/config.py:_safe_spot_symbol()` — Replace generic `NSE:` prefix fallback with exchange-correct map: `{"SENSEX": "BSE:SENSEX", "NIFTY": "NSE:NIFTY 50", ...}`.
+
+### Files Changed
+- `data_providers/kite_provider.py` — `_KITE_INDEX_TOKENS` + pre-seeded `_instrument_cache`
+- `web/routes/config.py` — `_safe_spot_symbol()` fallback map
+
+---
+
+## [2026-06-03] daily_max_loss_pct blocks all entries after first options SL
+
+### Symptom
+In SENSEX backtest, after the first trade hit stop-loss (PE entry at ₹320.95, 300+ qty due to CAPITAL_BASED sizing → ₹11.7k loss), every subsequent signal was blocked: `[RISK] Daily max loss exceeded (3.0%)`. The 73700 CE trade that went on to gain +154% was never placed.
+
+### Root Cause
+Two compounding issues:
+1. `daily_max_loss_pct` was 3% (₹3,000 on ₹100k) — far too tight for CAPITAL_BASED lot sizing where one stop-loss can be 10%+
+2. The yaml value was never loaded (see CWD path bug above), so even after editing the yaml to `0.15`, backtests still used `0.03`
+
+### Fix
+- `config/config.runtime.yaml` — raised `daily_max_loss_pct` from `0.03` → `0.15`
+- `config.py` path fix (see above) — yaml now loads correctly for all runners
+
+---
+
+## [2026-06-03] CE/PE display shows full contract name in backtest in-progress trade table
+
+### Symptom
+The live/running trade table during backtest (the streaming `btr-trades-body` table) showed raw Kite symbol `BFO:SENSEX2660473700CE` instead of the readable `CE 73700`. The final results table and live dashboard already used `shortSym()` but `appendBtTrade()` did not.
+
+Additionally, the `shortSym()` regex used `\d{6}` for the expiry portion but Kite weekly expiries are 5 digits (`YYMD` format: `26604` = year 26, month 6, day 04), causing `3700` to be extracted instead of `73700`.
+
+### Fix
+- `web/static/index.html:appendBtTrade()` — added `shortSym(t.symbol)` call
+- `web/static/index.html:shortSym()` — fixed regex to `\d{5}` (weekly) with `\d{7}` fallback (monthly), correctly extracting `73700`, `73500` etc.
+
+---
+
 ## [2026-06-03] Partial and forced-exit orders use MARKET type, reject NRML product, ignore tick rounding
 
 ### Symptom

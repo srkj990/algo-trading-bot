@@ -130,6 +130,46 @@ Quality
   [x] Backtest uses same resolve_trade_targets() and adaptive builders as live
 
 
+COMPLETED (2026-06-03) — Session 2
+-----------------------------------
+
+SENSEX Backtest Fixes
+  [x] data_providers/kite_provider.py: hardcode BSE:SENSEX token 265 + NSE:SENSEX alias
+  [x] web/routes/config.py: _safe_spot_symbol fallback map (BSE:SENSEX, not NSE:SENSEX)
+  [x] backtesting.py: remove _KITE_BACKTEST_SYMBOL_REMAP (NSE:SENSEX remap was wrong)
+
+CWD / Config Path Fixes (all runners)
+  [x] config.py _load_runtime_overrides: resolve yaml relative to __file__ not CWD
+  [x] network_utils.py _KITE_CACHE_DIR: Path(__file__).parent / "state" / "kite_cache"
+  [x] state_store.py STATE_DIR: Path(__file__).parent / "state"
+  [x] config.py trade_store.base_dir default: Path(__file__).parent / "state" / "trade_store"
+  [x] config/config.runtime.yaml: daily_max_loss_pct raised 0.03 → 0.15
+
+UI — CE/PE Display
+  [x] web/static/index.html shortSym(): fix regex \d{6}→\d{5} for Kite weekly expiry
+  [x] web/static/index.html appendBtTrade(): apply shortSym so in-progress table shows CE/PE
+  [x] All three trade tables now show "CE 73700" / "PE 73500" format
+
+Strategy Selector for intraday_options
+  [x] web/static/index.html: strategy mode dropdown now visible for intraday_options
+  [x] Single strategy: ranked dropdown (ATM_MULTI #1 → ATM_VWAP_REVERSION #7)
+  [x] Multi strategy: same ranked list (Ctrl/Cmd multi-select) + Min Confirmations field
+  [x] cli/configuration.py: parse strategy_mode/strategies/min_confirmations for intraday_options
+  [x] web/routes/config.py: same fix for backtest config builder
+
+Runtime Config Defaults in UI
+  [x] web/routes/config.py: GET /api/runtime-defaults endpoint
+  [x] web/static/index.html: loadRuntimeDefaults() called on page load
+  [x] max_trades_per_underlying, max_hold_minutes, lot_mode, entry_mode, exit_mode
+      all pre-populated from yaml values instead of hardcoded "2" / "15"
+
+Strategy Guide Expansion
+  [x] All 7 ATM strategies: full How-It-Works, entry condition, works best, avoid when
+  [x] Real scenario examples with concrete entries (SENSEX today's trades referenced)
+  [x] Multi-strategy combination table with min_confirmations guidance
+  [x] Equity strategies section added to same pane
+
+
 COMPLETED (2026-06-03)
 ---------------------
 
