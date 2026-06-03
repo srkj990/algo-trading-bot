@@ -1056,13 +1056,61 @@ window.onload = async () => {
   onEngineChange('backtest');
   autoCapPerTrade('c');
   autoCapPerTrade('b');
+  await loadRuntimeDefaults();
   await checkStatus();
   connectWS();
   fetchTicker();
   setInterval(fetchTicker, 10000);
-  // Refresh warning history every 30s when panel is open
   setInterval(() => { if (_warnHistoryVisible) fetchWarnHistory(); }, 30000);
 };
+
+async function loadRuntimeDefaults() {
+  try {
+    const r = await fetch('/api/runtime-defaults');
+    if (!r.ok) return;
+    const d = await r.json();
+    // Max trades per underlying (live + backtest)
+    const mt = d.intraday_options_max_trades_per_underlying;
+    if (mt != null) {
+      const cmt = document.getElementById('c-max-trades');
+      const bmt = document.getElementById('b-max-trades');
+      if (cmt) cmt.value = mt;
+      if (bmt) bmt.value = mt;
+    }
+    // Max hold minutes (live + backtest)
+    const mh = d.intraday_options_max_hold_minutes;
+    if (mh != null) {
+      const cte = document.getElementById('c-time-exit');
+      const bte = document.getElementById('b-time-exit');
+      if (cte) { const o = cte.querySelector(`option[value="${mh}"]`); if (o) cte.value = mh; }
+      if (bte) { const o = bte.querySelector(`option[value="${mh}"]`); if (o) bte.value = mh; }
+    }
+    // Lot mode
+    const lm = d.intraday_options_lot_mode;
+    if (lm) {
+      const clm = document.getElementById('c-lot-mode');
+      const blm = document.getElementById('b-lot-mode');
+      if (clm) clm.value = lm;
+      if (blm) blm.value = lm;
+    }
+    // Entry mode
+    const em = d.intraday_options_entry_mode;
+    if (em) {
+      const cem = document.getElementById('c-entry-mode');
+      const bem = document.getElementById('b-entry-mode');
+      if (cem) cem.value = em;
+      if (bem) bem.value = em;
+    }
+    // Exit mode
+    const xm = d.exit_mode;
+    if (xm) {
+      const cxm = document.getElementById('c-exit-mode');
+      const bxm = document.getElementById('b-exit-mode');
+      if (cxm) cxm.value = xm;
+      if (bxm) bxm.value = xm;
+    }
+  } catch {}
+}
 
 // ── market ticker ─────────────────────────────────────────────────────────────
 async function fetchTicker() {
@@ -2359,26 +2407,121 @@ STEP 6 — RUN BACKTEST FIRST (recent 5–10 days)</div>
 
       <!-- ── STRATEGIES ── -->
       <div id="sg-pane-strategies" class="sg-pane">
+
+        <!-- ATM Options strategies (ranked) -->
         <div class="sg-section">
-          <h3>Strategy reference</h3>
+          <h3>Intraday Options — ATM Strategy Reference (ranked best → situational)</h3>
           <table class="sg-table">
-            <thead><tr><th>Strategy</th><th>Signal Logic</th><th>Works Best When</th><th>Fails When</th></tr></thead>
+            <thead><tr><th>#</th><th>Strategy</th><th>How It Works</th><th>Entry Condition</th><th>Works Best When</th><th>Avoid When</th></tr></thead>
             <tbody>
-              <tr><td>MA</td><td>MA20 &gt; MA50 → BUY; MA20 &lt; MA50 → SELL</td><td>Strong directional trend</td><td>Sideways / choppy — false crossovers</td></tr>
-              <tr><td>RSI</td><td>RSI &lt; 30 oversold BUY; RSI &gt; 70 overbought SELL</td><td>Sideways / range-bound</td><td>Strong trends — RSI stays extended</td></tr>
-              <tr><td>VWAP</td><td>Price &gt; VWAP → bullish bias</td><td>Active-volume intraday with institutional flow</td><td>Choppy price oscillating around VWAP</td></tr>
-              <tr><td>BREAKOUT</td><td>Close &gt; prior 20-candle high → BUY</td><td>Post-consolidation momentum + volume</td><td>Fake breakouts that immediately reverse</td></tr>
-              <tr><td>ORB</td><td>First 15 candles high/low break</td><td>Strong gap-and-go opens, clear directional bias</td><td>Flat opens, fake early moves</td></tr>
-              <tr><td>ATM_MOMENTUM</td><td>Directional signal + staged pullback entry</td><td>Trending intraday, VWAP aligned</td><td>Whipsaw sessions</td></tr>
-              <tr><td>ATM_ORB</td><td>Opening range break in options</td><td>Gap-and-go days, early directional conviction</td><td>Fake ORB breaks</td></tr>
-              <tr><td>ATM_BREAKOUT_EXPANSION</td><td>45-candle compression + breakout + volume + ATR expansion</td><td>Sustained move after tight consolidation</td><td>Thin-volume breakouts, sudden reversals</td></tr>
-              <tr><td>ATM_TRAP_REVERSAL</td><td>Failed breakout + strong reversal candle</td><td>Key level tests that sharply reverse</td><td>Trending markets — counter-trend gets stopped</td></tr>
-              <tr><td>AUTO_ADAPTIVE</td><td>Engine selects SIDEWAYS/NORMAL/EXPANSION regime</td><td>Uncertain conditions</td><td>No failure mode — worst case is conservative SIDEWAYS</td></tr>
+              <tr>
+                <td>1</td><td><b>ATM_MULTI</b></td>
+                <td>Combines 4 sub-signals (momentum, ORB, VWAP reversion, breakout expansion) — fires when 2+ agree</td>
+                <td>RSI+VWAP+breakout aligned, or ORB + momentum agree</td>
+                <td>Any session type — adapts. Best all-round daily choice.</td>
+                <td>Extreme low-volume sessions (data gaps cause false signals)</td>
+              </tr>
+              <tr>
+                <td>2</td><td><b>ATM_ORB</b></td>
+                <td>Measures first 15-candle range. Buys CE when price breaks above high, buys PE when breaks below low</td>
+                <td>Close outside ORB high/low with RSI confirmation</td>
+                <td>Gap-and-go opens (&gt;0.3%), RBI/budget days, strong pre-open cues</td>
+                <td>Flat opens, post-lunch sessions, expiry-day premium crush</td>
+              </tr>
+              <tr>
+                <td>3</td><td><b>ATM_BREAKOUT_EXPANSION</b></td>
+                <td>Waits for 45-candle price compression (tight range), then fires on breakout with ATR expansion + volume spike</td>
+                <td>compression &lt; 0.4% range, then close &gt; high/low with ATR expanding</td>
+                <td>Post-consolidation trending moves (e.g. SENSEX stuck 11:00–12:30 then breaks 12:30–13:00)</td>
+                <td>Already-expanded sessions, thin volume (volume check may never pass)</td>
+              </tr>
+              <tr>
+                <td>4</td><td><b>ATM_TRAP_REVERSAL</b></td>
+                <td>Detects failed breakout: price pierces key level then reverses hard. Enters in the reversal direction.</td>
+                <td>Prior high/low broken, then engulfing reversal candle with body &gt; avg</td>
+                <td>Key resistance tests that fail, squeeze setups, false breakouts at round numbers</td>
+                <td>Trending markets — counter-trend trades get stopped repeatedly</td>
+              </tr>
+              <tr>
+                <td>5</td><td><b>ATM_MOMENTUM</b></td>
+                <td>RSI + VWAP alignment + breakout high/low. Uses staged entry: detects setup candle then waits for pullback before entering</td>
+                <td>Close &gt; VWAP, RSI &gt; 60, close &gt; prior 5-candle high → BUY_CE</td>
+                <td>Strong trending intraday sessions, post-news continuation moves</td>
+                <td>Whipsaw / sideways sessions — staged pullback never comes or whips back</td>
+              </tr>
+              <tr>
+                <td>6</td><td><b>ATM_IV_EXPANSION</b></td>
+                <td>Watches IV (implied volatility) for a sudden spike — enters when IV 15m change exceeds threshold, indicating a volatility event igniting</td>
+                <td>IV 15m change &gt; threshold + directional bias from price</td>
+                <td>Event ignition (RBI, FII data, global move), sudden VIX jump</td>
+                <td>Normal sessions — low IV change means no signal ever fires</td>
+              </tr>
+              <tr>
+                <td>7</td><td><b>ATM_VWAP_REVERSION</b></td>
+                <td>Fades extended moves back to VWAP — buys when price is stretched far below VWAP, sells when far above</td>
+                <td>Price deviation from VWAP &gt; 0.35%, recent range expanding</td>
+                <td>Sideways sessions with clear VWAP pulls and reversions</td>
+                <td>Trending sessions — price can stay far from VWAP for hours, generating stop-outs</td>
+              </tr>
             </tbody>
           </table>
         </div>
+
+        <!-- Worked examples -->
         <div class="sg-section">
-          <h3>Recommended multi-strategy combinations</h3>
+          <h3>Real scenario examples</h3>
+          <table class="sg-table">
+            <thead><tr><th>Market Scenario</th><th>Best Strategy</th><th>Why</th><th>Example</th></tr></thead>
+            <tbody>
+              <tr><td>SENSEX gaps up 0.4% at open, continues to trend</td><td>ATM_ORB + ATM_MOMENTUM</td><td>ORB breaks cleanly, momentum confirms VWAP hold</td><td>73500CE entry at 09:30 ORB break → exits at 1:1 R:R by 10:15</td></tr>
+              <tr><td>SENSEX flat open, tight range 10:00–12:30, then breaks sharply</td><td>ATM_BREAKOUT_EXPANSION</td><td>45-candle compression detected, ATR expands on break</td><td>73700CE entry at 12:30 breakout (as seen in today's backtest) → +154% move</td></tr>
+              <tr><td>NIFTY tests 22500 resistance three times then reverses</td><td>ATM_TRAP_REVERSAL</td><td>Failed breakout pattern — engulfing reversal candle</td><td>PE entry on the 3rd test rejection → quick 8–12% premium gain before reversion</td></tr>
+              <tr><td>RBI policy day — big volatile move expected, direction unknown</td><td>ATM_IV_EXPANSION or ATM_MULTI</td><td>IV will spike; MULTI adapts to whichever sub-signal fires first</td><td>Wait for first move, IV_EXPANSION fires 5 min post-announcement</td></tr>
+              <tr><td>Normal choppy session, SENSEX oscillating ±100pts around VWAP</td><td>ATM_VWAP_REVERSION</td><td>Mean-reversion works when price oscillates predictably</td><td>Buy CE when SENSEX 0.4% below VWAP → exits when back at VWAP</td></tr>
+              <tr><td>Uncertain session, no clear setup</td><td>ATM_MULTI (min_confirm=3)</td><td>Requires 3 of 4 sub-signals to agree — only high-conviction setups fire</td><td>Fewer trades but higher quality — reduces noise on uncertain days</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Multi-strategy combinations -->
+        <div class="sg-section">
+          <h3>Multi-strategy combinations for intraday_options</h3>
+          <table class="sg-table">
+            <thead><tr><th>Combination</th><th>Min Confirmations</th><th>Use When</th><th>Effect</th></tr></thead>
+            <tbody>
+              <tr><td>ATM_MULTI + ATM_MOMENTUM</td><td>2</td><td>Normal trending sessions</td><td>MULTI fires the setup, MOMENTUM confirms trend continuation — reduces false MULTI entries</td></tr>
+              <tr><td>ATM_BREAKOUT_EXPANSION + ATM_MOMENTUM</td><td>2</td><td>Post-consolidation breakout days</td><td>Both require directional conviction — very high-quality entries, fewer but cleaner trades</td></tr>
+              <tr><td>ATM_ORB + ATM_MOMENTUM</td><td>2</td><td>Gap-and-go sessions</td><td>ORB provides the level, MOMENTUM confirms the move is real — eliminates fake ORB breaks</td></tr>
+              <tr><td>ATM_MULTI + ATM_BREAKOUT_EXPANSION + ATM_MOMENTUM</td><td>2</td><td>High-conviction days only</td><td>Any 2 of 3 agree — balanced coverage, good for uncertain market conditions</td></tr>
+            </tbody>
+          </table>
+          <div class="sg-tip" style="margin-top:8px">
+            <b>Min Confirmations guide:</b> Set to 1 to trade any single signal (aggressive, more trades).
+            Set to 2 for normal use (balanced). Set to 3+ for high-conviction-only mode (fewer, cleaner).
+            For ATM_MULTI alone, keep strategy_mode = SINGLE — it already combines 4 sub-signals internally.
+          </div>
+        </div>
+
+        <!-- Equity strategies -->
+        <div class="sg-section">
+          <h3>Equity engine strategies</h3>
+          <table class="sg-table">
+            <thead><tr><th>Strategy</th><th>Signal Logic</th><th>Works Best When</th><th>Fails When</th></tr></thead>
+            <tbody>
+              <tr><td>MA</td><td>MA20 &gt; MA50 → BUY; MA20 &lt; MA50 → SELL</td><td>Strong directional trend (daily)</td><td>Sideways — false crossovers</td></tr>
+              <tr><td>MA_LONG</td><td>MA50 &gt; MA200 → BUY (delivery only)</td><td>Multi-week uptrends, post-correction recoveries</td><td>Bear markets, sideways consolidations</td></tr>
+              <tr><td>RSI</td><td>RSI &lt; 30 oversold BUY; RSI &gt; 70 overbought SELL</td><td>Range-bound / sideways sessions</td><td>Strong trends — RSI stays extended indefinitely</td></tr>
+              <tr><td>VWAP</td><td>Price &gt; VWAP → bullish bias for intraday entries</td><td>Active-volume intraday with institutional flow</td><td>Choppy price oscillating around VWAP</td></tr>
+              <tr><td>BREAKOUT</td><td>Close &gt; prior 20-candle high → BUY</td><td>Post-consolidation momentum + volume</td><td>Fake breakouts that immediately reverse</td></tr>
+              <tr><td>ORB</td><td>First 15 candles high/low break</td><td>Strong gap-and-go opens, clear directional bias</td><td>Flat opens, fake early moves</td></tr>
+              <tr><td>AUTO_ADAPTIVE</td><td>Regime classification: SIDEWAYS / NORMAL / EXPANSION → routes to best sub-strategy</td><td>Uncertain conditions — adapts daily</td><td>No hard failure mode; worst case is conservative SIDEWAYS regime</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Multi-strategy equity combinations -->
+        <div class="sg-section">
+          <h3>Recommended multi-strategy combinations for equity engines</h3>
           <table class="sg-table">
             <thead><tr><th>Combination</th><th>Use When</th></tr></thead>
             <tbody>
@@ -2388,7 +2531,7 @@ STEP 6 — RUN BACKTEST FIRST (recent 5–10 days)</div>
               <tr><td>MA + BREAKOUT</td><td>Strong trend continuation setups</td></tr>
             </tbody>
           </table>
-          <div class="sg-tip" style="margin-top:8px">Set <b>strategy_mode = MULTI</b> and <b>min_confirmations ≥ 2</b> for any multi-strategy combination.</div>
+          <div class="sg-tip" style="margin-top:8px">Set <b>strategy_mode = MULTI</b> and <b>min_confirmations ≥ 2</b> for any multi-strategy combination. For equity, AUTO_ADAPTIVE handles regime switching automatically — use it when unsure.</div>
         </div>
       </div>
 
