@@ -4,6 +4,70 @@ Track record of bugs found and fixes applied for audit and future reference.
 
 ---
 
+## [2026-06-04] ATM_ORB fires spurious signal at 09:15 using prior-day data
+
+### Symptom
+Backtest showed an ATM_ORB trade entry at 09:15 — the very first candle of the day. ORB is designed to wait 15 candles before triggering (earliest valid signal ≈09:30 on 1m data).
+
+### Root Cause
+`IntradayOptionsEngine.require_closed_signal_candle = True`. In `get_stable_signal_data`, at timestamp 09:15 the condition `latest_naive >= current_minute` is True → `data.iloc[:-1]` strips the 09:15 candle. The stripped slice ends at **yesterday's 15:29**. `_get_session_df(df)` then filters to the last date in that slice → returns **all 375 prior-day candles**. `strategy_orb` sees `len(session_df) = 375 > 15`, computes the opening range from yesterday's first 15 candles, and fires BUY_CE/BUY_PE using yesterday's last close vs yesterday's ORB range — labelled at today's 09:15 timestamp.
+
+### Fix
+**`orchestration/signal_workflow.py:get_stable_signal_data()`** — after stripping the forming candle, check if the strip crossed a day boundary:
+```python
+stripped = data.iloc[:-1]
+if not stripped.empty and stripped.index[-1].date() != latest_naive.date():
+    return data  # today's first candle remains; strategy min-candle checks block entry
+return stripped
+```
+
+### Files Changed
+- `orchestration/signal_workflow.py` — `get_stable_signal_data()`
+
+---
+
+## [2026-06-04] Multi-strategy mode always HOLDs for intraday_options (BUY_CE/BUY_PE not counted)
+
+### Symptom
+Selecting Multi-strategy mode for `intraday_options` produced zero trades — every signal returned HOLD regardless of how many strategies agreed.
+
+### Root Cause
+`evaluate_symbol_signal` mode `"2"` counted `strat_signal == "BUY"` and `strat_signal == "SELL"` for agreement. ATM option strategies return `execution_signal = "BUY_CE"` or `"BUY_PE"`, never plain `"BUY"` or `"SELL"`. So `buy_count` and `sell_count` were always 0 → `final_signal = "HOLD"`.
+
+Additionally, when a valid multi-strategy `signal="BUY"` was produced but `option_signal=None` (CE/PE votes tied), `dynamic_atm_scan=True` meant the code later tried to access `contract_snapshot["strike"]` — which was never assigned → `UnboundLocalError`.
+
+### Fix
+**`signal_scoring.py:evaluate_symbol_signal()`** — count `BUY_CE` as a buy vote and `BUY_PE` as a sell vote. Track `ce_count` and `pe_count` separately to resolve the majority option type. Surface resolved `option_signal`/`option_type` in the multi-strategy result.
+
+**`orchestration/signal_workflow.py:scan_symbols()`** — initialize `contract_snapshot = None` before the try block. Guard all `contract_snapshot[]` accesses with `contract_snapshot is not None`. Block entry when `dynamic_atm_scan=True` but `option_signal` is not BUY_CE/BUY_PE (CE/PE tie → reset signal to HOLD).
+
+### Files Changed
+- `signal_scoring.py` — `evaluate_symbol_signal()` multi-strategy aggregator
+- `orchestration/signal_workflow.py` — `contract_snapshot` init + guards
+
+---
+
+## [2026-06-04] Runner web servers serve stale local static/index.html instead of web/static/
+
+### Symptom
+All UI edits to `web/static/index.html` were invisible after restart. The strategy mode dropdown, multi-strategy checkboxes, and CE/PE display fixes never appeared despite being committed.
+
+### Root Cause
+Each runner had `runners/XX/static/index.html` (~2431 lines, untracked). Each runner's `main_*_web.py` explicitly set `_STATIC_DIR = Path(__file__).parent / "static"` pointing to the local stale copy instead of `web/static/index.html` (2710 lines, authoritative).
+
+### Fix
+1. All 6 `runners/XX/main_*_web.py` changed to: `_STATIC_DIR = Path(__file__).parent.parent.parent / "web" / "static"`
+2. All 6 `runners/XX/static/` directories deleted from disk
+3. `.gitignore` entry `runners/*/static/` added
+4. `web/server.py` now raises `RuntimeError` if `_STATIC_DIR` doesn't exist (silent fallback removed)
+
+### Files Changed
+- All 6 `runners/XX/main_*_web.py`
+- `.gitignore`
+- `web/server.py`
+
+---
+
 ## [2026-06-03] All runners use hardcoded default values instead of config.runtime.yaml
 
 ### Symptom

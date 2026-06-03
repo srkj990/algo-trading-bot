@@ -6,3 +6,6 @@ state/
 venv/
 # Runner-local static copies — UI is served from web/static/ only
 runners/*/static/
+# Backtest result files (CSV, equity curves) — generated output, not source
+Results/
+runners/*/Results/

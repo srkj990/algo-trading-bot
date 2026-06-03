@@ -130,6 +130,34 @@ Quality
   [x] Backtest uses same resolve_trade_targets() and adaptive builders as live
 
 
+COMPLETED (2026-06-04)
+---------------------
+
+Multi-Strategy for intraday_options — Full Fix
+  [x] signal_scoring.py: BUY_CE/BUY_PE now counted as BUY/SELL votes in multi-strategy aggregator
+  [x] signal_scoring.py: CE/PE majority vote surfaced as resolved option_signal/option_type
+  [x] signal_scoring.py: single-strategy agreement_count fixed (was 0 for BUY_CE/BUY_PE)
+  [x] backtesting.py prompt_strategy_setup: Single/Multi mode prompt for intraday_options
+  [x] cli/interactive_input.py: same prompt in live session flow — ranked list + min_confirmations
+  [x] orchestration/signal_workflow.py: contract_snapshot initialized to None (UnboundLocalError fix)
+  [x] orchestration/signal_workflow.py: guard CE/PE tie case (no contract resolved → HOLD)
+
+ATM_ORB Premature 09:15 Trigger Fix
+  [x] orchestration/signal_workflow.py get_stable_signal_data(): day-boundary guard
+      — stripping the forming candle at 09:15 exposed yesterday's full session
+      — _get_session_df returned 375 prior-day candles, ORB fired on stale data
+      — Fix: if stripped.index[-1].date() != today, return original data unchanged
+
+Runner Static Files — Single Source of Truth
+  [x] All 6 runners/XX/main_*_web.py: _STATIC_DIR → web/static/ (not local static/)
+  [x] 6 stale runners/XX/static/ directories deleted from disk
+  [x] .gitignore: runners/*/static/ added
+  [x] web/server.py: RuntimeError if _STATIC_DIR missing (was silent fallback)
+
+Runner Files Committed to Git
+  [x] All runners/XX/main_*.py + run_*.bat now tracked in git
+
+
 COMPLETED (2026-06-03) — Session 2
 -----------------------------------
 

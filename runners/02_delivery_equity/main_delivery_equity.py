@@ -1,0 +1,58 @@
+import os
+import sys
+
+# Add the zerodha-alago root to path so all package imports work
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+
+from cli.configuration import build_session_config_from_dict
+from logger import finalize_session_logger, log_event, setup_session_logger
+from orchestration.context import build_trading_context
+from orchestration.session import (
+    handle_keyboard_interrupt,
+    run_trading_session,
+    summarize_session,
+)
+
+# ── CONFIG ────────────────────────────────────────────────────────────────────
+# Change EXECUTION_MODE to "LIVE" when ready for real orders.
+# Delivery equity holds positions for days/weeks — run this continuously.
+EXECUTION_MODE = "PAPER"
+CAPITAL = 100_000.0
+
+CONFIG = {
+    "engine_choice": "2",           # DeliveryEquityEngine (daily CNC)
+    "execution_mode": EXECUTION_MODE,
+    "capital": CAPITAL,
+    "data_provider": "YFINANCE",
+    "execution_provider": "KITE",
+    "symbol_mode": "NIFTY50",       # scan full Nifty 50 basket
+    "risk_style": "1",              # CONSERVATIVE — suits long-term holds
+    "strategy_mode": "2",           # MULTI-strategy voting
+    "strategies": ["MA", "BREAKOUT"],
+    "min_confirmations": 2,
+    "max_open_positions": 5,
+    "max_capital_per_trade": 20_000.0,
+    "max_capital_deployed": 100_000.0,
+}
+
+# ── RUNNER ────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    setup_session_logger()
+    context = None
+    try:
+        session_config = build_session_config_from_dict(CONFIG)
+        context = build_trading_context(session_config)
+        run_trading_session(context)
+    except KeyboardInterrupt:
+        if context is not None:
+            handle_keyboard_interrupt(context)
+    except Exception as exc:
+        log_event(f"[ERROR] {exc}", "error")
+        raise
+    finally:
+        if context is not None:
+            try:
+                summarize_session(context)
+            except Exception:
+                pass
+        finalize_session_logger()
