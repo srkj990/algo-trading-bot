@@ -21,6 +21,7 @@ from .base import DataProvider
 _KITE_INDEX_TOKENS = {
     "NSE:NIFTY 50": 256265,
     "BSE:SENSEX": 265,
+    "NSE:SENSEX": 265,  # alias — SENSEX token works regardless of exchange prefix
 }
 
 

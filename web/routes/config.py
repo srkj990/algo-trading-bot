@@ -666,12 +666,21 @@ def _build_backtest_config(data: dict):
     )
 
 
+_SPOT_SYMBOL_FALLBACK = {
+    "SENSEX": "BSE:SENSEX",
+    "NIFTY": "NSE:NIFTY 50",
+    "BANKNIFTY": "NSE:NIFTY BANK",
+    "FINNIFTY": "NSE:NIFTY FIN SERVICE",
+    "MIDCPNIFTY": "NSE:NIFTY MID SELECT",
+}
+
+
 def _safe_spot_symbol(base_symbol: str) -> str:
     try:
         from fno_data_fetcher import get_fno_spot_quote_symbol
         return get_fno_spot_quote_symbol(base_symbol)
     except Exception:
-        return f"NSE:{base_symbol}"
+        return _SPOT_SYMBOL_FALLBACK.get(base_symbol.upper(), f"NSE:{base_symbol}")
 
 
 def _summarise(summary: dict, paths: tuple) -> dict:
