@@ -75,12 +75,6 @@ SUPPORTED_BACKTEST_FNO_SYMBOLS = {
     "NIFTY": "^NSEI",
     "SENSEX": "^BSESN",
 }
-
-# Kite's historical_data API does not serve 1m OHLC for BSE:SENSEX.
-# SENSEX candles are available under NSE:SENSEX (same data, NSE exchange token).
-_KITE_BACKTEST_SYMBOL_REMAP = {
-    "BSE:SENSEX": "NSE:SENSEX",
-}
 BACKTEST_FNO_SYMBOLS = {
     key: SUPPORTED_BACKTEST_FNO_SYMBOLS[key]
     for key in FNO_INDEX_SYMBOLS
@@ -278,10 +272,8 @@ class BacktestEngine:
         underlying_symbol = str(
             settings.get("underlying_symbol") or get_fno_spot_quote_symbol(base_symbol)
         )
-        # BSE:SENSEX has no 1m OHLC via Kite historical_data; use NSE:SENSEX instead
-        fetch_symbol = _KITE_BACKTEST_SYMBOL_REMAP.get(underlying_symbol, underlying_symbol)
         underlying_data = get_data(
-            fetch_symbol,
+            underlying_symbol,
             period=self.config.period,
             interval=self.config.interval,
             provider="KITE",

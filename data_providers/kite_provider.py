@@ -15,12 +15,21 @@ from network_utils import (
 from .base import DataProvider
 
 
+# Kite index instrument tokens that are not present in the instruments() list
+# but ARE valid for historical_data() calls.
+# NIFTY 50 = 256265, SENSEX = 265 (BSE index).
+_KITE_INDEX_TOKENS = {
+    "NSE:NIFTY 50": 256265,
+    "BSE:SENSEX": 265,
+}
+
+
 class KiteDataProvider(DataProvider):
     name = "KITE"
 
     def __init__(self):
         self._kite_client = None
-        self._instrument_cache = {}
+        self._instrument_cache = dict(_KITE_INDEX_TOKENS)
 
     def fetch(self, symbol: str, period: str = "1d", interval: str = "1m"):
         instrument_token = self._get_instrument_token(symbol)
