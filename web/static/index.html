@@ -335,27 +335,31 @@
     </div>
 
     <!-- Strategy -->
-    <div class="mt-4 grid grid-cols-2 gap-4">
-      <div id="strat-mode-wrap">
-        <label class="section-label">Strategy Mode</label>
-        <select id="c-strat-mode" onchange="onStratModeChange()">
-          <option value="2" selected>Multi-strategy</option>
-          <option value="1">Single strategy</option>
-          <option value="3">Auto-adaptive</option>
-        </select>
+    <div class="mt-4">
+      <div class="grid grid-cols-2 gap-4">
+        <div id="strat-mode-wrap">
+          <label class="section-label">Strategy Mode</label>
+          <select id="c-strat-mode" onchange="onStratModeChange()">
+            <option value="1" selected>Single — one strategy</option>
+            <option value="2">Multi — combine strategies</option>
+            <option value="3">Auto-adaptive</option>
+          </select>
+          <p class="text-xs text-slate-400 mt-1">Multi: entry fires when N strategies agree (set confirmations below)</p>
+        </div>
+        <div id="strat-name-wrap" class="hidden">
+          <label class="section-label">Strategy</label>
+          <select id="c-strat-name"></select>
+        </div>
+        <div id="c-min-confirm-wrap" class="hidden">
+          <label class="section-label">Min Confirmations</label>
+          <input id="c-min-confirm" type="number" min="1" max="7" value="2"/>
+          <p class="text-xs text-slate-400 mt-1">How many selected strategies must agree (1 = any, 2 = majority)</p>
+        </div>
       </div>
-      <div id="strat-name-wrap" class="hidden">
-        <label class="section-label">Strategy</label>
-        <select id="c-strat-name"></select>
-      </div>
-      <div id="strat-multi-wrap" class="col-span-2">
-        <label class="section-label">Strategies (hold Ctrl/Cmd for multi-select)</label>
-        <select id="c-strat-multi" multiple size="3" style="height:auto"></select>
-      </div>
-      <div id="c-min-confirm-wrap" class="hidden">
-        <label class="section-label">Min Confirmations</label>
-        <input id="c-min-confirm" type="number" min="1" max="7" value="2"/>
-        <p class="text-xs text-slate-400 mt-1">Strategies that must agree before entry fires</p>
+      <div id="strat-multi-wrap" class="hidden mt-3">
+        <label class="section-label">Select Strategies — ranked best → situational (tick to include)</label>
+        <div id="c-strat-checkboxes" class="grid grid-cols-2 gap-1 mt-1"></div>
+        <select id="c-strat-multi" multiple class="hidden"></select>
       </div>
     </div>
 
@@ -605,27 +609,31 @@
     </div>
 
     <!-- Strategy (backtest) -->
-    <div class="mt-4 grid grid-cols-2 gap-4">
-      <div id="b-strat-mode-wrap">
-        <label class="section-label">Strategy Mode</label>
-        <select id="b-strat-mode" onchange="onBStratModeChange()">
-          <option value="2" selected>Multi-strategy</option>
-          <option value="1">Single strategy</option>
-          <option value="3">Auto-adaptive</option>
-        </select>
+    <div class="mt-4">
+      <div class="grid grid-cols-2 gap-4">
+        <div id="b-strat-mode-wrap">
+          <label class="section-label">Strategy Mode</label>
+          <select id="b-strat-mode" onchange="onBStratModeChange()">
+            <option value="1" selected>Single — one strategy</option>
+            <option value="2">Multi — combine strategies</option>
+            <option value="3">Auto-adaptive</option>
+          </select>
+          <p class="text-xs text-slate-400 mt-1">Multi: entry fires when N strategies agree (set confirmations below)</p>
+        </div>
+        <div id="b-strat-name-wrap" class="hidden">
+          <label class="section-label">Strategy</label>
+          <select id="b-strat-name" onchange="_autoSetPeriodForStrategy()"></select>
+        </div>
+        <div id="b-min-confirm-wrap" class="hidden">
+          <label class="section-label">Min Confirmations</label>
+          <input id="b-min-confirm" type="number" min="1" max="7" value="2"/>
+          <p class="text-xs text-slate-400 mt-1">How many selected strategies must agree (1 = any, 2 = majority)</p>
+        </div>
       </div>
-      <div id="b-strat-name-wrap" class="hidden">
-        <label class="section-label">Strategy</label>
-        <select id="b-strat-name" onchange="_autoSetPeriodForStrategy()"></select>
-      </div>
-      <div id="b-strat-multi-wrap" class="col-span-2">
-        <label class="section-label">Strategies (hold Ctrl/Cmd for multi-select)</label>
-        <select id="b-strat-multi" multiple size="3" style="height:auto"></select>
-      </div>
-      <div id="b-min-confirm-wrap" class="hidden">
-        <label class="section-label">Min Confirmations</label>
-        <input id="b-min-confirm" type="number" min="1" max="7" value="2"/>
-        <p class="text-xs text-slate-400 mt-1">Strategies that must agree before entry fires</p>
+      <div id="b-strat-multi-wrap" class="hidden mt-3">
+        <label class="section-label">Select Strategies — ranked best → situational (tick to include)</label>
+        <div id="b-strat-checkboxes" class="grid grid-cols-2 gap-1 mt-1"></div>
+        <select id="b-strat-multi" multiple class="hidden"></select>
       </div>
     </div>
 
@@ -1386,7 +1394,13 @@ function onEngineChange(scope) {
     const strats = fno ? FNO_STRATEGIES : EQ_STRATEGIES;
     populateSelect('c-strat-name',  IS_IOPTS(eng) ? IOPTS_STRATEGIES_ORDERED : Object.values(strats));
     populateSelect('c-strat-multi', IS_IOPTS(eng) ? IOPTS_STRATEGIES_ORDERED : Object.values(strats));
-    if (IS_IOPTS(eng)) { document.getElementById('c-strat-mode').value = '1'; onStratModeChange(); }
+    if (IS_IOPTS(eng)) {
+      populateStrategyCheckboxes('c-strat-checkboxes', 'c-strat-multi', IOPTS_STRATEGIES_ORDERED, ['ATM_MULTI', 'ATM_BREAKOUT_EXPANSION']);
+      if (!document.getElementById('c-strat-mode')._ioptsTouched) {
+        document.getElementById('c-strat-mode').value = '1';
+      }
+      onStratModeChange();
+    }
     if (fno) loadFnoData('live');
   } else {
     tog('b-eq-section',       !fno);
@@ -1404,7 +1418,13 @@ function onEngineChange(scope) {
     const strats = fno ? FNO_STRATEGIES : EQ_STRATEGIES;
     populateSelect('b-strat-name',  IS_IOPTS(eng) ? IOPTS_STRATEGIES_ORDERED : Object.values(strats));
     populateSelect('b-strat-multi', IS_IOPTS(eng) ? IOPTS_STRATEGIES_ORDERED : Object.values(strats));
-    if (IS_IOPTS(eng)) { document.getElementById('b-strat-mode').value = '1'; onBStratModeChange(); }
+    if (IS_IOPTS(eng)) {
+      populateStrategyCheckboxes('b-strat-checkboxes', 'b-strat-multi', IOPTS_STRATEGIES_ORDERED, ['ATM_MULTI', 'ATM_BREAKOUT_EXPANSION']);
+      if (!document.getElementById('b-strat-mode')._ioptsTouched) {
+        document.getElementById('b-strat-mode').value = '1';
+      }
+      onBStratModeChange();
+    }
 
     // auto-set sensible period/interval for this engine
     const engineDefaults = {
@@ -1460,6 +1480,7 @@ function autoCapPerTrade(pfx) {
 }
 
 function onStratModeChange() {
+  document.getElementById('c-strat-mode')._ioptsTouched = true;
   const m = document.getElementById('c-strat-mode').value;
   tog('strat-name-wrap',    m === '1');
   tog('strat-multi-wrap',   m === '2');
@@ -1467,6 +1488,7 @@ function onStratModeChange() {
 }
 
 function onBStratModeChange() {
+  document.getElementById('b-strat-mode')._ioptsTouched = true;
   const m = document.getElementById('b-strat-mode').value;
   tog('b-strat-name-wrap',    m === '1');
   tog('b-strat-multi-wrap',   m !== '1');
@@ -1610,8 +1632,10 @@ async function submitLive() {
   if (mode === '1') {
     payload.strategy_name = document.getElementById('c-strat-name').value;
   } else if (mode === '2') {
-    const sel = document.getElementById('c-strat-multi');
-    payload.strategies = Array.from(sel.selectedOptions).map(o => o.value);
+    // Use checkboxes if visible (intraday_options), otherwise fall back to multi-select
+    const checked = getCheckedStrategies('c-strat-checkboxes');
+    payload.strategies = checked.length ? checked
+      : Array.from(document.getElementById('c-strat-multi').selectedOptions).map(o => o.value);
     payload.min_confirmations = parseInt(document.getElementById('c-min-confirm').value) || 2;
   }
 
@@ -1773,8 +1797,9 @@ async function submitBacktest() {
   if (mode === '1') {
     payload.strategy_name = document.getElementById('b-strat-name').value;
   } else if (mode === '2') {
-    const sel = document.getElementById('b-strat-multi');
-    payload.strategies = Array.from(sel.selectedOptions).map(o => o.value);
+    const checked = getCheckedStrategies('b-strat-checkboxes');
+    payload.strategies = checked.length ? checked
+      : Array.from(document.getElementById('b-strat-multi').selectedOptions).map(o => o.value);
     payload.min_confirmations = parseInt(document.getElementById('b-min-confirm').value) || 2;
   }
 
@@ -2248,6 +2273,46 @@ function populateSelect(id, opts) {
   const sel = document.getElementById(id); if (!sel) return;
   sel.innerHTML = '';
   opts.forEach(v => { const o = document.createElement('option'); o.value = v; o.text = v; sel.appendChild(o); });
+}
+
+// Strategy rank hints shown next to each checkbox
+const IOPTS_STRATEGY_HINTS = {
+  ATM_MULTI:              '#1 Best all-round',
+  ATM_ORB:                '#2 Morning directional',
+  ATM_BREAKOUT_EXPANSION: '#3 Huge trending moves',
+  ATM_TRAP_REVERSAL:      '#4 Fake breakout reversals',
+  ATM_MOMENTUM:           '#5 Trend continuation',
+  ATM_IV_EXPANSION:       '#6 Volatility ignition',
+  ATM_VWAP_REVERSION:     '#7 Sideways only',
+};
+
+function populateStrategyCheckboxes(boxId, selectId, strategies, defaultChecked) {
+  const box = document.getElementById(boxId); if (!box) return;
+  const sel = document.getElementById(selectId);
+  box.innerHTML = '';
+  strategies.forEach((s, i) => {
+    const checked = defaultChecked ? defaultChecked.includes(s) : i < 2;
+    const hint = IOPTS_STRATEGY_HINTS[s] || '';
+    const wrap = document.createElement('label');
+    wrap.className = 'flex items-center gap-2 text-sm text-slate-200 cursor-pointer py-1 px-2 rounded hover:bg-slate-700';
+    wrap.innerHTML = `<input type="checkbox" value="${s}" ${checked ? 'checked' : ''} class="accent-blue-500 w-4 h-4 flex-shrink-0"/>
+      <span><span class="font-mono">${s}</span> <span class="text-xs text-slate-400">${hint}</span></span>`;
+    wrap.querySelector('input').addEventListener('change', () => syncCheckboxesToSelect(boxId, selectId));
+    box.appendChild(wrap);
+  });
+  syncCheckboxesToSelect(boxId, selectId);
+}
+
+function syncCheckboxesToSelect(boxId, selectId) {
+  const box = document.getElementById(boxId); if (!box) return;
+  const sel = document.getElementById(selectId); if (!sel) return;
+  const checked = Array.from(box.querySelectorAll('input[type=checkbox]:checked')).map(cb => cb.value);
+  Array.from(sel.options).forEach(o => { o.selected = checked.includes(o.value); });
+}
+
+function getCheckedStrategies(boxId) {
+  const box = document.getElementById(boxId); if (!box) return [];
+  return Array.from(box.querySelectorAll('input[type=checkbox]:checked')).map(cb => cb.value);
 }
 function fmt(n, dp=0) { return (n??0).toLocaleString('en-IN',{minimumFractionDigits:dp,maximumFractionDigits:dp}); }
 function ff(n) { return n!=null ? n.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—'; }
