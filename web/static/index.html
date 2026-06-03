@@ -2177,7 +2177,19 @@ function populateSelect(id, opts) {
 }
 function fmt(n, dp=0) { return (n??0).toLocaleString('en-IN',{minimumFractionDigits:dp,maximumFractionDigits:dp}); }
 function ff(n) { return n!=null ? n.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—'; }
-function shortSym(s) { return (s||'').replace('NFO:','').replace('.NS','').slice(0,18); }
+function shortSym(s) {
+  if (!s) return '';
+  // BFO/NFO option contract: ends in CE or PE
+  // Symbol format: BFO:SENSEX2660473700CE  or  NFO:NIFTY2460224800CE
+  // Extract option type (last 2 chars), then walk back digits to get strike
+  const optM = s.match(/^(?:BFO|NFO):[A-Z]+\d{6}(\d{4,6})([CP]E)$/);
+  if (optM) {
+    const optType = optM[2];              // CE or PE
+    const strike  = parseInt(optM[1],10); // e.g. 73700
+    return `${optType} ${strike}`;
+  }
+  return s.replace('NFO:','').replace('BFO:','').replace('.NS','').slice(0,18);
+}
 function showCfgError(msg) { const el=document.getElementById('cfg-error'); el.textContent='⚠ '+msg; el.classList.remove('hidden'); }
 function hideCfgError()    { document.getElementById('cfg-error').classList.add('hidden'); }
 function showCfgSpinner(v) {
