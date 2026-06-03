@@ -335,6 +335,7 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
             and symbol == cfg.atm_option_config["scan_symbol"]
         )
         contract_data = signal_data
+        contract_snapshot = None
 
         if (
             engine.name == "intraday_equity"
@@ -389,6 +390,13 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
                 min_confirmations=active_min_confirmations,
             )
 
+        if dynamic_atm_scan and evaluation.get("signal") in {"BUY", "SELL"} and evaluation.get("option_signal") not in {"BUY_CE", "BUY_PE"}:
+            # Multi-strategy produced a directional signal but CE/PE votes were tied or absent —
+            # cannot resolve which contract to enter. Block the entry.
+            evaluation["signal"] = "HOLD"
+            evaluation["agreement_count"] = 0
+            evaluation["score"] = 0.0
+            evaluation["reason"] = "Multi-strategy CE/PE votes tied or missing — no contract resolved"
         if dynamic_atm_scan and evaluation.get("option_signal") in {"BUY_CE", "BUY_PE"}:
             try:
                 contract_snapshot = resolve_atm_option_contract_snapshot(
@@ -524,13 +532,13 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
                     "option_signal": evaluation.get("option_signal"),
                     "reason": evaluation.get("reason"),
                     "underlying_symbol": symbol if dynamic_atm_scan else None,
-                    "strike": contract_snapshot["strike"] if dynamic_atm_scan else None,
-                    "option_type": contract_snapshot["option_type"] if dynamic_atm_scan else evaluation.get("option_type"),
+                    "strike": contract_snapshot["strike"] if (dynamic_atm_scan and contract_snapshot) else None,
+                    "option_type": contract_snapshot["option_type"] if (dynamic_atm_scan and contract_snapshot) else evaluation.get("option_type"),
                     "strike_offset": (
-                        contract_snapshot["strike_offset"] if dynamic_atm_scan else None
+                        contract_snapshot["strike_offset"] if (dynamic_atm_scan and contract_snapshot) else None
                     ),
                     "strike_offset_mode": (
-                        contract_snapshot["strike_offset_mode"] if dynamic_atm_scan else None
+                        contract_snapshot["strike_offset_mode"] if (dynamic_atm_scan and contract_snapshot) else None
                     ),
                 }
             )
