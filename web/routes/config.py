@@ -596,7 +596,7 @@ def _build_backtest_config(data: dict):
             strategies = tuple(s.upper() for s in raw_strats if s.upper() in valid_iopts)
             if not strategies:
                 strategies = ("ATM_MULTI", "ATM_BREAKOUT_EXPANSION")
-            min_confirmations = max(1, int(data.get("min_confirmations", max(1, len(strategies) - 1))))
+            min_confirmations = max(1, int(data.get("min_confirmations", 1)))
         else:
             strategy_mode = "SINGLE"
             strategy_name = str(data.get("strategy_name", "ATM_MOMENTUM")).upper()
@@ -622,7 +622,7 @@ def _build_backtest_config(data: dict):
         if isinstance(raw_strats, str):
             raw_strats = [s.strip() for s in raw_strats.split(",") if s.strip()]
         strategies = tuple(raw_strats) if raw_strats else tuple(engine_cls.supported_strategies.values())
-        min_confirmations = max(1, int(data.get("min_confirmations", min(2, len(strategies)))))
+        min_confirmations = max(1, int(data.get("min_confirmations", 1)))
 
     # ── position limits ───────────────────────────────────────────────────────
     max_positions = max(1, int(data.get("max_open_positions", 1)))

@@ -1803,8 +1803,8 @@ def prompt_strategy_setup(engine_class):
                 "2",
             )
             min_confirmations = prompt_int(
-                f"Minimum confirmations [default {min(2, len(strategies))}]: ",
-                default=min(2, len(strategies)),
+                f"Minimum confirmations [default 1]: ",
+                default=1,
                 minimum=1,
                 maximum=len(strategies),
             )

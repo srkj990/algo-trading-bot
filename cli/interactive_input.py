@@ -280,8 +280,8 @@ def prompt_strategy_configuration(engine, default_confirmations):
                 "2 = balanced (recommended), 1 = any fires, 3+ = high-conviction only. Example: 2"
             )
             min_confirmations = prompt_int(
-                f"Minimum confirmations [default {min(2, strategy_count)}]: ",
-                default=min(2, strategy_count),
+                f"Minimum confirmations [default 1]: ",
+                default=1,
                 minimum=1,
                 maximum=strategy_count,
             )

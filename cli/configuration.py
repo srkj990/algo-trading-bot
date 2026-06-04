@@ -1223,7 +1223,7 @@ def build_session_config_from_dict(data: dict) -> SessionConfig:
                 strategies = ["ATM_MULTI", "ATM_BREAKOUT_EXPANSION"]
             strategy_name = None
             _mc_raw = data.get("min_confirmations")
-            min_confirmations = max(1, min(len(strategies), int(_mc_raw))) if _mc_raw is not None else max(1, len(strategies) - 1)
+            min_confirmations = max(1, min(len(strategies), int(_mc_raw))) if _mc_raw is not None else 1
         # momentum_entry_mode set after entry mode is resolved below
     elif engine.name == "intraday_equity" and str(data.get("strategy_mode", "2")) == "3":
         mode = "3"

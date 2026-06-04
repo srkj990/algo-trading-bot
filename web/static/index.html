@@ -189,8 +189,8 @@
         <label class="section-label">Risk Style</label>
         <select id="c-risk">
           <option value="1">Conservative — 0.5% risk/trade</option>
-          <option value="2" selected>Balanced — 1.0% risk/trade</option>
-          <option value="3">Aggressive — 1.5% risk/trade</option>
+          <option value="2">Balanced — 1.0% risk/trade</option>
+          <option value="3" selected>Aggressive — 1.5% risk/trade</option>
         </select>
       </div>
     </div>
@@ -289,24 +289,24 @@
       <div>
         <label class="section-label">Entry Mode</label>
         <select id="c-entry-mode">
-          <option value="LIVE_STAGED" selected>Live Staged (closed candle + staged)</option>
-          <option value="LIVE_TICK_CONFIRM">Live Tick Confirm (forming-candle + tick LTP)</option>
+          <option value="LIVE_STAGED">Live Staged (closed candle + staged)</option>
+          <option value="LIVE_TICK_CONFIRM" selected>Live Tick Confirm (forming-candle + tick LTP)</option>
           <option value="LEGACY_IMMEDIATE">Legacy Immediate (bypass staged filters)</option>
         </select>
         <p class="text-xs text-slate-400 mt-1">Live Tick Confirm enables sub-1m entry via forming candle preview</p>
       </div>
       <div>
         <label class="section-label">Max Trades / Underlying / Day</label>
-        <input type="number" id="c-max-trades" min="1" max="10" value="2" class="w-full bg-slate-700 border border-slate-500 rounded px-3 py-2 text-sm text-white">
+        <input type="number" id="c-max-trades" min="1" max="10" value="5" class="w-full bg-slate-700 border border-slate-500 rounded px-3 py-2 text-sm text-white">
         <p class="text-xs text-slate-400 mt-1">Enforces daily cap per underlying (e.g. NIFTY). Live default: 2</p>
       </div>
       <div>
         <label class="section-label">Time Exit Window (minutes)</label>
         <select id="c-time-exit">
           <option value="10">10 minutes</option>
-          <option value="15" selected>15 minutes</option>
+          <option value="15">15 minutes</option>
           <option value="20">20 minutes</option>
-          <option value="30">30 minutes</option>
+          <option value="30" selected>30 minutes</option>
           <option value="0">Disabled</option>
         </select>
         <p class="text-xs text-slate-400 mt-1">Auto-exit after this many minutes (0 = rely on stop/target only)</p>
@@ -355,7 +355,7 @@
       </div>
       <div id="c-min-confirm-wrap" class="hidden mt-3">
         <label class="section-label">Min Confirmations</label>
-        <input id="c-min-confirm" type="number" min="1" max="7" value="2" style="max-width:120px"/>
+        <input id="c-min-confirm" type="number" min="1" max="7" value="1" style="max-width:120px"/>
         <p class="text-xs text-slate-400 mt-1">How many of the selected strategies must agree before entry fires (1 = any, 2 = majority recommended)</p>
       </div>
     </div>
@@ -448,8 +448,8 @@
         <label class="section-label">Risk Style</label>
         <select id="b-risk">
           <option value="1">Conservative — 0.5% risk/trade</option>
-          <option value="2" selected>Balanced — 1.0% risk/trade</option>
-          <option value="3">Aggressive — 1.5% risk/trade</option>
+          <option value="2">Balanced — 1.0% risk/trade</option>
+          <option value="3" selected>Aggressive — 1.5% risk/trade</option>
         </select>
       </div>
       <div>
@@ -564,23 +564,23 @@
       <div>
         <label class="section-label">Entry Mode</label>
         <select id="b-entry-mode">
-          <option value="LIVE_STAGED" selected>Live Staged (closed candle + staged)</option>
-          <option value="LIVE_TICK_CONFIRM">Live Tick Confirm (forming-candle + tick LTP)</option>
+          <option value="LIVE_STAGED">Live Staged (closed candle + staged)</option>
+          <option value="LIVE_TICK_CONFIRM" selected>Live Tick Confirm (forming-candle + tick LTP)</option>
           <option value="LEGACY_IMMEDIATE">Legacy Immediate (bypass staged filters)</option>
         </select>
       </div>
       <div>
         <label class="section-label">Max Trades / Underlying / Day</label>
-        <input type="number" id="b-max-trades" min="1" max="10" value="2" class="w-full bg-slate-700 border border-slate-500 rounded px-3 py-2 text-sm text-white">
+        <input type="number" id="b-max-trades" min="1" max="10" value="5" class="w-full bg-slate-700 border border-slate-500 rounded px-3 py-2 text-sm text-white">
         <p class="text-xs text-slate-400 mt-1">Daily cap per underlying (enforced in backtest)</p>
       </div>
       <div>
         <label class="section-label">Time Exit Window (minutes)</label>
         <select id="b-time-exit">
           <option value="10">10 minutes</option>
-          <option value="15" selected>15 minutes</option>
+          <option value="15">15 minutes</option>
           <option value="20">20 minutes</option>
-          <option value="30">30 minutes</option>
+          <option value="30" selected>30 minutes</option>
           <option value="0">Disabled</option>
         </select>
       </div>
@@ -626,7 +626,7 @@
       </div>
       <div id="b-min-confirm-wrap" class="hidden mt-3">
         <label class="section-label">Min Confirmations</label>
-        <input id="b-min-confirm" type="number" min="1" max="7" value="2" style="max-width:120px"/>
+        <input id="b-min-confirm" type="number" min="1" max="7" value="1" style="max-width:120px"/>
         <p class="text-xs text-slate-400 mt-1">How many of the selected strategies must agree before entry fires (1 = any, 2 = majority recommended)</p>
       </div>
     </div>
@@ -649,7 +649,7 @@
 
     <!-- One trade per symbol toggle -->
     <div class="mt-4 flex items-center gap-3">
-      <input id="b-one-trade" type="checkbox" checked style="width:auto;padding:0" class="accent-blue-500 w-4 h-4"/>
+      <input id="b-one-trade" type="checkbox" style="width:auto;padding:0" class="accent-blue-500 w-4 h-4"/>
       <label for="b-one-trade" class="text-sm text-slate-300 cursor-pointer">One trade per symbol per day</label>
       <span class="text-xs text-slate-500">(uncheck to allow multiple entries in the same symbol on the same day)</span>
     </div>
@@ -1585,7 +1585,7 @@ async function submitLive() {
     max_open_positions:   parseInt(document.getElementById('c-max-pos').value),
     max_capital_per_trade: parseFloat(document.getElementById('c-max-per-trade').value),
     max_capital_deployed:  parseFloat(document.getElementById('c-max-deployed').value),
-    one_trade_per_symbol_per_day: true,
+    one_trade_per_symbol_per_day: false,
     strategy_mode:        document.getElementById('c-strat-mode').value,
     paper_trading_override: document.getElementById('c-paper-override').checked,
     exit_mode: document.getElementById('c-exit-mode').value,
@@ -1630,7 +1630,7 @@ async function submitLive() {
     const checked = getCheckedStrategies('c-strat-checkboxes');
     payload.strategies = checked.length ? checked
       : Array.from(document.getElementById('c-strat-multi').selectedOptions).map(o => o.value);
-    payload.min_confirmations = parseInt(document.getElementById('c-min-confirm').value) || 2;
+    payload.min_confirmations = parseInt(document.getElementById('c-min-confirm').value) || 1;
   }
 
   showCfgSpinner(true);
@@ -1794,7 +1794,7 @@ async function submitBacktest() {
     const checked = getCheckedStrategies('b-strat-checkboxes');
     payload.strategies = checked.length ? checked
       : Array.from(document.getElementById('b-strat-multi').selectedOptions).map(o => o.value);
-    payload.min_confirmations = parseInt(document.getElementById('b-min-confirm').value) || 2;
+    payload.min_confirmations = parseInt(document.getElementById('b-min-confirm').value) || 1;
   }
 
   try {
