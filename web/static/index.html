@@ -1112,6 +1112,12 @@ async function loadRuntimeDefaults() {
     setVal('b-max-pos', d.max_positions);
     if (d.max_positions) { autoCapPerTrade('c'); autoCapPerTrade('b'); }
 
+    // Strategy mode (1=Single, 2=Multi) — apply before engine change so it survives the rebuild
+    if (d.intraday_options_strategy_mode != null) {
+      setVal('b-strat-mode', String(d.intraday_options_strategy_mode));
+      setVal('c-strat-mode', String(d.intraday_options_strategy_mode));
+    }
+
     // Default engine (backtest tab) — triggers onEngineChange to update dependent fields
     if (d.engine_choice != null) {
       const beng = document.getElementById('b-engine');

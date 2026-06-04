@@ -28,7 +28,7 @@ session_defaults:
   paper_trading_override: false # set true to bypass weekend + market-hours checks for paper/testing runs
 
 risk_controls:
-  daily_max_loss_pct: 0.15 # used: blocks new entries after realized daily loss exceeds 10% of capital
+  daily_max_loss_pct: 0.15 # used: blocks new entries after realized daily loss exceeds 15% of capital
   consecutive_loss_limit: 3 # used: blocks new entries after this many losing closed trades in a row
   api_failure_pause_minutes: 5 # used: pause duration after scan/entry/API-style failures and abnormal slippage events
   max_orders_per_minute: 10 # used: live-order rate cap enforced in the shared order wrapper
@@ -76,7 +76,7 @@ fno:
   intraday_options_regime_sideways_range_pct: 0.55 # used: range threshold for sideways-regime classification
   intraday_options_regime_sideways_vwap_dev_pct: 0.0025 # used: VWAP-deviation threshold for sideways-regime classification
   intraday_options_regime_expansion_iv_change_pct: 2.0 # used: IV-change threshold for expansion-regime classification
-  intraday_options_lot_mode: "CAPITAL_BASED" # used: default lot-sizing mode offered to intraday-options sessions/backtests
+  intraday_options_lot_mode: "CAPITAL_BASED" # used: authoritative lot-sizing mode for live AND backtest (string: CAPITAL_BASED | ONE_LOT)
   intraday_options_entry_mode: "LIVE_TICK_CONFIRM" # used: default intraday-options entry mode for sessions/backtests (LIVE_STAGED | LEGACY_IMMEDIATE | LIVE_TICK_CONFIRM)
   intraday_options_max_entry_cost_ratio: 0.20 # used: blocks intraday-option entries when expected costs consume too much profit
   intraday_options_max_spread_pct: 0.015 # used: intraday-options-specific live spread guard
@@ -276,5 +276,9 @@ backtest_defaults:
     one_trade_per_symbol_per_day: 2 # used: default one-trade-per-symbol flag for backtest CLI prompt (1=YES, 2=NO)
     entry_selection_mode: 1 # used: default entry-selection mode for backtest CLI prompt
     top_n: 2 # used: default top-N entry count for backtest CLI prompt
-    intraday_options_lot_mode: 2 # used: default intraday-options lot-sizing prompt choice in backtests
     intraday_options_entry_mode: 1 # used: default intraday-options entry-mode prompt choice in backtests (1=LIVE_TICK_CONFIRM, 2=LIVE_STAGED, 3=LEGACY_IMMEDIATE)
+    intraday_options_strategy_mode: 1 # used: default intraday-options strategy-mode for CLI and web (1=SINGLE, 2=MULTI)
+    max_trades_per_underlying: 5 # used: default max-trades-per-underlying CLI prompt for intraday-options backtest
+    time_exit_minutes: 30 # used: default time-exit-window CLI prompt for intraday-options backtest (0=disabled)
+    forming_tick_enabled: 2 # used: default forming-candle entry CLI prompt (1=YES, 2=NO)
+    forming_tick_confirm_ticks: 2 # used: default confirm-ticks for forming-candle entry CLI prompt
