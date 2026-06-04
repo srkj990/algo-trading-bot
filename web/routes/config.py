@@ -38,17 +38,27 @@ _backtest_cancel = threading.Event()
 
 @router.get("/api/runtime-defaults")
 async def get_runtime_defaults() -> JSONResponse:
-    """Return runtime config values used to pre-populate form fields."""
+    """Return runtime config values used to pre-populate all form fields in the web UI."""
     from config import get_runtime_config
     rc = get_runtime_config()
+    pd = (rc.backtest_defaults or {}).get("prompt_defaults", {})
     return JSONResponse({
+        # Risk controls
         "daily_max_loss_pct": rc.risk_controls.daily_max_loss_pct,
         "consecutive_loss_limit": rc.risk_controls.consecutive_loss_limit,
+        # intraday_options FNO settings
         "intraday_options_max_trades_per_underlying": rc.fno.intraday_options_max_trades_per_underlying,
         "intraday_options_max_hold_minutes": rc.fno.intraday_options_max_hold_minutes,
         "intraday_options_lot_mode": rc.fno.intraday_options_lot_mode,
         "intraday_options_entry_mode": rc.fno.intraday_options_entry_mode,
+        # Execution
         "exit_mode": rc.execution_safety.exit_mode,
+        # Backtest/live form defaults (from backtest_prompt_defaults in yaml)
+        "risk_style": pd.get("risk_style", 3),
+        "one_trade_per_symbol_per_day": pd.get("one_trade_per_symbol_per_day", 2) == 1,
+        "intraday_options_strategy_mode": pd.get("intraday_options_strategy_mode", 1),
+        "capital": pd.get("capital", 100000),
+        "max_positions": pd.get("max_positions", 1),
     })
 
 

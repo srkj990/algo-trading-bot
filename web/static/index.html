@@ -1071,46 +1071,47 @@ async function loadRuntimeDefaults() {
     const r = await fetch('/api/runtime-defaults');
     if (!r.ok) return;
     const d = await r.json();
+
+    const setVal  = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
+    const setOpt  = (id, v) => { const el = document.getElementById(id); if (el && v != null) { const o = el.querySelector(`option[value="${v}"]`); if (o) el.value = v; } };
+    const setChk  = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.checked = v; };
+
     // Max trades per underlying (live + backtest)
-    const mt = d.intraday_options_max_trades_per_underlying;
-    if (mt != null) {
-      const cmt = document.getElementById('c-max-trades');
-      const bmt = document.getElementById('b-max-trades');
-      if (cmt) cmt.value = mt;
-      if (bmt) bmt.value = mt;
-    }
-    // Max hold minutes (live + backtest)
-    const mh = d.intraday_options_max_hold_minutes;
-    if (mh != null) {
-      const cte = document.getElementById('c-time-exit');
-      const bte = document.getElementById('b-time-exit');
-      if (cte) { const o = cte.querySelector(`option[value="${mh}"]`); if (o) cte.value = mh; }
-      if (bte) { const o = bte.querySelector(`option[value="${mh}"]`); if (o) bte.value = mh; }
-    }
+    setVal('c-max-trades', d.intraday_options_max_trades_per_underlying);
+    setVal('b-max-trades', d.intraday_options_max_trades_per_underlying);
+
+    // Time exit window — select by option value
+    setOpt('c-time-exit', d.intraday_options_max_hold_minutes);
+    setOpt('b-time-exit', d.intraday_options_max_hold_minutes);
+
     // Lot mode
-    const lm = d.intraday_options_lot_mode;
-    if (lm) {
-      const clm = document.getElementById('c-lot-mode');
-      const blm = document.getElementById('b-lot-mode');
-      if (clm) clm.value = lm;
-      if (blm) blm.value = lm;
-    }
+    setVal('c-lot-mode', d.intraday_options_lot_mode);
+    setVal('b-lot-mode', d.intraday_options_lot_mode);
+
     // Entry mode
-    const em = d.intraday_options_entry_mode;
-    if (em) {
-      const cem = document.getElementById('c-entry-mode');
-      const bem = document.getElementById('b-entry-mode');
-      if (cem) cem.value = em;
-      if (bem) bem.value = em;
-    }
+    setVal('c-entry-mode', d.intraday_options_entry_mode);
+    setVal('b-entry-mode', d.intraday_options_entry_mode);
+
     // Exit mode
-    const xm = d.exit_mode;
-    if (xm) {
-      const cxm = document.getElementById('c-exit-mode');
-      const bxm = document.getElementById('b-exit-mode');
-      if (cxm) cxm.value = xm;
-      if (bxm) bxm.value = xm;
-    }
+    setVal('c-exit-mode', d.exit_mode);
+    setVal('b-exit-mode', d.exit_mode);
+
+    // Risk style (1=Conservative, 2=Balanced, 3=Aggressive)
+    setVal('c-risk', d.risk_style);
+    setVal('b-risk', d.risk_style);
+
+    // One trade per symbol per day
+    setChk('b-one-trade', d.one_trade_per_symbol_per_day);
+
+    // Capital
+    setVal('c-capital', d.capital);
+    setVal('b-capital', d.capital);
+
+    // Max positions
+    setVal('c-max-pos', d.max_positions);
+    setVal('b-max-pos', d.max_positions);
+    if (d.max_positions) { autoCapPerTrade('c'); autoCapPerTrade('b'); }
+
   } catch {}
 }
 
