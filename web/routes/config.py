@@ -40,8 +40,22 @@ _backtest_cancel = threading.Event()
 async def get_runtime_defaults() -> JSONResponse:
     """Return runtime config values used to pre-populate all form fields in the web UI."""
     from config import get_runtime_config
+    from backtesting import BACKTEST_DEFAULT_DATA
     rc = get_runtime_config()
     pd = (rc.backtest_defaults or {}).get("prompt_defaults", {})
+    # Engine number → [period, interval] keyed by the engine-choice int (1–6)
+    _engine_names = {
+        "1": "intraday_equity",
+        "2": "delivery_equity",
+        "3": "futures_equity",
+        "4": "options_equity",
+        "5": "intraday_futures",
+        "6": "intraday_options",
+    }
+    engine_period_interval = {
+        k: list(BACKTEST_DEFAULT_DATA.get(v, ["1d", "1m"]))
+        for k, v in _engine_names.items()
+    }
     return JSONResponse({
         # Risk controls
         "daily_max_loss_pct": rc.risk_controls.daily_max_loss_pct,
@@ -61,6 +75,8 @@ async def get_runtime_defaults() -> JSONResponse:
         "capital": pd.get("capital", 100000),
         "max_positions": pd.get("max_positions", 1),
         "engine_choice": pd.get("engine_choice", 6),
+        # Period/interval defaults per engine — driven by backtest_defaults.default_data in yaml
+        "engine_period_interval": engine_period_interval,
     })
 
 

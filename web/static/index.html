@@ -1067,6 +1067,12 @@ const FNO_STRATEGIES = {
 const IS_FNO   = e => ['3','4','5','6'].includes(e);
 const IS_IOPTS = e => e === '6';
 
+// Filled by loadRuntimeDefaults() — maps engine choice string → [period, interval]
+let _enginePeriodInterval = {
+  '1': ['5d','5m'], '2': ['6mo','1d'], '3': ['2mo','15m'],
+  '4': ['1mo','15m'], '5': ['5d','5m'], '6': ['1d','1m'],
+};
+
 // ── init ────────────────────────────────────────────────────────────────────
 window.onload = async () => {
   initChart();
@@ -1138,6 +1144,11 @@ async function loadRuntimeDefaults() {
     if (d.partial_exit_enabled != null) {
       setVal('c-partial-exit', d.partial_exit_enabled ? 'true' : 'false');
       setVal('b-partial-exit', d.partial_exit_enabled ? 'true' : 'false');
+    }
+
+    // Period/interval defaults per engine (from backtest_defaults.default_data in yaml)
+    if (d.engine_period_interval) {
+      _enginePeriodInterval = d.engine_period_interval;
     }
 
     // Default engine (backtest tab) — triggers onEngineChange to update dependent fields
@@ -1455,12 +1466,8 @@ function onEngineChange(scope) {
       onBStratModeChange();
     }
 
-    // auto-set sensible period/interval for this engine
-    const engineDefaults = {
-      '1': ['3mo','5m'], '2': ['1y','1d'], '3': ['6mo','15m'],
-      '4': ['6mo','15m'], '5': ['3mo','5m'], '6': ['3mo','5m'],
-    };
-    const [defPeriod, defInterval] = engineDefaults[eng] || ['3mo','5m'];
+    // auto-set period/interval from yaml backtest_defaults.default_data (via _enginePeriodInterval)
+    const [defPeriod, defInterval] = _enginePeriodInterval[eng] || ['1d','1m'];
     document.getElementById('b-period').value   = defPeriod;
     document.getElementById('b-interval').value = defInterval;
 
