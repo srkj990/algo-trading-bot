@@ -300,6 +300,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         premium_volatility_distance=None,
         extra_fields=None,
         risk_style_name="BALANCED",
+        partial_exit_override=None,
     ):
         level_spec = self.get_trend_adaptive_level_spec(
             entry_price=entry_price,
@@ -334,6 +335,8 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             )
 
         partial_exit_enabled = any(int(qty or 0) > 0 for qty in exit_quantities[:2])
+        if partial_exit_override is not None:
+            partial_exit_enabled = bool(partial_exit_override)
         payload = {
             "symbol": symbol,
             "side": side,

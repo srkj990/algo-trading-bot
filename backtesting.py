@@ -149,6 +149,7 @@ class BacktestConfig:
     time_exit_minutes: int | None = None
     forming_tick_enabled: bool | None = None
     forming_tick_confirm_ticks: int | None = None
+    partial_exit_enabled: bool | None = None
     exit_mode: str = "TRAIL_ONLY"
 
 
@@ -973,6 +974,7 @@ class BacktestEngine:
                             "exit_mode": self.config.exit_mode,
                         },
                         risk_style_name=self.config.risk_style_name,
+                        partial_exit_override=self.config.partial_exit_enabled,
                     )
                 except ValueError:
                     continue
@@ -1952,6 +1954,13 @@ def prompt_backtest_config():
                 default=_confirm_default,
                 minimum=1,
             )
+        _partial_default = _prompt_default_int("partial_exit_enabled", 1)
+        _partial_choice = prompt_choice(
+            f"Enable partial exits for ≥3 lots? YES(1) / NO(2) [default {_partial_default}]: ",
+            [{"key": 1, "value": "YES"}, {"key": 2, "value": "NO"}],
+            default=_partial_default,
+        )
+        bt_partial_exit_enabled = None if _partial_choice == "YES" else False
         summary_lines.append(
             "Intraday options lot sizing="
             + ("1 lot default" if intraday_options_lot_mode == "ONE_LOT" else "capital based")
@@ -2117,6 +2126,7 @@ def prompt_backtest_config():
         time_exit_minutes=bt_time_exit_minutes,
         forming_tick_enabled=bt_forming_tick_enabled,
         forming_tick_confirm_ticks=bt_forming_tick_confirm_ticks,
+        partial_exit_enabled=bt_partial_exit_enabled,
         exit_mode=str(get_runtime_config().execution_safety.exit_mode or "TRAIL_ONLY").upper(),
     )
 

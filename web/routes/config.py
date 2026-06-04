@@ -57,6 +57,7 @@ async def get_runtime_defaults() -> JSONResponse:
         "risk_style": pd.get("risk_style", 3),
         "one_trade_per_symbol_per_day": pd.get("one_trade_per_symbol_per_day", 2) == 1,
         "intraday_options_strategy_mode": pd.get("intraday_options_strategy_mode", 1),
+        "partial_exit_enabled": pd.get("partial_exit_enabled", 1) == 1,
         "capital": pd.get("capital", 100000),
         "max_positions": pd.get("max_positions", 1),
         "engine_choice": pd.get("engine_choice", 6),
@@ -662,6 +663,8 @@ def _build_backtest_config(data: dict):
     bt_forming_tick_enabled = bool(_forming_raw) if _forming_raw is not None else None
     _confirm_raw = data.get("forming_tick_confirm_ticks")
     bt_forming_tick_confirm_ticks = max(1, min(5, int(_confirm_raw))) if _confirm_raw is not None and str(_confirm_raw).strip() else None
+    _partial_raw = data.get("partial_exit_enabled")
+    bt_partial_exit_enabled = None if (bool(_partial_raw) if _partial_raw is not None else True) else False
     _exit_mode_raw = str(data.get("exit_mode", "")).strip().upper()
     bt_exit_mode = (
         _exit_mode_raw
@@ -704,6 +707,7 @@ def _build_backtest_config(data: dict):
         time_exit_minutes=bt_time_exit_minutes,
         forming_tick_enabled=bt_forming_tick_enabled,
         forming_tick_confirm_ticks=bt_forming_tick_confirm_ticks,
+        partial_exit_enabled=bt_partial_exit_enabled,
         exit_mode=bt_exit_mode,
     )
 

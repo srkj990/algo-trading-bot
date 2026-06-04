@@ -103,6 +103,7 @@ class SessionConfig:
     time_exit_minutes: int | None = None              # max hold minutes (overrides yaml)
     forming_tick_enabled: bool | None = None          # enable sub-1m forming-candle entry
     forming_tick_confirm_ticks: int | None = None     # ticks required to confirm forming-candle signal
+    partial_exit_enabled: bool | None = None          # None = auto (lot-threshold), False = force off
     paper_trading_override: bool = False
     exit_mode: str = "TRAIL_ONLY"
 
@@ -211,6 +212,8 @@ def log_session_config_summary(config: "SessionConfig") -> None:
         rows.append(("Forming-tick entry", "ON" if config.forming_tick_enabled else "OFF"))
         if config.forming_tick_enabled and config.forming_tick_confirm_ticks is not None:
             rows.append(("Confirm ticks", str(config.forming_tick_confirm_ticks)))
+    if config.partial_exit_enabled is not None:
+        rows.append(("Partial exits", "ON" if config.partial_exit_enabled else "OFF"))
     _config_summary(log_event, rows, title="Session Configuration")
 
 
@@ -777,6 +780,7 @@ def collect_session_configuration() -> SessionConfig:
     time_exit_minutes = None
     forming_tick_enabled = None
     forming_tick_confirm_ticks = None
+    partial_exit_enabled = None
     if engine.name == "intraday_options" and atm_option_config:
         intraday_options_lot_mode = str(
             runtime_config.fno.intraday_options_lot_mode or "CAPITAL_BASED"
@@ -825,6 +829,13 @@ def collect_session_configuration() -> SessionConfig:
                 default=_confirm_default,
                 minimum=1,
             )
+        _partial_default = int(_runtime_prompt_default("partial_exit_enabled", 1))
+        _partial_choice = cli_input.prompt_choice(
+            f"Enable partial exits for ≥3 lots? YES(1) / NO(2) [default {_partial_default}]: ",
+            [{"label": "YES", "key": 1, "value": "YES"}, {"label": "NO", "key": 2, "value": "NO"}],
+            default=_partial_default,
+        )
+        partial_exit_enabled = None if _partial_choice == "YES" else False
     auto_single_selection_mode = should_auto_select_top1(
         symbol_mode,
         selected_symbols,
@@ -961,6 +972,7 @@ def collect_session_configuration() -> SessionConfig:
         time_exit_minutes=time_exit_minutes,
         forming_tick_enabled=forming_tick_enabled,
         forming_tick_confirm_ticks=forming_tick_confirm_ticks,
+        partial_exit_enabled=partial_exit_enabled,
     )
     )
     log_session_config_summary(session_config)
@@ -1260,6 +1272,7 @@ def build_session_config_from_dict(data: dict) -> SessionConfig:
     time_exit_minutes: int | None = None
     forming_tick_enabled: bool | None = None
     forming_tick_confirm_ticks: int | None = None
+    partial_exit_enabled_live: bool | None = None
     if engine.name == "intraday_options" and atm_option_config:
         _lot_mode_from_form = str(data.get("intraday_options_lot_mode", "")).strip().upper()
         intraday_options_lot_mode = (
@@ -1288,6 +1301,9 @@ def build_session_config_from_dict(data: dict) -> SessionConfig:
             _confirm_raw = data.get("forming_tick_confirm_ticks")
             if _confirm_raw is not None and str(_confirm_raw).strip():
                 forming_tick_confirm_ticks = max(1, min(5, int(_confirm_raw)))
+        _partial_raw = data.get("partial_exit_enabled")
+        if _partial_raw is not None:
+            partial_exit_enabled_live = None if bool(_partial_raw) else False
 
     session_config = validate_session_config(SessionConfig(
         engine_choice=engine_choice,
@@ -1326,6 +1342,7 @@ def build_session_config_from_dict(data: dict) -> SessionConfig:
         time_exit_minutes=time_exit_minutes,
         forming_tick_enabled=forming_tick_enabled,
         forming_tick_confirm_ticks=forming_tick_confirm_ticks,
+        partial_exit_enabled=partial_exit_enabled_live,
         paper_trading_override=bool(data.get("paper_trading_override", False)),
         exit_mode=exit_mode,
     ))

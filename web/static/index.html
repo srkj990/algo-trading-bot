@@ -325,6 +325,14 @@
         <p class="text-xs text-slate-400 mt-1">LTP must hold above/below threshold for N ticks before entry</p>
       </div>
       <div>
+        <label class="section-label">Partial Exits (≥3 lots)</label>
+        <select id="c-partial-exit">
+          <option value="true" selected>Enabled (scale out at 8% / 15%)</option>
+          <option value="false">Disabled (trailing/target only)</option>
+        </select>
+        <p class="text-xs text-slate-400 mt-1">For ≥3 lots: exit fractions at premium gain levels, run remainder with trailing stop</p>
+      </div>
+      <div>
         <label class="section-label">Reverse Signal</label>
         <select id="c-reverse-signal">
           <option value="false" selected>No (normal direction)</option>
@@ -594,6 +602,14 @@
       <div id="b-forming-confirm-wrap">
         <label class="section-label">Confirm Ticks Required</label>
         <input type="number" id="b-forming-confirm" min="1" max="5" value="2" class="w-full bg-slate-700 border border-slate-500 rounded px-3 py-2 text-sm text-white">
+      </div>
+      <div>
+        <label class="section-label">Partial Exits (≥3 lots)</label>
+        <select id="b-partial-exit">
+          <option value="true" selected>Enabled (scale out at 8% / 15%)</option>
+          <option value="false">Disabled (trailing/target only)</option>
+        </select>
+        <p class="text-xs text-slate-400 mt-1">For ≥3 lots: exit fractions at premium gain levels, run remainder with trailing stop</p>
       </div>
       <div>
         <label class="section-label">Reverse Signal</label>
@@ -1118,6 +1134,12 @@ async function loadRuntimeDefaults() {
       setVal('c-strat-mode', String(d.intraday_options_strategy_mode));
     }
 
+    // Partial exits
+    if (d.partial_exit_enabled != null) {
+      setVal('c-partial-exit', d.partial_exit_enabled ? 'true' : 'false');
+      setVal('b-partial-exit', d.partial_exit_enabled ? 'true' : 'false');
+    }
+
     // Default engine (backtest tab) — triggers onEngineChange to update dependent fields
     if (d.engine_choice != null) {
       const beng = document.getElementById('b-engine');
@@ -1623,6 +1645,7 @@ async function submitLive() {
       payload.time_exit_minutes = parseInt(document.getElementById('c-time-exit').value);
       payload.forming_tick_enabled = document.getElementById('c-forming-tick').value === 'true';
       payload.forming_tick_confirm_ticks = parseInt(document.getElementById('c-forming-confirm').value);
+      payload.partial_exit_enabled = document.getElementById('c-partial-exit').value !== 'false';
     }
   } else {
     payload.data_provider      = document.getElementById('c-data-provider').value;
@@ -1790,6 +1813,7 @@ async function submitBacktest() {
       payload.time_exit_minutes = parseInt(document.getElementById('b-time-exit').value);
       payload.forming_tick_enabled = document.getElementById('b-forming-tick').value === 'true';
       payload.forming_tick_confirm_ticks = parseInt(document.getElementById('b-forming-confirm').value);
+      payload.partial_exit_enabled = document.getElementById('b-partial-exit').value !== 'false';
     }
   } else {
     payload.symbol_mode = document.getElementById('b-sym-mode').value;

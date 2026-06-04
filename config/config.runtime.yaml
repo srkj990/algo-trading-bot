@@ -282,3 +282,4 @@ backtest_defaults:
     time_exit_minutes: 30 # used: default time-exit-window CLI prompt for intraday-options backtest (0=disabled)
     forming_tick_enabled: 2 # used: default forming-candle entry CLI prompt (1=YES, 2=NO)
     forming_tick_confirm_ticks: 2 # used: default confirm-ticks for forming-candle entry CLI prompt
+    partial_exit_enabled: 1 # used: default partial-exit choice for intraday-options CLI/web (1=YES/auto, 2=NO/force-off)
