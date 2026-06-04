@@ -59,6 +59,7 @@ async def get_runtime_defaults() -> JSONResponse:
         "intraday_options_strategy_mode": pd.get("intraday_options_strategy_mode", 1),
         "capital": pd.get("capital", 100000),
         "max_positions": pd.get("max_positions", 1),
+        "engine_choice": pd.get("engine_choice", 6),
     })
 
 

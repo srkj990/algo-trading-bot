@@ -432,12 +432,12 @@
       <div class="col-span-2 sm:col-span-1">
         <label class="section-label">Engine</label>
         <select id="b-engine" onchange="onEngineChange('backtest')">
-          <option value="1" selected>1 · Intraday Equity (MIS 1min)</option>
+          <option value="1">1 · Intraday Equity (MIS 1min)</option>
           <option value="2">2 · Delivery Equity (CNC daily)</option>
           <option value="3">3 · Futures Equity (NRML)</option>
           <option value="4">4 · Options Equity (NRML)</option>
           <option value="5">5 · Intraday Futures (MIS)</option>
-          <option value="6">6 · Intraday Options (MIS ATM)</option>
+          <option value="6" selected>6 · Intraday Options (MIS ATM)</option>
         </select>
       </div>
       <div>
@@ -1111,6 +1111,12 @@ async function loadRuntimeDefaults() {
     setVal('c-max-pos', d.max_positions);
     setVal('b-max-pos', d.max_positions);
     if (d.max_positions) { autoCapPerTrade('c'); autoCapPerTrade('b'); }
+
+    // Default engine (backtest tab) — triggers onEngineChange to update dependent fields
+    if (d.engine_choice != null) {
+      const beng = document.getElementById('b-engine');
+      if (beng) { beng.value = String(d.engine_choice); onEngineChange('backtest'); }
+    }
 
   } catch {}
 }
