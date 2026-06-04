@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Callable
 
+from brokers.base import OrderStatus
 from engines.common import count_open_structures, get_deployed_capital, update_trailing_stop
 from config import (
     INTRADAY_OPTIONS_THETA_EXIT_MIN_MINUTES,
@@ -19,6 +20,92 @@ from reporting import summarize_by_exit_reason
 from models.trade_record import TradeRecord
 from trade_store import TradeStore
 from transaction_costs import estimate_intraday_equity_round_trip_cost
+
+
+def _coerce_positive_int(value: Any, default: int = 0) -> int:
+    try:
+        coerced = int(value or 0)
+    except (TypeError, ValueError):
+        return int(default)
+    return max(0, coerced)
+
+
+def _coerce_positive_float(value: Any) -> float | None:
+    try:
+        coerced = float(value)
+    except (TypeError, ValueError):
+        return None
+    return coerced if coerced > 0 else None
+
+
+def _resolve_order_fill(order_result: Any, requested_quantity: int, reference_price: float) -> dict[str, Any]:
+    requested_quantity = max(0, int(requested_quantity or 0))
+    filled_qty = 0
+    exit_price = float(reference_price)
+    if order_result is not None:
+        filled_qty = _coerce_positive_int(getattr(order_result, "filled_quantity", 0))
+        average_price = _coerce_positive_float(getattr(order_result, "average_price", None))
+        if filled_qty <= 0 and average_price is not None:
+            status = getattr(order_result, "status", None)
+            if status not in {OrderStatus.REJECTED, OrderStatus.CANCELLED, "REJECTED", "CANCELLED"}:
+                filled_qty = requested_quantity
+        filled_qty = min(filled_qty, requested_quantity)
+        if average_price is not None:
+            exit_price = float(average_price)
+    return {
+        "filled": filled_qty > 0,
+        "exit_price": exit_price,
+        "filled_quantity": filled_qty,
+        "requested_quantity": requested_quantity,
+        "order_result": order_result,
+    }
+
+
+def _record_confirmed_exit_fill(
+    *,
+    position: dict[str, Any],
+    filled_quantity: int,
+    symbol: str,
+    exit_price: float,
+    reason: str,
+    exit_time: datetime,
+    trade_book: list[dict[str, Any]],
+    trade_store: TradeStore | None,
+    transaction_cost_model_enabled: bool,
+    slippage_pct_per_side: float,
+) -> None:
+    closed_slice = dict(position)
+    closed_slice["quantity"] = int(filled_quantity)
+    record_closed_trade(
+        trade_book,
+        trade_store,
+        symbol,
+        closed_slice,
+        float(exit_price),
+        reason,
+        exit_time,
+        transaction_cost_model_enabled,
+        slippage_pct_per_side,
+    )
+
+
+def _is_runner_action_executable(position: dict[str, Any], action: dict[str, Any], snapshot: dict[str, Any]) -> bool:
+    level_index = int(action.get("level_index", -1))
+    target_key = "runner_level1_target" if level_index == 0 else "runner_level2_target"
+    target_price = _coerce_positive_float(action.get("target_price") or position.get(target_key))
+    latest_price = _coerce_positive_float(snapshot.get("latest_close"))
+    if target_price is None or latest_price is None:
+        return False
+    if position_side(position) == "BUY":
+        return latest_price >= target_price
+    return latest_price <= target_price
+
+
+def _runner_action_reference_price(position: dict[str, Any], action: dict[str, Any], fallback: float) -> float:
+    level_index = int(action.get("level_index", -1))
+    target_key = "runner_level1_target" if level_index == 0 else "runner_level2_target"
+    target_price = _coerce_positive_float(action.get("target_price") or position.get(target_key))
+    return float(target_price if target_price is not None else fallback)
 
 
 def normalize_partial_exit_quantity(
@@ -236,10 +323,16 @@ def execute_partial_position_exit(
     transaction_cost_model_enabled: bool,
     slippage_pct_per_side: float,
     exit_limit_price_buffer_pct: float = 0.0,
-) -> float:
+) -> dict[str, Any]:
     exit_qty = normalize_partial_exit_quantity(position, exit_quantity)
     if exit_qty <= 0:
-        return float(exit_price)
+        return {
+            "filled": False,
+            "exit_price": float(exit_price),
+            "filled_quantity": 0,
+            "requested_quantity": 0,
+            "order_result": None,
+        }
     exit_side = opposite_side(position)
     order_type = "MARKET"
     limit_price = None
@@ -262,24 +355,28 @@ def execute_partial_position_exit(
         order_type=order_type,
         price=limit_price,
     )
-    if order_result is not None and order_result.average_price is not None:
-        exit_price = float(order_result.average_price)
 
-    closed_slice = dict(position)
-    closed_slice["quantity"] = exit_qty
-    record_closed_trade(
-        trade_book,
-        trade_store,
-        position["symbol"],
-        closed_slice,
-        float(exit_price),
-        reason,
-        now,
-        transaction_cost_model_enabled,
-        slippage_pct_per_side,
+    fill = _resolve_order_fill(order_result, exit_qty, float(exit_price))
+    filled_qty = int(fill["filled_quantity"])
+    exit_price = float(fill["exit_price"])
+
+    if filled_qty <= 0:
+        return fill
+
+    _record_confirmed_exit_fill(
+        position=position,
+        filled_quantity=filled_qty,
+        symbol=position["symbol"],
+        exit_price=float(exit_price),
+        reason=reason,
+        exit_time=now,
+        trade_book=trade_book,
+        trade_store=trade_store,
+        transaction_cost_model_enabled=transaction_cost_model_enabled,
+        slippage_pct_per_side=slippage_pct_per_side,
     )
-    position["quantity"] = max(0, int(position.get("quantity") or 0) - exit_qty)
-    return float(exit_price)
+    position["quantity"] = max(0, int(position.get("quantity") or 0) - filled_qty)
+    return fill
 
 
 def log_trade_book_summary(
@@ -337,20 +434,27 @@ def close_position_symbols(
             order_type=order_type,
             price=limit_price,
         )
-        if order_result is not None and order_result.average_price is not None:
-            exit_price = float(order_result.average_price)
-        record_closed_trade(
-            trade_book,
-            trade_store,
-            symbol,
-            position,
-            exit_price,
-            reason,
-            exit_time,
-            transaction_cost_model_enabled,
-            slippage_pct_per_side,
+        fill = _resolve_order_fill(order_result, position_quantity(position), float(exit_price))
+        if not fill["filled"]:
+            log_event(f"[EXIT] {symbol} {reason} order not filled; position remains open", "warning")
+            continue
+        _record_confirmed_exit_fill(
+            position=position,
+            filled_quantity=int(fill["filled_quantity"]),
+            symbol=symbol,
+            exit_price=float(fill["exit_price"]),
+            reason=reason,
+            exit_time=exit_time,
+            trade_book=trade_book,
+            trade_store=trade_store,
+            transaction_cost_model_enabled=transaction_cost_model_enabled,
+            slippage_pct_per_side=slippage_pct_per_side,
         )
-        del positions[symbol]
+        remaining_qty = max(0, position_quantity(position) - int(fill["filled_quantity"]))
+        if remaining_qty <= 0:
+            del positions[symbol]
+        else:
+            position["quantity"] = remaining_qty
         changed = True
     return changed
 
@@ -603,20 +707,27 @@ def force_square_off_positions(
             order_type=order_type,
             price=limit_price,
         )
-        if order_result is not None and order_result.average_price is not None:
-            exit_price = float(order_result.average_price)
-        record_closed_trade(
-            trade_book,
-            trade_store,
-            symbol,
-            position,
-            exit_price,
-            "Intraday square-off",
-            exit_time,
-            transaction_cost_model_enabled,
-            slippage_pct_per_side,
+        fill = _resolve_order_fill(order_result, position_quantity(position), float(exit_price))
+        if not fill["filled"]:
+            log_event(f"[SQUAREOFF] {symbol} order not filled; position remains open", "warning")
+            continue
+        _record_confirmed_exit_fill(
+            position=position,
+            filled_quantity=int(fill["filled_quantity"]),
+            symbol=symbol,
+            exit_price=float(fill["exit_price"]),
+            reason="Intraday square-off",
+            exit_time=exit_time,
+            trade_book=trade_book,
+            trade_store=trade_store,
+            transaction_cost_model_enabled=transaction_cost_model_enabled,
+            slippage_pct_per_side=slippage_pct_per_side,
         )
-        del positions[symbol]
+        remaining_qty = max(0, position_quantity(position) - int(fill["filled_quantity"]))
+        if remaining_qty <= 0:
+            del positions[symbol]
+        else:
+            position["quantity"] = remaining_qty
         changed = True
     return changed
 
@@ -723,11 +834,19 @@ def manage_open_positions(
             state_changed = True
 
         if hasattr(engine, "get_runner_partial_exit"):
+            runner_adjusted_this_cycle = False
             for _ in range(3):
                 action = engine.get_runner_partial_exit(position, snapshot, now)
                 if not action:
                     break
-                exit_price = float(snapshot["latest_close"])
+                if not _is_runner_action_executable(position, action, snapshot):
+                    log_event(
+                        f"[RUNNER] {symbol} {action['reason']} touched but not executable at "
+                        f"{float(snapshot['latest_close']):.2f}; waiting for live price confirmation",
+                        "warning",
+                    )
+                    break
+                exit_price = _runner_action_reference_price(position, action, float(snapshot["latest_close"]))
                 exit_quantities = list(position.get("runner_exit_quantities") or [0, 0, 0])
                 current_qty = int(position.get("quantity") or 0)
                 two_lot_trailing_only_runner = (
@@ -745,12 +864,13 @@ def manage_open_positions(
                     if hasattr(engine, "apply_runner_partial_exit"):
                         engine.apply_runner_partial_exit(position, action, exit_price, snapshot)
                     state_changed = True
-                    continue
+                    runner_adjusted_this_cycle = True
+                    break
                 log_event(
                     f"[RUNNER] {symbol} {action['reason']} triggered at {exit_price:.2f} | "
                     f"Qty={action['quantity']} | Entry={position_entry_price(position):.2f}"
                 )
-                execute_partial_position_exit(
+                partial_result = execute_partial_position_exit(
                     engine,
                     position,
                     int(action["quantity"]),
@@ -764,13 +884,28 @@ def manage_open_positions(
                     slippage_pct_per_side,
                     exit_limit_price_buffer_pct=exit_limit_price_buffer_pct,
                 )
+                if not partial_result["filled"]:
+                    log_event(
+                        f"[RUNNER] {symbol} {action['reason']} order not filled; "
+                        "position quantity and protection unchanged",
+                        "warning",
+                    )
+                    break
                 if hasattr(engine, "apply_runner_partial_exit"):
-                    engine.apply_runner_partial_exit(position, action, exit_price, snapshot)
+                    engine.apply_runner_partial_exit(
+                        position,
+                        action,
+                        float(partial_result["exit_price"]),
+                        snapshot,
+                    )
                 state_changed = True
+                runner_adjusted_this_cycle = True
                 if int(position.get("quantity") or 0) <= 0:
                     del positions[symbol]
-                    break
+                break
             if symbol not in positions:
+                continue
+            if runner_adjusted_this_cycle:
                 continue
 
         exit_reason = engine.evaluate_position_exit(position, snapshot["latest_candle"])
@@ -827,20 +962,27 @@ def manage_open_positions(
                 order_type=_order_type,
                 price=_limit_price,
             )
-            if order_result is not None and order_result.average_price is not None:
-                exit_price = float(order_result.average_price)
-            record_closed_trade(
-                trade_book,
-                trade_store,
-                symbol,
-                position,
-                exit_price,
-                exit_reason,
-                now,
-                transaction_cost_model_enabled,
-                slippage_pct_per_side,
+            fill = _resolve_order_fill(order_result, position_quantity(position), float(exit_price))
+            if not fill["filled"]:
+                log_event(f"[EXIT] {symbol} {exit_reason} order not filled; position remains open", "warning")
+                continue
+            _record_confirmed_exit_fill(
+                position=position,
+                filled_quantity=int(fill["filled_quantity"]),
+                symbol=symbol,
+                exit_price=float(fill["exit_price"]),
+                reason=exit_reason,
+                exit_time=now,
+                trade_book=trade_book,
+                trade_store=trade_store,
+                transaction_cost_model_enabled=transaction_cost_model_enabled,
+                slippage_pct_per_side=slippage_pct_per_side,
             )
-            del positions[symbol]
+            remaining_qty = max(0, position_quantity(position) - int(fill["filled_quantity"]))
+            if remaining_qty <= 0:
+                del positions[symbol]
+            else:
+                position["quantity"] = remaining_qty
             state_changed = True
             continue
 
@@ -862,20 +1004,27 @@ def manage_open_positions(
                 enforce_margin_check=False,
                 entry_price=exit_price,
             )
-            if order_result is not None and order_result.average_price is not None:
-                exit_price = float(order_result.average_price)
-            record_closed_trade(
-                trade_book,
-                trade_store,
-                symbol,
-                position,
-                exit_price,
-                signal_exit_reason,
-                now,
-                transaction_cost_model_enabled,
-                slippage_pct_per_side,
+            fill = _resolve_order_fill(order_result, position_quantity(position), float(exit_price))
+            if not fill["filled"]:
+                log_event(f"[EXIT] {symbol} {signal_exit_reason} order not filled; position remains open", "warning")
+                continue
+            _record_confirmed_exit_fill(
+                position=position,
+                filled_quantity=int(fill["filled_quantity"]),
+                symbol=symbol,
+                exit_price=float(fill["exit_price"]),
+                reason=signal_exit_reason,
+                exit_time=now,
+                trade_book=trade_book,
+                trade_store=trade_store,
+                transaction_cost_model_enabled=transaction_cost_model_enabled,
+                slippage_pct_per_side=slippage_pct_per_side,
             )
-            del positions[symbol]
+            remaining_qty = max(0, position_quantity(position) - int(fill["filled_quantity"]))
+            if remaining_qty <= 0:
+                del positions[symbol]
+            else:
+                position["quantity"] = remaining_qty
             state_changed = True
 
     return state_changed

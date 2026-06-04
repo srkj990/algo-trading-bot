@@ -399,6 +399,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                     "level_index": 0,
                     "quantity": int(exit_quantities[0]),
                     "reason": "RUNNER_LEVEL1_8PCT",
+                    "target_price": float(position["runner_level1_target"]),
                 }
             if (
                 not completed[1]
@@ -409,6 +410,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                     "level_index": 1,
                     "quantity": int(exit_quantities[1]),
                     "reason": "RUNNER_LEVEL2_15PCT",
+                    "target_price": float(position["runner_level2_target"]),
                 }
         else:
             trigger_price = float(latest_candle.get("Low") or 0.0)
@@ -421,6 +423,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                     "level_index": 0,
                     "quantity": int(exit_quantities[0]),
                     "reason": "RUNNER_LEVEL1_8PCT",
+                    "target_price": float(position["runner_level1_target"]),
                 }
             if (
                 not completed[1]
@@ -431,6 +434,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                     "level_index": 1,
                     "quantity": int(exit_quantities[1]),
                     "reason": "RUNNER_LEVEL2_15PCT",
+                    "target_price": float(position["runner_level2_target"]),
                 }
         return None
 
@@ -444,8 +448,14 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         exit_price = float(exit_price)
         if position["side"] == "BUY":
             if index == 0:
+                # Ratchet stop to breakeven, then set trailing_stop one trailing_distance
+                # below the actual exit price so trailing is active but won't fire
+                # unless price immediately retreats the full trailing_distance from level1.
+                trailing_distance = max(float(position.get("trailing_distance") or 0.0), 0.01)
+                protected_level = max(entry_price, exit_price - trailing_distance)
                 position["stop_loss"] = max(float(position["stop_loss"]), entry_price)
-                position["trailing_stop"] = max(float(position["trailing_stop"]), entry_price)
+                position["trailing_stop"] = max(float(position["trailing_stop"]), protected_level)
+                position["trailing_active"] = True
             elif index == 1:
                 protected_level = max(
                     float(position["runner_level1_target"]),
@@ -457,8 +467,11 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                 position["trailing_active"] = True
         else:
             if index == 0:
+                trailing_distance = max(float(position.get("trailing_distance") or 0.0), 0.01)
+                protected_level = min(entry_price, exit_price + trailing_distance)
                 position["stop_loss"] = min(float(position["stop_loss"]), entry_price)
-                position["trailing_stop"] = min(float(position["trailing_stop"]), entry_price)
+                position["trailing_stop"] = min(float(position["trailing_stop"]), protected_level)
+                position["trailing_active"] = True
             elif index == 1:
                 protected_level = min(
                     float(position["runner_level1_target"]),
