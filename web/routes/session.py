@@ -56,7 +56,7 @@ async def get_status() -> JSONResponse:
 
 @router.get("/api/indices")
 async def get_indices() -> JSONResponse:
-    """Return Nifty 50, Sensex, and India VIX with % change from day open."""
+    """Return Nifty 50, Sensex, and India VIX with % change from previous close."""
     global _indices_cache, _indices_cache_ts, _vix_cache, _vix_cache_ts
 
     now = time.time()
@@ -126,7 +126,9 @@ def _fetch_via_kite() -> dict:
         ltp = float(d.get("last_price") or 0)
         ohlc = d.get("ohlc") or {}
         day_open = float(ohlc.get("open") or ltp)
-        chg_pct = ((ltp - day_open) / day_open * 100) if day_open else 0.0
+        # ohlc.close = previous trading day's close (standard NSE/BSE % change basis)
+        prev_close = float(ohlc.get("close") or day_open)
+        chg_pct = ((ltp - prev_close) / prev_close * 100) if prev_close else 0.0
         return {"ltp": round(ltp, 2), "open": round(day_open, 2), "chg_pct": round(chg_pct, 2)}
 
     return {
@@ -141,12 +143,15 @@ def _fetch_via_yfinance() -> dict:
 
     def _get(ticker_sym):
         t = yf.Ticker(ticker_sym)
-        hist = t.history(period="1d", interval="1m")
-        if hist.empty:
+        hist = t.history(period="2d", interval="1d")
+        intra = t.history(period="1d", interval="1m")
+        if intra.empty:
             return {"ltp": None, "open": None, "chg_pct": None}
-        ltp = float(hist["Close"].iloc[-1])
-        day_open = float(hist["Open"].iloc[0])
-        chg_pct = ((ltp - day_open) / day_open * 100) if day_open else 0.0
+        ltp = float(intra["Close"].iloc[-1])
+        day_open = float(intra["Open"].iloc[0])
+        # Use previous day's daily close as the reference (matches NSE/BSE convention)
+        prev_close = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else day_open
+        chg_pct = ((ltp - prev_close) / prev_close * 100) if prev_close else 0.0
         return {"ltp": round(ltp, 2), "open": round(day_open, 2), "chg_pct": round(chg_pct, 2)}
 
     return {
