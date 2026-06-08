@@ -1224,6 +1224,7 @@ class BacktestEngine:
                     trade["hold_minutes"] = int((_exit_ts - _entry_ts).total_seconds() // 60)
                 except Exception:
                     trade["hold_minutes"] = None
+                _analytics = trade.get("analytics") or trade.get("entry_analytics") or {}
                 self._on_trade({
                     "symbol": symbol,
                     "side": side,
@@ -1236,6 +1237,21 @@ class BacktestEngine:
                     "charges": round(float(total_estimated_charges), 2),
                     "net_pnl": round(float(total_net_pnl), 2),
                     "exit_reason": reason,
+                    "entry_reason": trade.get("entry_reason") or "",
+                    "strategy": trade.get("strategy") or "",
+                    "score": round(float(trade.get("score") or 0), 4),
+                    "atr": round(float(trade.get("atr") or 0), 2),
+                    "hold_minutes": trade.get("hold_minutes"),
+                    "option_signal": trade.get("option_signal") or "",
+                    "partial_exit_count": int(trade.get("partial_exit_count") or 0),
+                    "partial_exit_events": trade.get("partial_exit_events") or [],
+                    "underlying_close_at_entry": trade.get("underlying_close_at_entry"),
+                    "strike": _analytics.get("strike") or trade.get("strike"),
+                    "option_type": _analytics.get("option_type") or trade.get("option_type") or "",
+                    "underlying": _analytics.get("underlying") or "",
+                    "iv": round(float(_analytics.get("iv") or 0) * 100, 2) if _analytics.get("iv") else None,
+                    "stop_loss": round(float(trade.get("stop_loss") or 0), 2) if trade.get("stop_loss") else None,
+                    "target": round(float(trade.get("target") or 0), 2) if trade.get("target") else None,
                 })
                 break
 

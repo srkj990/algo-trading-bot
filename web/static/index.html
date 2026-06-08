@@ -878,17 +878,11 @@
     <div class="card p-3"><div class="section-label">Engine</div><div id="btr-engine" class="text-sm font-semibold text-slate-300 leading-snug">—</div></div>
   </div>
 
-  <!-- Live trades table -->
+  <!-- Live trades — expand/collapse cards -->
   <div class="card p-3 mb-3">
     <div class="section-label mb-2">Trades <span id="btr-trade-count" class="text-blue-400"></span></div>
-    <div class="overflow-x-auto" style="max-height:200px;overflow-y:auto">
-      <table><thead><tr>
-        <th>Symbol</th><th>Side</th><th>Entry Time</th><th>Exit Time</th>
-        <th>Entry</th><th>Exit</th><th>Qty</th><th>Gross P&amp;L</th><th>Charges</th><th>Net P&amp;L</th><th>Reason</th>
-      </tr></thead>
-      <tbody id="btr-trades-body">
-        <tr><td colspan="11" class="text-slate-500 text-center py-3">No trades yet</td></tr>
-      </tbody></table>
+    <div id="btr-trades-body" style="max-height:420px;overflow-y:auto;display:flex;flex-direction:column;gap:4px">
+      <div class="text-slate-500 text-center py-3 text-sm">No trades yet</div>
     </div>
   </div>
 
@@ -2216,9 +2210,9 @@ function resetBtProgress() {
     const el = document.getElementById(id);
     if (el) { el.textContent = '₹0'; el.className = 'text-xl font-bold font-mono pnl-zero'; }
   });
-  // reset live trades table
+  // reset live trades list
   const tbody = document.getElementById('btr-trades-body');
-  if (tbody) tbody.innerHTML = '<tr><td colspan="11" class="text-slate-500 text-center py-3">No trades yet</td></tr>';
+  if (tbody) tbody.innerHTML = '<div class="text-slate-500 text-center py-3 text-sm">No trades yet</div>';
   setTxt('btr-trade-count', '');
   _btrTradeCount = 0;
 }
@@ -2226,33 +2220,81 @@ function resetBtProgress() {
 let _btrTradeCount = 0;
 
 function appendBtTrade(t) {
-  const tbody = document.getElementById('btr-trades-body');
-  if (!tbody) return;
-  if (_btrTradeCount === 0) tbody.innerHTML = '';
+  const wrap = document.getElementById('btr-trades-body');
+  if (!wrap) return;
+  if (_btrTradeCount === 0) wrap.innerHTML = '';
   _btrTradeCount++;
+
   const gross   = t.pnl ?? 0;
   const net     = t.net_pnl ?? gross;
   const charges = t.charges ?? (gross !== net ? Math.abs(gross - net) : null);
-  const netCls  = net   > 0 ? 'pnl-pos' : net   < 0 ? 'pnl-neg' : 'pnl-zero';
+  const netCls  = net > 0 ? 'pnl-pos' : net < 0 ? 'pnl-neg' : 'pnl-zero';
   const grsCls  = gross > 0 ? 'pnl-pos' : gross < 0 ? 'pnl-neg' : 'pnl-zero';
   const sideCls = (t.side||'').toUpperCase() === 'BUY' ? 'badge-buy' : 'badge-sell';
-  const loc = v => v.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
-  const entryTime = (t.entry_time || '').toString().slice(0, 16);
-  const exitTime  = (t.exit_time  || '').toString().slice(0, 16);
-  const tr = document.createElement('tr');
-  tr.innerHTML = `
-    <td title="${t.symbol || ''}">${shortSym(t.symbol) || t.symbol || ''}</td>
-    <td><span class="text-xs px-1 rounded ${sideCls}">${t.side || ''}</span></td>
-    <td class="text-slate-400" style="font-size:.72rem">${entryTime}</td>
-    <td class="text-slate-400" style="font-size:.72rem">${exitTime}</td>
-    <td class="font-mono">${loc(t.entry_price||0)}</td>
-    <td class="font-mono">${loc(t.exit_price||0)}</td>
-    <td class="font-mono">${t.quantity || ''}</td>
-    <td class="font-mono ${grsCls}">${gross >= 0 ? '+' : ''}₹${loc(gross)}</td>
-    <td class="font-mono text-slate-500 text-xs">${charges != null ? '−₹'+loc(charges) : '—'}</td>
-    <td class="font-mono font-semibold ${netCls}">${net >= 0 ? '+' : ''}₹${loc(net)}</td>
-    <td class="text-slate-400" style="font-size:.72rem">${t.exit_reason || ''}</td>`;
-  tbody.insertBefore(tr, tbody.firstChild);
+  const loc = v => Number(v).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
+  const entryTime = (t.entry_time || '').toString().slice(11, 16);
+  const exitTime  = (t.exit_time  || '').toString().slice(11, 16);
+  const sym = shortSym(t.symbol) || t.symbol || '';
+  const uid = `btr-tr-${_btrTradeCount}`;
+
+  // Partial exit detail rows
+  let partialHtml = '';
+  if (t.partial_exit_events && t.partial_exit_events.length) {
+    partialHtml = t.partial_exit_events.map(pe => {
+      const peNet = (pe.pnl ?? 0) - (pe.estimated_charges ?? 0);
+      const peCls = peNet >= 0 ? 'pnl-pos' : 'pnl-neg';
+      return `<div class="flex gap-3 text-xs text-slate-400 pl-2 border-l border-slate-600 mt-1">
+        <span class="text-slate-500">${(pe.time||'').slice(11,16)}</span>
+        <span>${pe.reason || 'PARTIAL'}</span>
+        <span>qty ${pe.quantity ?? ''}</span>
+        <span>@ ₹${loc(pe.exit_price ?? 0)}</span>
+        <span class="font-mono ${peCls}">${peNet >= 0 ? '+' : ''}₹${loc(peNet)}</span>
+      </div>`;
+    }).join('');
+  }
+
+  // Detail panel (hidden by default)
+  const ivStr  = t.iv ? `${t.iv.toFixed(1)}% IV` : '';
+  const detailRows = [
+    t.strategy      ? ['Strategy',   t.strategy] : null,
+    t.entry_reason  ? ['Signal',     t.entry_reason] : null,
+    t.underlying    ? ['Underlying', t.underlying + (t.option_type ? ' ' + t.option_type : '')] : null,
+    t.underlying_close_at_entry ? ['Spot at entry', '₹' + loc(t.underlying_close_at_entry)] : null,
+    t.score         ? ['Score',      t.score.toFixed(4)] : null,
+    t.atr           ? ['ATR',        t.atr.toFixed(2)] : null,
+    ivStr           ? ['IV',         ivStr] : null,
+    t.stop_loss     ? ['Stop loss',  '₹' + loc(t.stop_loss)] : null,
+    t.hold_minutes != null ? ['Hold time', t.hold_minutes + ' min'] : null,
+    t.partial_exit_count ? ['Partial exits', t.partial_exit_count] : null,
+    charges != null ? ['Charges',    '₹' + loc(charges)] : null,
+  ].filter(Boolean).map(([k,v]) =>
+    `<span class="text-slate-500">${k}:</span> <span class="text-slate-300">${v}</span>`
+  ).join('<span class="text-slate-700"> · </span>');
+
+  const card = document.createElement('div');
+  card.className = 'rounded border border-slate-700 bg-slate-800/60 overflow-hidden';
+  card.innerHTML = `
+    <div class="flex items-center gap-2 px-3 py-2 cursor-pointer select-none hover:bg-slate-700/40 transition-colors"
+         onclick="document.getElementById('${uid}').classList.toggle('hidden')">
+      <span class="font-mono text-sm font-semibold text-slate-200 min-w-[80px]">${sym}</span>
+      <span class="text-xs px-1 rounded ${sideCls}">${t.side || ''}</span>
+      <span class="text-slate-500 text-xs">${entryTime}→${exitTime}</span>
+      <span class="font-mono text-xs text-slate-400">₹${loc(t.entry_price||0)} → ₹${loc(t.exit_price||0)}</span>
+      <span class="font-mono text-xs text-slate-400">×${t.quantity || ''}</span>
+      <span class="flex-1"></span>
+      <span class="font-mono text-sm font-bold ${netCls}">${net >= 0 ? '+' : ''}₹${loc(net)}</span>
+      <span class="text-slate-600 text-xs ml-1">▾</span>
+    </div>
+    <div id="${uid}" class="hidden px-3 pb-3 pt-1 border-t border-slate-700/60 text-xs">
+      <div class="flex flex-wrap gap-x-3 gap-y-1 text-xs mb-1">${detailRows}</div>
+      <div class="flex gap-3 mt-1 text-xs">
+        <span class="text-slate-500">Exit reason:</span>
+        <span class="text-slate-300">${t.exit_reason || '—'}</span>
+        ${gross !== net ? `<span class="text-slate-500 ml-2">Gross:</span><span class="font-mono ${grsCls}">${gross >= 0 ? '+' : ''}₹${loc(gross)}</span>` : ''}
+      </div>
+      ${partialHtml ? `<div class="mt-2"><div class="text-slate-500 mb-1">Partial exits:</div>${partialHtml}</div>` : ''}
+    </div>`;
+  wrap.insertBefore(card, wrap.firstChild);
   setTxt('btr-trade-count', `(${_btrTradeCount})`);
 }
 
