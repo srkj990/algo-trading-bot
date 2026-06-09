@@ -177,7 +177,7 @@
       <div class="col-span-2 sm:col-span-1">
         <label class="section-label">Execution Mode</label>
         <select id="c-exec-mode">
-          <option value="PAPER" selected>PAPER — no real orders</option>
+          <option value="PAPER">PAPER — no real orders</option>
           <option value="LIVE">LIVE — real broker orders</option>
         </select>
       </div>
@@ -1079,6 +1079,9 @@ async function loadRuntimeDefaults() {
     // Exit mode
     setVal('c-exit-mode', d.exit_mode);
     setVal('b-exit-mode', d.exit_mode);
+
+    // Execution mode default (from execution_safety.default_execution_mode in yaml)
+    setOpt('c-exec-mode', d.default_execution_mode);
 
     // Risk style (1=Conservative, 2=Balanced, 3=Aggressive)
     setVal('c-risk', d.risk_style);

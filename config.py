@@ -322,6 +322,7 @@ class ExecutionSafetyConfig:
     trailing_activation_stop_distance_multiplier: float
     intraday_equity_entry_cutoff_minutes_before_squareoff: int
     exit_mode: str = "TRAIL_ONLY"
+    default_execution_mode: str = "LIVE"
 
     def validate(self) -> None:
         if self.min_ranked_candidate_score < 0:
@@ -344,6 +345,8 @@ class ExecutionSafetyConfig:
             )
         if self.exit_mode not in {"TRAIL_ONLY", "HARD_TARGET"}:
             raise ValueError("execution_safety.exit_mode must be TRAIL_ONLY or HARD_TARGET")
+        if self.default_execution_mode not in {"LIVE", "PAPER"}:
+            raise ValueError("execution_safety.default_execution_mode must be LIVE or PAPER")
 
 
 @dataclass(frozen=True)
@@ -659,6 +662,7 @@ def _default_runtime_config_map() -> dict[str, Any]:
                 )
             ),
             "exit_mode": os.getenv("EXECUTION_EXIT_MODE", "TRAIL_ONLY"),
+            "default_execution_mode": os.getenv("DEFAULT_EXECUTION_MODE", "LIVE"),
         },
         "transaction_costs": {
             "enabled": _parse_bool(

@@ -8,6 +8,7 @@ execution_safety:
   trailing_activation_stop_distance_multiplier: 1.0 # used: minimum multiple of stop distance before trailing can activate
   intraday_equity_entry_cutoff_minutes_before_squareoff: 30 # used: blocks fresh intraday-equity entries this many minutes before square-off
   exit_mode: "TRAIL_ONLY" # used: TRAIL_ONLY = when price hits target, activate trailing and continue; HARD_TARGET = exit immediately at target price
+  default_execution_mode: "LIVE" # used: default execution mode for new sessions in the web UI (LIVE | PAPER)
 
 transaction_costs:
   enabled: true # used: enables transaction-cost-aware profitability checks and reporting

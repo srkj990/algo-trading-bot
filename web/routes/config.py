@@ -93,6 +93,7 @@ async def get_runtime_defaults() -> JSONResponse:
         "intraday_options_entry_mode": rc.fno.intraday_options_entry_mode,
         # Execution
         "exit_mode": rc.execution_safety.exit_mode,
+        "default_execution_mode": rc.execution_safety.default_execution_mode,
         # Backtest/live form defaults (from backtest_prompt_defaults in yaml)
         "risk_style": pd.get("risk_style", 3),
         "one_trade_per_symbol_per_day": pd.get("one_trade_per_symbol_per_day", 2) == 1,
