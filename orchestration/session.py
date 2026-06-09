@@ -1525,6 +1525,9 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
         "cost_to_profit_ratio": actual_targets["cost_to_profit_ratio"],
         "cost_breakdown": actual_targets["cost_breakdown"],
         "exit_mode": str(getattr(cfg, "exit_mode", "TRAIL_ONLY")),
+        "entry_reason": candidate.get("reason") or candidate.get("entry_reason"),
+        "entry_strategy": candidate.get("strategy") or candidate.get("entry_strategy"),
+        "signal_score": float(candidate.get("score") or 0.0),
     }
     if engine.name == "intraday_options" and cfg.atm_option_config and hasattr(engine, "build_trend_adaptive_position"):
         context.positions[symbol] = engine.build_trend_adaptive_position(
@@ -1606,6 +1609,25 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
     return True
 
 
+def _safe_float(v):
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+def _safe_round(v, scale=1, ndigits=2):
+    try:
+        return round(float(v) * scale, ndigits) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+def _safe_scalar(v):
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _emit_why_trade(context, candidate, symbol, entry_price, qty, now, web_state):
     """Broadcast a why_this_trade WS event so the browser can render the explainability panel."""
     details = candidate.get("details") or {}
@@ -1634,10 +1656,14 @@ def _emit_why_trade(context, candidate, symbol, entry_price, qty, now, web_state
     elif score >= 0.4:
         reasons_ok.append(f"Moderate signal score ({score:.2f})")
 
-    if analytics.get("delta"):
-        delta = float(analytics["delta"])
-        if 0.3 <= abs(delta) <= 0.7:
-            reasons_ok.append(f"Delta in range ({delta:.2f})")
+    try:
+        delta_raw = analytics.get("delta")
+        if delta_raw is not None:
+            delta = float(delta_raw)
+            if 0.3 <= abs(delta) <= 0.7:
+                reasons_ok.append(f"Delta in range ({delta:.2f})")
+    except (TypeError, ValueError):
+        pass
 
     # Warnings from current active warnings
     try:
@@ -1681,11 +1707,11 @@ def _emit_why_trade(context, candidate, symbol, entry_price, qty, now, web_state
         "signal_quality": sq,
         "analytics": {
             "underlying": analytics.get("underlying"),
-            "underlying_price": analytics.get("underlying_price"),
+            "underlying_price": _safe_float(analytics.get("underlying_price")),
             "option_type": analytics.get("option_type"),
-            "iv": round(float(analytics["iv"]) * 100, 1) if analytics.get("iv") else None,
-            "delta": round(float(analytics["delta"]), 3) if analytics.get("delta") else None,
-            "dte": analytics.get("days_to_expiry"),
+            "iv": _safe_round(analytics.get("iv"), scale=100, ndigits=1),
+            "delta": _safe_round(analytics.get("delta"), ndigits=3),
+            "dte": _safe_scalar(analytics.get("days_to_expiry")),
         },
         "ts": now.strftime("%H:%M:%S"),
     })

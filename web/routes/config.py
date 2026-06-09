@@ -34,6 +34,32 @@ _backtest_thread: threading.Thread | None = None
 _backtest_cancel = threading.Event()
 
 
+def _export_session_report(context: Any) -> None:
+    """Export session Excel report from TradeStore JSONL files after session ends."""
+    try:
+        from logger import log_event
+        ts = getattr(context, "trade_store", None)
+        if ts is None or not ts.is_enabled():
+            return
+        from session_report import export_session_excel
+        from config import get_runtime_config
+        rc = get_runtime_config()
+        base_dir = str(getattr(rc.trade_store, "base_dir", "trade_store"))
+        path = export_session_excel(
+            engine_name=ts.engine_name,
+            trade_day=ts.trade_day,
+            base_dir=base_dir,
+        )
+        if path:
+            log_event(f"[Report] Session Excel saved: {path}", "info")
+    except Exception as exc:
+        try:
+            from logger import log_event
+            log_event(f"[Report] Excel export failed (non-fatal): {exc}", "warning")
+        except Exception:
+            pass
+
+
 # ── symbol / FNO reference data ───────────────────────────────────────────────
 
 @router.get("/api/runtime-defaults")
@@ -238,9 +264,11 @@ async def start_session() -> JSONResponse:
         try:
             run_trading_session(context)
         except Exception as exc:
+            import traceback
             from logger import log_event
-            log_event(f"[WEB] Trading loop error: {exc}", "error")
+            log_event(f"[WEB] Trading loop error: {exc}\n{traceback.format_exc()}", "error")
         finally:
+            _export_session_report(context)
             web_state.set_status("stopped")
             web_state.broadcast({"type": "status", "status": "stopped"})
 
@@ -349,6 +377,49 @@ async def get_backtest_results() -> JSONResponse:
 async def cancel_backtest() -> JSONResponse:
     _backtest_cancel.set()
     return JSONResponse({"ok": True})
+
+
+@router.get("/api/session-trades")
+async def get_session_trades() -> JSONResponse:
+    """Return today's closed trades from the JSONL trade store, enriched with entry metadata."""
+    import json
+    from datetime import date as _date
+    from pathlib import Path
+
+    ctx = web_state.get_context()
+    today = _date.today().isoformat()
+    engine_name = "intraday_options"
+    if ctx and ctx.engine:
+        engine_name = ctx.engine.name
+
+    # locate trade store directory
+    base_dir = Path("runners")
+    candidate_dirs = sorted(base_dir.glob(f"*/{engine_name}"), key=lambda p: p.name) if base_dir.exists() else []
+    if not candidate_dirs:
+        candidate_dirs = [Path(".")]
+
+    trades: list[dict] = []
+    for runner_dir in candidate_dirs:
+        trades_file = runner_dir / "state" / "trade_store" / f"{engine_name}_{today}_trades.jsonl"
+        if not trades_file.exists():
+            continue
+        try:
+            with open(trades_file, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        trades.append(json.loads(line))
+        except Exception:
+            pass
+
+    # also include in-memory trades for running session
+    if ctx and ctx.trade_book:
+        seen_ids = {t.get("trade_id") for t in trades}
+        for t in ctx.trade_book:
+            if str(t.get("exit_time", ""))[:10] == today and t.get("trade_id") not in seen_ids:
+                trades.append(t)
+
+    return JSONResponse({"trades": trades, "trade_day": today, "engine": engine_name})
 
 
 # ── bot override controls ──────────────────────────────────────────────────────

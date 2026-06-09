@@ -27,6 +27,10 @@ class TradeRecord:
     engine_name: str | None = None
     execution_mode: str | None = None
     pair_id: str | None = None
+    entry_reason: str | None = None
+    entry_strategy: str | None = None
+    signal_score: float | None = None
+    entry_analytics: dict[str, Any] | None = None
     trade_id: str = field(default_factory=lambda: uuid4().hex)
     recorded_at: str = field(default_factory=_timestamp)
 

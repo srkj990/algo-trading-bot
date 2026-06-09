@@ -223,6 +223,17 @@ def record_closed_trade(
         estimated_charges = float(breakdown.total)
         net_pnl = pnl - estimated_charges
 
+    raw_analytics = position.get("entry_analytics") or {}
+    safe_analytics: dict[str, Any] = {}
+    for k, v in raw_analytics.items():
+        try:
+            import pandas as _pd
+            if isinstance(v, _pd.Series):
+                v = v.iloc[0] if len(v) else None
+        except Exception:
+            pass
+        safe_analytics[k] = v
+
     trade = TradeRecord(
         symbol=symbol,
         side=side,
@@ -239,6 +250,10 @@ def record_closed_trade(
         engine_name=position.get("engine_name"),
         execution_mode=position.get("execution_mode"),
         pair_id=position.get("pair_id"),
+        entry_reason=position.get("entry_reason"),
+        entry_strategy=position.get("entry_strategy"),
+        signal_score=float(position["signal_score"]) if position.get("signal_score") is not None else None,
+        entry_analytics=safe_analytics or None,
     )
     payload = trade.to_dict()
     trade_book.append(payload)

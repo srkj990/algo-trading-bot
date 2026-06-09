@@ -756,32 +756,13 @@
     </div>
   </div>
 
-  <!-- Why This Trade panel -->
-  <div class="card p-3 mb-3" id="why-trade-panel" style="display:none">
+  <!-- Why These Trades accordion panel -->
+  <div class="card p-3 mb-3" id="why-trades-panel" style="display:none">
     <div class="flex items-center justify-between mb-2">
-      <div class="section-label mb-0">Why This Trade? <span id="why-symbol" class="text-blue-400 font-mono"></span></div>
-      <div class="flex items-center gap-3">
-        <span id="why-sq-score" class="text-xs font-bold font-mono bg-slate-800 px-2 py-0.5 rounded"></span>
-        <button onclick="document.getElementById('why-trade-panel').style.display='none'" class="text-xs text-slate-500 hover:text-slate-300">dismiss ×</button>
-      </div>
+      <div class="section-label mb-0">Why These Trades? <span id="why-trade-count" class="text-blue-400 text-xs font-mono"></span></div>
+      <button onclick="document.getElementById('why-trades-panel').style.display='none'" class="text-xs text-slate-500 hover:text-slate-300">dismiss ×</button>
     </div>
-    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-      <div>
-        <div class="text-xs text-slate-500 mb-1 font-semibold">Conditions Met</div>
-        <div id="why-ok-list" class="space-y-1"></div>
-      </div>
-      <div>
-        <div class="text-xs text-slate-500 mb-1 font-semibold">Cautions / Risks</div>
-        <div id="why-warn-list" class="space-y-1"></div>
-      </div>
-    </div>
-    <div class="flex flex-wrap gap-4 mt-2 text-xs text-slate-400">
-      <span>Strategy: <span id="why-strategy" class="text-slate-200 font-semibold"></span></span>
-      <span>Entry: <span id="why-entry" class="text-slate-200 font-mono"></span></span>
-      <span>Qty: <span id="why-qty" class="text-slate-200 font-mono"></span></span>
-      <span>Confidence: <span id="why-confidence" class="text-amber-400 font-semibold"></span></span>
-      <span id="why-ts" class="text-slate-600"></span>
-    </div>
+    <div id="why-trades-body" class="space-y-1"></div>
   </div>
 
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-3">
@@ -814,14 +795,17 @@
 
   <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-3">
     <div class="card p-3 lg:col-span-2">
-      <div class="section-label mb-2">Trade Book (Today) <span id="d-trade-count" class="text-blue-400"></span></div>
-      <div class="overflow-x-auto">
+      <div class="flex items-center justify-between mb-2">
+        <div class="section-label mb-0">Trade Book (Today) <span id="d-trade-count" class="text-blue-400"></span></div>
+        <button onclick="loadSessionTrades()" class="text-xs text-slate-500 hover:text-slate-300">↻ reload</button>
+      </div>
+      <div class="overflow-x-auto" style="max-height:300px;overflow-y:auto">
         <table><thead><tr>
-          <th>Symbol</th><th>Side</th><th>Entry</th>
-          <th>Exit</th><th>Gross P&amp;L</th><th>Charges</th><th>Net P&amp;L</th><th>Reason</th><th>Time</th>
+          <th>Symbol</th><th>Side</th><th>Qty</th><th>Entry Time</th><th>Exit Time</th>
+          <th>Entry ₹</th><th>Exit ₹</th><th>Gross P&amp;L</th><th>Charges</th><th>Net P&amp;L</th><th>Exit Reason</th><th>Entry Reason</th>
         </tr></thead>
         <tbody id="d-trades-body">
-          <tr><td colspan="9" class="text-slate-500 text-center py-4">No trades today</td></tr>
+          <tr><td colspan="12" class="text-slate-500 text-center py-4">No trades today</td></tr>
         </tbody></table>
       </div>
     </div>
@@ -1223,9 +1207,15 @@ function renderWarnings(warnings) {
       <div class="flex items-center gap-1 flex-wrap">${badge}${cat}${sym}
         <span class="font-semibold ml-1" style="font-size:.78rem">${escHtml(w.title)}</span>${ts}
       </div>
-      <div class="warn-detail">${escHtml(w.detail)}</div>
+      <div class="warn-detail">${formatWarnDetail(w)}</div>
     </div>`;
   }).join('');
+}
+
+function formatWarnDetail(w) {
+  const parts = (w.detail || '').split(' | ');
+  if (parts.length <= 1) return escHtml(w.detail || '');
+  return parts.map(p => `<div>• ${escHtml(p)}</div>`).join('');
 }
 
 function renderWarningHistory(history) {
@@ -1388,8 +1378,9 @@ async function doReconfigure() {
   // hide override bar on reconfigure
   const ob = document.getElementById('override-bar');
   if (ob) ob.style.display = 'none';
-  // hide why-trade panel
-  const wp = document.getElementById('why-trade-panel');
+  // reset why-trades accordion
+  resetWhyTrades();
+  const wp = document.getElementById('why-trades-panel');
   if (wp) wp.style.display = 'none';
   showConfigure();
 }
@@ -1864,7 +1855,7 @@ function handleEvent(ev) {
   if (ev.type === 'backtest_trade') { appendBtTrade(ev.trade); return; }
   if (ev.type === 'backtest_done')  { showBacktestResults(ev.result); return; }
   if (ev.type === 'backtest_error') { showBtError(ev.error); showConfigureBacktest(); return; }
-  if (ev.type === 'why_this_trade') { renderWhyTrade(ev); return; }
+  if (ev.type === 'why_this_trade') { appendWhyTrade(ev); return; }
   if (ev.type === 'override') {
     const d = ev.data || {};
     updateOverrideBar(!!d.paused, !!d.safe_mode);
@@ -1941,7 +1932,7 @@ function updateStatusBadge(status) {
     ({running:'badge-running', stopping:'badge-stopping', stopped:'badge-stopped'}[status] || 'badge-stopped');
   tog('btn-stop', status === 'running' || status === 'stopping');
   // Show reconfigure only when stopped (not when idle — form is already showing)
-  if (status === 'stopped') tog('btn-reconfigure', true);
+  if (status === 'stopped') { tog('btn-reconfigure', true); loadSessionTrades(); }
   else if (status === 'idle') tog('btn-reconfigure', false);
 }
 
@@ -1969,27 +1960,67 @@ function renderPositions(pos) {
 function renderTrades(trades) {
   const tb = document.getElementById('d-trades-body');
   setTxt('d-trade-count', trades.length ? `(${trades.length})` : '');
-  if (!trades.length) { tb.innerHTML = `<tr><td colspan="9" class="text-slate-500 text-center py-4">No trades today</td></tr>`; updateChart([]); return; }
-  tb.innerHTML = trades.map(t => {
+  if (!trades.length) { tb.innerHTML = `<tr><td colspan="12" class="text-slate-500 text-center py-4">No trades today</td></tr>`; updateChart([]); return; }
+  tb.innerHTML = trades.map((t, i) => {
     const gross   = t.pnl ?? 0;
     const net     = t.net_pnl ?? gross;
-    const charges = net !== gross ? Math.abs(gross - net) : null;
+    const charges = t.estimated_charges != null ? t.estimated_charges : (net !== gross ? Math.abs(gross - net) : null);
     const netCls  = net  >= 0 ? 'pnl-pos' : 'pnl-neg';
     const grsCls  = gross >= 0 ? 'pnl-pos' : 'pnl-neg';
-    return `<tr>
+    const ea = t.entry_analytics || {};
+    const entryDetail = [
+      t.entry_strategy ? `<span class="text-blue-400">${escHtml(t.entry_strategy)}</span>` : null,
+      t.signal_score   ? `Score:${Number(t.signal_score).toFixed(2)}` : null,
+      ea.option_type   ? escHtml(ea.option_type) : null,
+      ea.underlying    ? escHtml(ea.underlying) : null,
+      ea.iv != null    ? `IV:${(Number(ea.iv)*100).toFixed(1)}%` : null,
+      ea.delta != null ? `Δ${Number(ea.delta).toFixed(2)}` : null,
+    ].filter(Boolean).join(' · ');
+    const rowId = `lt-detail-${i}`;
+    const entryReason = t.entry_reason ? escHtml(t.entry_reason) : (entryDetail || '—');
+    return `<tr class="cursor-pointer hover:bg-slate-700/30" onclick="document.getElementById('${rowId}').classList.toggle('hidden')">
       <td class="font-mono text-xs" title="${t.symbol}">${shortSym(t.symbol)}</td>
-      <td>${t.side}</td>
+      <td class="${(t.side||'').toUpperCase()==='BUY'?'badge-buy':'badge-sell'} text-xs px-1 rounded">${t.side||'—'}</td>
+      <td class="font-mono text-xs">${t.quantity ?? '—'}</td>
+      <td class="text-xs text-slate-400">${(t.entry_time||'').slice(11,19)||'—'}</td>
+      <td class="text-xs text-slate-400">${(t.exit_time||'').slice(11,19)||'—'}</td>
       <td class="font-mono">${ff(t.entry_price)}</td>
       <td class="font-mono">${ff(t.exit_price)}</td>
       <td class="font-mono ${grsCls}">${gross >= 0 ? '+' : ''}${fmt(gross)}</td>
       <td class="font-mono text-slate-500 text-xs">${charges != null ? '−'+fmt(charges) : '—'}</td>
       <td class="font-mono font-semibold ${netCls}">${net >= 0 ? '+' : ''}${fmt(net)}</td>
-      <td class="text-xs text-slate-400">${t.exit_reason || '—'}</td>
-      <td class="text-xs text-slate-500">${(t.exit_time || '').slice(11, 19)}</td>
+      <td class="text-xs text-slate-400">${escHtml(t.exit_reason || '—')}</td>
+      <td class="text-xs text-slate-500 max-w-xs truncate" title="${escHtml(t.entry_reason||'')}">
+        ${entryDetail || '—'}
+      </td>
+    </tr>
+    <tr id="${rowId}" class="hidden">
+      <td colspan="12" class="bg-slate-900/60 px-4 py-2 text-xs text-slate-300">
+        <div class="flex flex-wrap gap-x-4 gap-y-1">
+          ${t.entry_strategy ? `<span><span class="text-slate-500">Strategy:</span> <span class="text-blue-400">${escHtml(t.entry_strategy)}</span></span>` : ''}
+          ${t.signal_score != null ? `<span><span class="text-slate-500">Score:</span> ${Number(t.signal_score).toFixed(3)}</span>` : ''}
+          ${ea.underlying ? `<span><span class="text-slate-500">Underlying:</span> ${escHtml(ea.underlying)}</span>` : ''}
+          ${ea.underlying_price != null ? `<span><span class="text-slate-500">Spot:</span> ₹${Number(ea.underlying_price).toFixed(2)}</span>` : ''}
+          ${ea.option_type ? `<span><span class="text-slate-500">Type:</span> ${escHtml(ea.option_type)}</span>` : ''}
+          ${ea.iv != null ? `<span><span class="text-slate-500">IV:</span> ${(Number(ea.iv)*100).toFixed(1)}%</span>` : ''}
+          ${ea.delta != null ? `<span><span class="text-slate-500">Delta:</span> ${Number(ea.delta).toFixed(3)}</span>` : ''}
+          ${ea.dte != null ? `<span><span class="text-slate-500">DTE:</span> ${ea.dte}d</span>` : ''}
+        </div>
+        ${t.entry_reason ? `<div class="mt-1 text-slate-400"><span class="text-slate-500">Entry reason:</span> ${escHtml(t.entry_reason)}</div>` : ''}
+      </td>
     </tr>`;
   }).join('');
   let cum = 0;
   updateChart(trades.map(t => { cum += (t.net_pnl ?? t.pnl ?? 0); return cum; }));
+}
+
+async function loadSessionTrades() {
+  try {
+    const r = await fetch('/api/session-trades');
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.trades && d.trades.length) renderTrades(d.trades);
+  } catch(e) { /* non-fatal */ }
 }
 
 // ── backtest results ──────────────────────────────────────────────────────────
@@ -2117,43 +2148,95 @@ function renderBacktestResults(r) {
   }
 }
 
-// ── Why This Trade ─────────────────────────────────────────────────────────────
-function renderWhyTrade(ev) {
-  const panel = document.getElementById('why-trade-panel');
-  if (!panel) return;
+// ── Why These Trades accordion ─────────────────────────────────────────────────
+let _whyTradeHistory = [];
+let _whyTradeSeq = 0;
 
-  document.getElementById('why-symbol').textContent    = ev.symbol || '';
-  document.getElementById('why-strategy').textContent  = ev.strategy || '—';
-  document.getElementById('why-entry').textContent     = ev.entry_price ? ff(ev.entry_price) : '—';
-  document.getElementById('why-qty').textContent       = ev.qty ?? '—';
-  document.getElementById('why-confidence').textContent = ev.confidence_pct != null ? `${ev.confidence_pct}%` : '—';
-  document.getElementById('why-ts').textContent        = ev.ts || '';
+function resetWhyTrades() {
+  _whyTradeHistory = [];
+  _whyTradeSeq = 0;
+  const body = document.getElementById('why-trades-body');
+  if (body) body.innerHTML = '';
+  setTxt('why-trade-count', '');
+}
 
-  const sq = ev.signal_quality;
-  const sqEl = document.getElementById('why-sq-score');
-  if (sqEl && sq) {
-    const score = sq.score ?? 0;
-    const label = sq.label || '';
-    const c = score >= 70 ? 'text-green-400' : score >= 45 ? 'text-amber-400' : 'text-red-400';
-    sqEl.innerHTML = `Signal Quality: <span class="${c} font-bold">${score}/100</span> <span class="text-slate-400">${label}</span>`;
-  }
+function appendWhyTrade(ev) {
+  const panel = document.getElementById('why-trades-panel');
+  const body  = document.getElementById('why-trades-body');
+  if (!panel || !body) return;
 
-  const okList   = document.getElementById('why-ok-list');
-  const warnList = document.getElementById('why-warn-list');
-  if (okList) {
-    const reasons = ev.reasons_ok || [];
-    okList.innerHTML = reasons.length
-      ? reasons.map(r => `<div class="text-xs text-green-400 flex items-start gap-1"><span>✓</span><span>${escHtml(r)}</span></div>`).join('')
-      : '<div class="text-xs text-slate-500">—</div>';
-  }
-  if (warnList) {
-    const warns = ev.reasons_warn || [];
-    warnList.innerHTML = warns.length
-      ? warns.map(w => `<div class="text-xs text-amber-400 flex items-start gap-1"><span>⚠</span><span>${escHtml(w)}</span></div>`).join('')
-      : '<div class="text-xs text-slate-500">None</div>';
-  }
+  _whyTradeHistory.unshift(ev);
+  _whyTradeSeq++;
+  const uid    = `why-tr-${_whyTradeSeq}`;
+  const isFirst = _whyTradeSeq === 1;
+  const loc = v => Number(v).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
 
+  const sideCls = (ev.side || '').toUpperCase() === 'BUY' ? 'badge-buy' : 'badge-sell';
+  const confCls = (ev.confidence_pct ?? 0) >= 60 ? 'text-green-400' : (ev.confidence_pct ?? 0) >= 40 ? 'text-amber-400' : 'text-red-400';
+  const ts = ev.ts ? ev.ts.toString().slice(11, 16) : '';
+
+  // signal quality badge
+  const sq = ev.signal_quality || {};
+  const sqScore = sq.score ?? 0;
+  const sqLabel = sq.label || '';
+  const sqCls = sqScore >= 70 ? 'text-green-400' : sqScore >= 45 ? 'text-amber-400' : 'text-red-400';
+  const sqBadge = sqScore ? `<span class="text-xs bg-slate-800 px-2 py-0.5 rounded font-mono">SQ: <span class="${sqCls} font-bold">${sqScore}</span><span class="text-slate-500"> ${escHtml(sqLabel)}</span></span>` : '';
+
+  // reasons
+  const okHtml = (ev.reasons_ok || []).length
+    ? (ev.reasons_ok).map(r => `<div class="flex items-start gap-1 text-green-400"><span>✓</span><span>${escHtml(r)}</span></div>`).join('')
+    : '<div class="text-slate-500">—</div>';
+  const warnHtml = (ev.reasons_warn || []).length
+    ? (ev.reasons_warn).map(w => `<div class="flex items-start gap-1 text-amber-400"><span>⚠</span><span>${escHtml(w)}</span></div>`).join('')
+    : '<div class="text-slate-500">None</div>';
+
+  // analytics
+  const an = ev.analytics || {};
+  const analyticsParts = [
+    an.underlying  ? `Underlying: <span class="text-slate-200">${escHtml(an.underlying)}</span>` : null,
+    an.underlying_price ? `Spot: <span class="text-slate-200 font-mono">₹${loc(an.underlying_price)}</span>` : null,
+    an.option_type ? `Type: <span class="text-slate-200">${escHtml(an.option_type)}</span>` : null,
+    an.iv != null  ? `IV: <span class="text-slate-200">${an.iv.toFixed(1)}%</span>` : null,
+    an.delta != null ? `Delta: <span class="text-slate-200">${an.delta.toFixed(3)}</span>` : null,
+    an.dte != null ? `DTE: <span class="text-slate-200">${an.dte}d</span>` : null,
+  ].filter(Boolean).join('<span class="text-slate-700 mx-1">·</span>');
+
+  const card = document.createElement('div');
+  card.className = 'rounded border border-slate-700 bg-slate-800/60 overflow-hidden';
+  card.innerHTML = `
+    <div class="flex items-center gap-2 px-3 py-2 cursor-pointer select-none hover:bg-slate-700/40 transition-colors"
+         onclick="document.getElementById('${uid}').classList.toggle('hidden')">
+      <span class="font-mono text-sm font-semibold text-slate-200 min-w-[80px]">${escHtml(ev.symbol || '')}</span>
+      <span class="text-xs px-1 rounded ${sideCls}">${ev.side || ''}</span>
+      <span class="text-xs text-slate-400">${escHtml(ev.strategy || '')}</span>
+      <span class="text-slate-500 text-xs">${ev.entry_price ? '₹' + loc(ev.entry_price) : ''}</span>
+      <span class="text-slate-500 text-xs">×${ev.qty ?? ''}</span>
+      <span class="flex-1"></span>
+      ${sqBadge}
+      <span class="text-xs ${confCls} font-semibold ml-1">${ev.confidence_pct != null ? ev.confidence_pct + '%' : ''}</span>
+      <span class="text-slate-600 text-xs ml-2">${ts}</span>
+      <span class="text-slate-600 text-xs ml-1">▾</span>
+    </div>
+    <div id="${uid}" class="${isFirst ? '' : 'hidden'} px-3 pb-3 pt-2 border-t border-slate-700/60 text-xs">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-2">
+        <div>
+          <div class="text-slate-500 font-semibold mb-1">Conditions Met</div>
+          ${okHtml}
+        </div>
+        <div>
+          <div class="text-slate-500 font-semibold mb-1">Cautions / Risks</div>
+          ${warnHtml}
+        </div>
+      </div>
+      ${analyticsParts ? `<div class="flex flex-wrap gap-x-2 gap-y-0.5 text-slate-400 mb-1">${analyticsParts}</div>` : ''}
+    </div>`;
+
+  // collapse all previously expanded items
+  body.querySelectorAll('[id^="why-tr-"]').forEach(el => el.classList.add('hidden'));
+
+  body.insertBefore(card, body.firstChild);
   panel.style.display = '';
+  setTxt('why-trade-count', `(${_whyTradeHistory.length})`);
 }
 
 // ── charts ─────────────────────────────────────────────────────────────────────

@@ -218,6 +218,16 @@ def snapshot() -> dict[str, Any]:
         exit_time = t.get("exit_time", "")
         if str(exit_time)[:10] != today:
             continue
+        raw_ea = t.get("entry_analytics") or {}
+        ea: dict[str, Any] = {}
+        for _k, _v in raw_ea.items():
+            try:
+                import pandas as _pd
+                if isinstance(_v, _pd.Series):
+                    _v = _v.iloc[0] if len(_v) else None
+            except Exception:
+                pass
+            ea[_k] = _v
         trade_book.append({
             "symbol": t.get("symbol"),
             "side": t.get("side"),
@@ -226,9 +236,14 @@ def snapshot() -> dict[str, Any]:
             "exit_price": _f(t.get("exit_price")),
             "pnl": _f(t.get("pnl")),
             "net_pnl": _f(t.get("net_pnl")),
+            "estimated_charges": _f(t.get("estimated_charges")),
             "exit_reason": t.get("exit_reason"),
             "entry_time": str(t.get("entry_time", "")),
             "exit_time": str(exit_time),
+            "entry_reason": t.get("entry_reason"),
+            "entry_strategy": t.get("entry_strategy"),
+            "signal_score": _f(t.get("signal_score")),
+            "entry_analytics": ea or None,
         })
 
     # session summary ---------------------------------------------------------

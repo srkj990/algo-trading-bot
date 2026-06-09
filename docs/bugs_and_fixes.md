@@ -4,6 +4,94 @@ Track record of bugs found and fixes applied for audit and future reference.
 
 ---
 
+## [2026-06-09] `truth value of a Series is ambiguous` crashes in live session loop
+
+### Symptom
+Live session crashed repeatedly with:
+```
+[WEB] Trading loop error: The truth value of a Series is ambiguous.
+Use a.empty, a.bool(), a.item(), a.any() or a.all().
+```
+Traceback eventually pinned to `engines/intraday_options.py:388 get_runner_partial_exit`.
+Multiple mid-session crashes meant the open position was not managed — it persisted into a PAPER-mode reconnect where the stop loss was eventually hit.
+
+### Root Causes
+
+**1. `get_runner_partial_exit` — `latest_candle or {}`**  
+`snapshot["latest_candle"]` is `stable_option_data.iloc[-1]` — a pandas `Series`. Using `series or {}` triggers `Series.__bool__()` → `ValueError`.
+
+**2. `warning_engine._check_blocked_signals` — `if analytics.get("iv"):`**  
+`analytics["iv"]` was a pandas Series in some paths. Boolean test → same error.
+
+**3. `warning_engine._build_market_intel` — `if analytics.get("iv"):`**  
+Same issue — direct boolean test on a potentially-Series IV value.
+
+**4. `orchestration/session.py _emit_why_trade` — `if analytics.get("delta"):`, `if analytics.get("iv") else None`**  
+Direct boolean/ternary on Series values in the WS broadcast dict builder.
+
+**5. `backtesting.py _on_trade` — `_analytics.get("iv") or 0`, `if _analytics.get("iv") else None`**  
+Same pattern in the backtest WS broadcast path.
+
+### Fixes
+
+**`engines/intraday_options.py:get_runner_partial_exit`**
+```python
+_snap = snapshot if snapshot is not None else {}
+latest_candle = _snap.get("latest_candle")
+try:
+    trigger_price = float(latest_candle["High"]) if latest_candle is not None else 0.0
+except (KeyError, TypeError, ValueError):
+    trigger_price = 0.0
+```
+
+**`orchestration/session.py`** — added `_safe_float`, `_safe_round`, `_safe_scalar` helpers; used them in all analytics dict construction inside `_emit_why_trade`.
+
+**`backtesting.py`** — added `_scalar`, `_safe_iv`, `_safe_price` helpers; used them in `_on_trade` broadcast dict.
+
+**`web/core/warning_engine.py`** — all `analytics.get()` boolean uses replaced with `isinstance(str)` guards and `try/except (TypeError, ValueError)` around all numeric field accesses.
+
+### Files Changed
+- `engines/intraday_options.py` — `get_runner_partial_exit()`
+- `orchestration/session.py` — `_emit_why_trade()`, new helpers
+- `backtesting.py` — `_on_trade()`, new helpers
+- `web/core/warning_engine.py` — `_check_blocked_signals()`, `_build_market_intel()`
+
+---
+
+## [2026-06-09] `reporting is not a package` import error on session Excel export
+
+### Symptom
+```
+[Report] Excel export failed (non-fatal): No module named 'reporting.session_report'; 'reporting' is not a package
+ImportError: cannot import name 'summarize_by_exit_reason' from 'reporting'
+```
+Session Excel export failed; a subsequent fix attempt also broke the main `reporting.py` import used by `orchestration/positions.py`.
+
+### Root Cause
+The initial implementation placed `session_report.py` inside a new `reporting/` directory. Python resolves `import reporting` as the package (directory) rather than the existing module (`reporting.py` at project root). This shadowed `reporting.py` entirely — both the new export and the existing `summarize_by_exit_reason` import broke.
+
+### Fix
+Moved the Excel export module to root as `session_report.py` (uniquely named, no conflict). Changed `web/routes/config.py` import to `from session_report import export_session_excel`. Deleted `reporting/` directory.
+
+### Files Changed
+- `session_report.py` (new, at project root)
+- `web/routes/config.py` — `_export_session_report()` import path
+
+---
+
+## [2026-06-09] PAPER mode orders not appearing in Kite broker
+
+### Symptom
+Trades appeared in the algo's trade book (with P&L) but no orders were visible in the Kite Order Book.
+
+### Root Cause
+Not a bug. The session was configured in **PAPER mode** (`Execution mode: PAPER` in session log). In paper mode, `executor.py` simulates fills locally (logs `[PAPER] Simulated fill: BUY 195 NFO:NIFTY2660923200CE @ 46.75`) and assigns a fake order ID (`PAPER-xxxxxxxxx`). No Kite API call is made.
+
+### Resolution
+Select **LIVE** execution mode in the web UI Configure tab before starting the session. Only LIVE mode sends real orders to Kite.
+
+---
+
 ## [2026-06-04] ATM_ORB fires spurious signal at 09:15 using prior-day data
 
 ### Symptom

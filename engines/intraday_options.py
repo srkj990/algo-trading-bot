@@ -385,11 +385,15 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             return None
         if not bool(position.get("runner_partial_exit_enabled")):
             return None
-        latest_candle = (snapshot or {}).get("latest_candle") or {}
+        _snap = snapshot if snapshot is not None else {}
+        latest_candle = _snap.get("latest_candle")
         completed = list(position.get("runner_exits_completed") or [False, False, False])
         exit_quantities = list(position.get("runner_exit_quantities") or [0, 0, 0])
         if position["side"] == "BUY":
-            trigger_price = float(latest_candle.get("High") or 0.0)
+            try:
+                trigger_price = float(latest_candle["High"]) if latest_candle is not None else 0.0
+            except (KeyError, TypeError, ValueError):
+                trigger_price = 0.0
             if (
                 not completed[0]
                 and int(exit_quantities[0]) > 0
@@ -413,7 +417,10 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                     "target_price": float(position["runner_level2_target"]),
                 }
         else:
-            trigger_price = float(latest_candle.get("Low") or 0.0)
+            try:
+                trigger_price = float(latest_candle["Low"]) if latest_candle is not None else 0.0
+            except (KeyError, TypeError, ValueError):
+                trigger_price = 0.0
             if (
                 not completed[0]
                 and int(exit_quantities[0]) > 0

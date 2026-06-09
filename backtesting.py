@@ -157,6 +157,40 @@ def _prompt_default(key, fallback):
     return BACKTEST_PROMPT_DEFAULTS.get(key, fallback)
 
 
+def _scalar(v):
+    """Coerce a value that may be a pandas Series to a plain Python scalar, or None."""
+    if v is None:
+        return None
+    try:
+        import pandas as pd
+        if isinstance(v, pd.Series):
+            return v.iloc[0] if len(v) else None
+    except Exception:
+        pass
+    return v
+
+
+def _safe_iv(v):
+    """Return IV as a percentage float, or None. Safe against pandas Series."""
+    if v is None:
+        return None
+    try:
+        return round(float(_scalar(v)) * 100, 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_price(v):
+    """Return a rounded float price, or None. Safe against pandas Series."""
+    if v is None:
+        return None
+    try:
+        f = float(_scalar(v))
+        return round(f, 2) if f else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _prompt_default_int(key, fallback):
     return int(_prompt_default(key, fallback))
 
@@ -1246,12 +1280,12 @@ class BacktestEngine:
                     "partial_exit_count": int(trade.get("partial_exit_count") or 0),
                     "partial_exit_events": trade.get("partial_exit_events") or [],
                     "underlying_close_at_entry": trade.get("underlying_close_at_entry"),
-                    "strike": _analytics.get("strike") or trade.get("strike"),
-                    "option_type": _analytics.get("option_type") or trade.get("option_type") or "",
-                    "underlying": _analytics.get("underlying") or "",
-                    "iv": round(float(_analytics.get("iv") or 0) * 100, 2) if _analytics.get("iv") else None,
-                    "stop_loss": round(float(trade.get("stop_loss") or 0), 2) if trade.get("stop_loss") else None,
-                    "target": round(float(trade.get("target") or 0), 2) if trade.get("target") else None,
+                    "strike": _scalar(_analytics.get("strike")) or trade.get("strike"),
+                    "option_type": (_analytics.get("option_type") if isinstance(_analytics.get("option_type"), str) else None) or trade.get("option_type") or "",
+                    "underlying": _analytics.get("underlying") if isinstance(_analytics.get("underlying"), str) else "",
+                    "iv": _safe_iv(_analytics.get("iv")),
+                    "stop_loss": _safe_price(trade.get("stop_loss")),
+                    "target": _safe_price(trade.get("target")),
                 })
                 break
 

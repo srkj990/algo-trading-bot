@@ -24,6 +24,7 @@
 13. [Multi-Strategy Mode](#13-multi-strategy-mode)
 14. [All Configurable Parameters](#14-all-configurable-parameters)
 15. [Backtest Performance Summary](#15-backtest-performance-summary)
+16. [Web UI — Live Session Features](#16-web-ui--live-session-features)
 
 ---
 
@@ -880,3 +881,100 @@ Based on 52 backtests (1-day SENSEX/NIFTY, 1m candles, ₹1,00,000 capital).
 | ATM_BREAKOUT_EXPANSION | SENSEX | 21 | 50% | −₹96,851 | −₹2,201 | 4/21 profitable |
 
 **Key finding:** `ATM_IV_EXPANSION` on SENSEX is the only strategy with 100% run consistency across all tested sessions. `ATM_BREAKOUT_EXPANSION` on SENSEX has the worst real-world performance despite an 80%+ win rate in the 3–4 best runs — the 17 losing runs overwhelm the winners.
+
+---
+
+## 16. Web UI — Live Session Features
+
+### 16.1 Trade Book (Today)
+
+The Dashboard tab shows a **Trade Book** table that updates in real-time as trades close. It matches the Backtest Results trade table in detail.
+
+**Columns:**
+
+| Column | Description |
+|--------|-------------|
+| Symbol | Short symbol name (hover for full) |
+| Side | BUY (green badge) or SELL (red badge) |
+| Qty | Filled quantity (lots × lot size) |
+| Entry Time | Time the entry fill was confirmed (HH:MM:SS) |
+| Exit Time | Time the exit fill was confirmed (HH:MM:SS) |
+| Entry ₹ | Entry fill price |
+| Exit ₹ | Exit fill price |
+| Gross P&L | Raw P&L before charges |
+| Charges | Estimated brokerage + STT (paper = ₹0) |
+| Net P&L | Gross minus charges (green = profit, red = loss) |
+| Exit Reason | STOP_LOSS / TARGET / TRAIL / TIME_EXIT / FORCE_SQUAREOFF |
+| Entry Reason | Strategy name · signal score · IV · Delta (collapsed inline) |
+
+**Click any row** to expand an inline detail panel showing:
+- Full strategy name and signal score
+- Underlying name and spot price at entry
+- Option type (CE/PE), IV%, Delta, DTE
+- Full entry reason text (e.g. "Breakout expansion long: close 23190 above 23184, compression 0.0035...")
+
+**Persist after session stops:** When a session stops, the table automatically reloads from the JSONL trade store via `/api/session-trades`. A manual **↻ reload** button is also available.
+
+### 16.2 Why These Trades? Accordion
+
+For each new entry, a collapsible card appears showing:
+- Symbol, Side, Entry Price, Qty
+- Strategy name and Signal Quality score
+- Conditions Met (green ✓): VWAP, agreement count, momentum, etc.
+- Cautions / Risks (amber ⚠): expiry warning, IV regime, VWAP deviation
+- Analytics: Underlying, Spot, Option type, IV%, Delta, DTE
+
+Cards are stacked newest-first. Clicking any card header expands/collapses it. The panel can be dismissed with the × button and reappears on the next trade.
+
+### 16.3 Warning Center — Blocked Signal Warnings
+
+When the options filter blocks a potential entry, a **[OPTIONS]** warning card appears in the Warning Center (orange severity). This makes it visible without reading logs.
+
+| Warning field | Content |
+|--------------|---------|
+| Title | `Entry blocked: <short symbol>` |
+| Detail | Filter reason · Underlying · Spot ₹ · Option type · Bias |
+| ID | `options_blocked:<symbol>` (deduplicates each cycle) |
+
+The warning clears automatically the next cycle if the signal is no longer blocked or if a live signal fires.
+
+**Example detail (pipe-separated, rendered as bullets in UI):**
+```
+Underlying bias filter blocked CE: BEARISH | Underlying: NIFTY | Spot: ₹23,190.15 | Option type: CE | Underlying bias: BEARISH
+```
+
+Other filters that produce this warning:
+- `VWAP band filter blocked BUY/SELL` — premium not above/below VWAP
+- `Volatility proxy blocked trade`
+- `Sideways market detected`
+- `Premium below minimum`
+- `Vega crush alert`
+- `Delta below minimum`
+
+### 16.4 Session Excel Export
+
+When a session stops (normally or due to error), the system automatically exports an Excel workbook to:
+```
+runners/06_intraday_options/Results/SessionReports/
+    intraday_options_YYYY-MM-DD_session_report_HHMMSS.xlsx
+```
+
+**Sheets:**
+
+| Sheet | Contents |
+|-------|---------|
+| Trades | One row per closed trade: symbol, side, qty, entry/exit time & price, gross P&L, charges, net P&L, exit reason, execution mode |
+| Orders | Full order audit trail: stage (pre_flight / spread_check / margin_check / submitted / reconciled / slippage), status, price, timestamp, note |
+| OrderStagesSummary | Count and pass/fail per order stage — useful for diagnosing repeated slippage or margin failures |
+| ExitReasonSummary | Count, wins, win rate, total/avg net P&L grouped by exit reason |
+
+**Requirements:** `openpyxl` must be installed (`pip install openpyxl`). If missing, the export is skipped non-fatally.
+
+### 16.5 Execution Mode
+
+| Mode | Description |
+|------|-------------|
+| **PAPER** | Simulates fills locally — no Kite API calls. Trade book shows fake order IDs (`PAPER-xxxxx`). Charges = ₹0. |
+| **LIVE** | Sends real orders to Kite. Real order IDs returned. Exchange charges apply. |
+
+**To trade live:** Set Execution Mode = **LIVE** in the Configure tab before clicking Start. Verify in the session log: `Execution mode: LIVE` and `[EXECUTION] Provider: KITE`.

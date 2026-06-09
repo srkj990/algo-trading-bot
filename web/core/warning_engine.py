@@ -65,6 +65,9 @@ def compute_warnings(
     # ── 6. Options structure guards ──────────────────────────────────────────
     _check_options_guards(warnings, symbol_snapshots, ts)
 
+    # ── 6b. Blocked signal filter warnings ───────────────────────────────────
+    _check_blocked_signals(warnings, symbol_snapshots, ts)
+
     # ── 7. Infra guard (stale data) ──────────────────────────────────────────
     _check_stale_data(warnings, symbol_snapshots, now, ts)
 
@@ -394,6 +397,39 @@ def _check_options_guards(warnings, snapshots: dict, ts: str):
             ))
 
 
+def _check_blocked_signals(warnings, snapshots: dict, ts: str):
+    for symbol, snap in snapshots.items():
+        note = snap.get("options_filter_note")
+        signal = snap.get("signal", "")
+        if not note or signal not in ("HOLD", None, ""):
+            continue
+        analytics = snap.get("analytics") or {}
+        detail_parts = [str(note)]
+        underlying = analytics.get("underlying")
+        if isinstance(underlying, str) and underlying:
+            detail_parts.append(f"Underlying: {underlying}")
+        try:
+            up = analytics.get("underlying_price")
+            if up is not None:
+                detail_parts.append(f"Spot: ₹{float(up):.2f}")
+        except (TypeError, ValueError):
+            pass
+        opt_type = analytics.get("option_type")
+        if isinstance(opt_type, str) and opt_type:
+            detail_parts.append(f"Option type: {opt_type}")
+        bias = analytics.get("underlying_bias")
+        if isinstance(bias, str) and bias:
+            detail_parts.append(f"Underlying bias: {bias}")
+        detail = " | ".join(detail_parts)
+        short_sym = symbol.split(":")[-1] if ":" in symbol else symbol
+        warnings.append(_w(
+            f"options_blocked:{symbol}", "warning", "OPTIONS",
+            f"Entry blocked: {short_sym}",
+            detail,
+            symbol=symbol, ts=ts,
+        ))
+
+
 def _check_stale_data(warnings, snapshots: dict, now: datetime, ts: str):
     stale_symbols = []
     for symbol, snap in snapshots.items():
@@ -608,16 +644,19 @@ def _build_market_intel(
     atm_iv_change = None
     for sym, snap in snapshots.items():
         analytics = snap.get("analytics") or {}
-        if analytics.get("iv"):
-            atm_iv = round(float(analytics["iv"]) * 100, 1)
-            atm_iv_pct = analytics.get("iv_percentile")
-            if atm_iv_pct is not None:
-                atm_iv_pct = round(float(atm_iv_pct), 0)
-            atm_iv_change = analytics.get("iv_change_15m_pct")
-            if atm_iv_change is not None:
-                atm_iv_change = round(float(atm_iv_change), 1)
+        try:
+            iv_raw = analytics.get("iv")
+            if iv_raw is None:
+                continue
+            atm_iv = round(float(iv_raw) * 100, 1)
+            iv_pct_raw = analytics.get("iv_percentile")
+            atm_iv_pct = round(float(iv_pct_raw), 0) if iv_pct_raw is not None else None
+            iv_chg_raw = analytics.get("iv_change_15m_pct")
+            atm_iv_change = round(float(iv_chg_raw), 1) if iv_chg_raw is not None else None
             atm_symbol = sym
             break
+        except (TypeError, ValueError):
+            continue
 
     # Gap % from first symbol that has enough daily history
     gap_pct = None
