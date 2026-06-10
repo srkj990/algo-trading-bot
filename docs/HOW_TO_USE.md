@@ -320,7 +320,7 @@ All in `config.runtime.yaml`. A process restart is required after changes.
 | `orders.max_live_order_notional` | 0 (off) | Hard cap per order |
 | `orders.margin_check_enabled` | true | Pre-flight margin check |
 | `orders.exit_limit_price_buffer_pct` | 0.01 | Buffer applied to exit LIMIT prices (1% default); 0 to disable |
-| `risk_controls.daily_max_loss_pct` | 0 (off) | Blocks entries after daily loss limit |
+| `risk_controls.daily_max_loss_pct` | 0 (off) | Blocks entries after daily loss limit. Can be overridden per session/backtest via the "Daily Max Loss %" field in the web UI (Configure and Backtest tabs) — leave blank to use this yaml default. |
 | `risk_controls.consecutive_loss_limit` | 0 (off) | Blocks after N consecutive losses |
 | `fno.intraday_options_entry_mode` | `LIVE_STAGED` | `LIVE_STAGED` or `LEGACY_IMMEDIATE` |
 | `fno.intraday_options_max_entry_cost_ratio` | 0.30 | Max cost/profit ratio for options entry |

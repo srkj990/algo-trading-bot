@@ -792,8 +792,13 @@ def run_trading_session(context):
                 continue
 
             risk_cfg = context.runtime_config.risk_controls
+            configured_daily_max_loss_pct = (
+                cfg.daily_max_loss_pct
+                if cfg.daily_max_loss_pct is not None
+                else risk_cfg.daily_max_loss_pct
+            )
             max_daily_loss_pct = resolve_daily_max_loss_pct(
-                float(cfg.capital), float(risk_cfg.daily_max_loss_pct or 0.0)
+                float(cfg.capital), float(configured_daily_max_loss_pct or 0.0)
             )
             session_pnl = _calculate_session_pnl(context.trade_book, current_trade_day)
             if check_daily_loss_limit(session_pnl, cfg.capital, max_daily_loss_pct):

@@ -106,6 +106,7 @@ class SessionConfig:
     partial_exit_enabled: bool | None = None          # None = auto (lot-threshold), False = force off
     paper_trading_override: bool = False
     exit_mode: str = "TRAIL_ONLY"
+    daily_max_loss_pct: float | None = None  # overrides risk_controls.daily_max_loss_pct (None = use yaml)
 
 
 def validate_session_config(config: SessionConfig) -> SessionConfig:
@@ -148,6 +149,8 @@ def validate_session_config(config: SessionConfig) -> SessionConfig:
         raise ValueError("max_trades_per_underlying must be between 1 and 10")
     if config.time_exit_minutes is not None and not (0 <= config.time_exit_minutes <= 120):
         raise ValueError("time_exit_minutes must be between 0 and 120")
+    if config.daily_max_loss_pct is not None and not (0 <= config.daily_max_loss_pct <= 1):
+        raise ValueError("daily_max_loss_pct must be between 0 and 1")
     if config.forming_tick_confirm_ticks is not None and not (1 <= config.forming_tick_confirm_ticks <= 5):
         raise ValueError("forming_tick_confirm_ticks must be between 1 and 5")
     if config.exit_mode not in {"TRAIL_ONLY", "HARD_TARGET"}:
@@ -1017,6 +1020,12 @@ def build_session_config_from_dict(data: dict) -> SessionConfig:
         else str(runtime_config.execution_safety.exit_mode or "TRAIL_ONLY").upper()
     )
 
+    # ── risk controls ─────────────────────────────────────────────────────────
+    daily_max_loss_pct: float | None = None
+    _daily_max_loss_raw = data.get("daily_max_loss_pct")
+    if _daily_max_loss_raw is not None and str(_daily_max_loss_raw).strip():
+        daily_max_loss_pct = max(0.0, min(1.0, float(_daily_max_loss_raw)))
+
     # ── data / execution providers ────────────────────────────────────────────
     from data_fetcher import set_data_provider
     from executor import set_execution_provider
@@ -1345,6 +1354,7 @@ def build_session_config_from_dict(data: dict) -> SessionConfig:
         partial_exit_enabled=partial_exit_enabled_live,
         paper_trading_override=bool(data.get("paper_trading_override", False)),
         exit_mode=exit_mode,
+        daily_max_loss_pct=daily_max_loss_pct,
     ))
     log_session_config_summary(session_config)
     return session_config

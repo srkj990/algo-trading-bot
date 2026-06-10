@@ -420,7 +420,7 @@ Key sections and fields:
 | `execution_safety` | `min_ranked_candidate_score`, `reversal_exit_confirmation_candles`, `intraday_equity_entry_cutoff_minutes_before_squareoff` |
 | `orders` | `default_entry_order_type`, `entry_limit_price_buffer_pct`, `exit_limit_price_buffer_pct` (default 0.01 — LIMIT buffer for all exit orders; set 0 to disable), `max_live_order_notional`, `max_spread_pct`, `margin_check_enabled`, `max_orders_per_minute` |
 | `session_defaults` | `exit_only_default`, `live_broker_resync_interval_seconds` (applies to both exit-only and normal LIVE sessions) |
-| `risk_controls` | `daily_max_loss_pct`, `consecutive_loss_limit`, `api_failure_pause_minutes`, `abnormal_slippage_pause_pct` |
+| `risk_controls` | `daily_max_loss_pct` (overridable per session/backtest from the web UI — "Daily Max Loss %" field, blank = use this default), `consecutive_loss_limit`, `api_failure_pause_minutes`, `abnormal_slippage_pause_pct` |
 | `fno` | `intraday_options_lot_mode`, `intraday_options_entry_mode` (`LIVE_STAGED`\|`LEGACY_IMMEDIATE`\|`LIVE_TICK_CONFIRM`), `intraday_options_max_hold_minutes`, `intraday_options_max_trades_per_underlying`, `intraday_options_max_entry_cost_ratio`, `intraday_options_max_spread_pct`, `intraday_options_min_open_interest`, `intraday_options_roll_trigger_pct`, `intraday_options_theta_exit_ratio` |
 | `engine_defaults.<engine>` | `sleep_seconds`, `cooldown_seconds`, `data_period`, `data_interval` — all engines |
 | `engine_defaults.intraday_equity` | `square_off_time`, `gap_threshold_percent`, `opening_range_candles`, `breakout_volume_multiplier`, adaptive level multipliers |

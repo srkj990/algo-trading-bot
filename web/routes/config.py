@@ -759,6 +759,12 @@ def _build_backtest_config(data: dict):
         if _exit_mode_raw in {"TRAIL_ONLY", "HARD_TARGET"}
         else str(runtime_config.execution_safety.exit_mode or "TRAIL_ONLY").upper()
     )
+    _daily_max_loss_raw = data.get("daily_max_loss_pct")
+    bt_daily_max_loss_pct = (
+        max(0.0, min(1.0, float(_daily_max_loss_raw)))
+        if _daily_max_loss_raw is not None and str(_daily_max_loss_raw).strip()
+        else None
+    )
 
     summary_lines.extend([
         f"Engine={engine_name}",
@@ -797,6 +803,7 @@ def _build_backtest_config(data: dict):
         forming_tick_confirm_ticks=bt_forming_tick_confirm_ticks,
         partial_exit_enabled=bt_partial_exit_enabled,
         exit_mode=bt_exit_mode,
+        daily_max_loss_pct=bt_daily_max_loss_pct,
     )
 
 

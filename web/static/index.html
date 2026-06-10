@@ -405,6 +405,13 @@
       <p class="text-xs text-slate-400 mt-1">Trail Only: when price reaches target, trailing activates and rides the move until reversal. Hard Target: closes the position at the exact target price.</p>
     </div>
 
+    <!-- Daily max loss -->
+    <div class="mt-4">
+      <label class="section-label">Daily Max Loss %</label>
+      <input id="c-daily-max-loss" type="number" min="0" max="100" step="0.5" placeholder="15"/>
+      <p class="text-xs text-slate-400 mt-1">Blocks new entries once realized daily loss exceeds this percent of capital. Leave blank to use the configured default (risk_controls.daily_max_loss_pct).</p>
+    </div>
+
     <!-- Weekend paper override -->
     <div class="mt-4 flex items-center gap-3">
       <input id="c-paper-override" type="checkbox" style="width:auto;padding:0" class="accent-amber-500 w-4 h-4"/>
@@ -662,6 +669,13 @@
         <option value="HARD_TARGET">Hard Target — exit immediately when target price is hit</option>
       </select>
       <p class="text-xs text-slate-400 mt-1">Trail Only: when price reaches target, trailing activates and rides the move until reversal. Hard Target: closes the position at the exact target price.</p>
+    </div>
+
+    <!-- Daily max loss (backtest) -->
+    <div class="mt-4">
+      <label class="section-label">Daily Max Loss %</label>
+      <input id="b-daily-max-loss" type="number" min="0" max="100" step="0.5" placeholder="15"/>
+      <p class="text-xs text-slate-400 mt-1">Blocks new entries on a backtest day once realized loss exceeds this percent of capital. Leave blank to use the configured default (risk_controls.daily_max_loss_pct).</p>
     </div>
 
     <!-- Error banner (backtest) -->
@@ -1079,6 +1093,15 @@ async function loadRuntimeDefaults() {
     // Exit mode
     setVal('c-exit-mode', d.exit_mode);
     setVal('b-exit-mode', d.exit_mode);
+
+    // Daily max loss % — show configured yaml default as placeholder (value left blank = use default)
+    if (d.daily_max_loss_pct != null) {
+      const dailyMaxLossPlaceholder = String(d.daily_max_loss_pct * 100);
+      const cDailyMaxLossEl = document.getElementById('c-daily-max-loss');
+      const bDailyMaxLossEl = document.getElementById('b-daily-max-loss');
+      if (cDailyMaxLossEl) cDailyMaxLossEl.placeholder = dailyMaxLossPlaceholder;
+      if (bDailyMaxLossEl) bDailyMaxLossEl.placeholder = dailyMaxLossPlaceholder;
+    }
 
     // Execution mode default (from execution_safety.default_execution_mode in yaml)
     setOpt('c-exec-mode', d.default_execution_mode);
@@ -1605,6 +1628,9 @@ async function submitLive() {
     exit_mode: document.getElementById('c-exit-mode').value,
   };
 
+  const cDailyMaxLoss = document.getElementById('c-daily-max-loss').value;
+  if (cDailyMaxLoss !== '') payload.daily_max_loss_pct = parseFloat(cDailyMaxLoss) / 100;
+
   if (IS_FNO(eng)) {
     const scope = document.getElementById('c-fno-underlying-scope')?.value;
     payload.fno_underlying = scope === 'BOTH' ? 'BOTH' : document.getElementById('c-underlying').value;
@@ -1773,6 +1799,9 @@ async function submitBacktest() {
     strategy_mode:         document.getElementById('b-strat-mode').value,
     exit_mode:             document.getElementById('b-exit-mode').value,
   };
+
+  const bDailyMaxLoss = document.getElementById('b-daily-max-loss').value;
+  if (bDailyMaxLoss !== '') payload.daily_max_loss_pct = parseFloat(bDailyMaxLoss) / 100;
 
   if (fno) {
     payload.fno_underlying = document.getElementById('b-underlying').value;

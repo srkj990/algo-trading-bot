@@ -151,6 +151,7 @@ class BacktestConfig:
     forming_tick_confirm_ticks: int | None = None
     partial_exit_enabled: bool | None = None
     exit_mode: str = "TRAIL_ONLY"
+    daily_max_loss_pct: float | None = None  # overrides risk_controls.daily_max_loss_pct (None = use yaml)
 
 
 def _prompt_default(key, fallback):
@@ -790,8 +791,13 @@ class BacktestEngine:
             return
 
         # Daily max loss guard — mirrors session.py risk check
+        configured_daily_max_loss_pct = (
+            self.config.daily_max_loss_pct
+            if self.config.daily_max_loss_pct is not None
+            else risk_cfg.daily_max_loss_pct
+        )
         daily_max_loss_pct = resolve_daily_max_loss_pct(
-            float(self.config.capital), float(risk_cfg.daily_max_loss_pct or 0)
+            float(self.config.capital), float(configured_daily_max_loss_pct or 0)
         )
         if daily_max_loss_pct > 0:
             day_str = trade_day.isoformat()
