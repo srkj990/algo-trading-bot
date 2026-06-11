@@ -1436,8 +1436,12 @@ class BacktestEngine:
             rolling_peak = equity_df["equity"].cummax()
             drawdown = (equity_df["equity"] - rolling_peak) / rolling_peak
             max_drawdown = abs(float(drawdown.min() * 100))
+        profit_factor = 0.0
         if not closed_trades.empty:
             win_rate = float((closed_trades["pnl"] > 0).mean() * 100)
+            gross_profit = float(closed_trades.loc[closed_trades["pnl"] > 0, "pnl"].sum())
+            gross_loss = float(-closed_trades.loc[closed_trades["pnl"] < 0, "pnl"].sum())
+            profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float("inf")
 
         total_estimated_charges = float(
             closed_trades["estimated_charges"].fillna(0.0).sum()
@@ -1460,6 +1464,7 @@ class BacktestEngine:
             "total_return_percent": total_return,
             "closed_trades": int(len(closed_trades)),
             "win_rate_percent": win_rate,
+            "profit_factor": profit_factor,
             "max_drawdown_percent": max_drawdown,
             "total_estimated_charges": total_estimated_charges,
             "total_gross_pnl": total_gross_pnl,

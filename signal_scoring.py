@@ -123,14 +123,16 @@ def evaluate_symbol_signal(
             "selected_profile": signal_payload.get("selected_profile"),
             "components": signal_payload.get("components"),
         }
-        if strat_signal == "BUY" or opt_sig == "BUY_CE":
+        if opt_sig == "BUY_CE":
             buy_count += 1
-            if opt_sig == "BUY_CE":
-                ce_count += 1
-        elif strat_signal == "SELL" or opt_sig == "BUY_PE":
+            ce_count += 1
+        elif opt_sig == "BUY_PE":
             sell_count += 1
-            if opt_sig == "BUY_PE":
-                pe_count += 1
+            pe_count += 1
+        elif strat_signal == "BUY":
+            buy_count += 1
+        elif strat_signal == "SELL":
+            sell_count += 1
 
     if buy_count >= min_confirmations and buy_count > sell_count:
         final_signal = "BUY"

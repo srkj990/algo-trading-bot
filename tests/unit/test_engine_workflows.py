@@ -300,7 +300,7 @@ class IntradayOptionsEngineTests(unittest.TestCase):
             "High": 103.0,
             "Low": 102.2,
             "Close": 102.9,
-            "Volume": 110.0,
+            "Volume": 160.0,
         }
         index = pd.date_range("2026-04-29 09:20:00", periods=len(rows), freq="1min")
         return pd.DataFrame(rows, index=index)
@@ -1074,6 +1074,147 @@ class IntradayOptionsEngineTests(unittest.TestCase):
         momentum_validator.assert_not_called()
         mean_reversion_validator.assert_called_once()
         self.assertEqual(filtered["options_filter_note"], "Mean reversion validator blocked")
+
+    def test_resolve_entry_profile_routes_multi_strategy_mean_reversion_agreement(self) -> None:
+        evaluation = {
+            "strategy": None,
+            "signal": "SELL",
+            "option_signal": "BUY_PE",
+            "details": {
+                "ATM_TRAP_REVERSAL": {"signal": "SELL", "option_signal": "BUY_PE"},
+                "ATM_VWAP_REVERSION": {"signal": "SELL", "option_signal": "BUY_PE"},
+            },
+        }
+        self.assertEqual(self.engine.resolve_entry_profile(evaluation), "MEAN_REVERSION")
+
+    def test_resolve_entry_profile_prefers_momentum_when_either_agreeing_strategy_is_momentum(self) -> None:
+        evaluation = {
+            "strategy": None,
+            "signal": "BUY",
+            "option_signal": "BUY_CE",
+            "details": {
+                "ATM_MOMENTUM": {"signal": "BUY", "option_signal": "BUY_CE"},
+                "ATM_VWAP_REVERSION": {"signal": "BUY", "option_signal": "BUY_CE"},
+            },
+        }
+        self.assertEqual(self.engine.resolve_entry_profile(evaluation), "MOMENTUM")
+
+    def test_apply_signal_filters_blocks_when_delta_exceeds_ceiling(self) -> None:
+        evaluation = {
+            "signal": "BUY",
+            "agreement_count": 1,
+            "score": 1.5,
+            "strategy": "ATM_BREAKOUT_EXPANSION",
+            "details": {},
+        }
+        self.engine.momentum_entry_mode = "LEGACY_RAW_DISABLED"
+        analytics = {
+            "underlying": "NIFTY",
+            "underlying_bias": "BULLISH",
+            "option_type": "CE",
+            "option_price": 120.0,
+            "delta": 0.60,
+            "iv": 0.2,
+            "iv_percentile": 40.0,
+            "days_to_expiry": 3,
+        }
+        with patch.object(self.engine, "get_underlying_bias", return_value={"bias": "BULLISH", "ema": 100.0, "vwap": 99.0, "close": 101.0}):
+            filtered = self.engine.apply_signal_filters(
+                evaluation,
+                self._option_session_df(),
+                analytics=analytics,
+            )
+        self.assertEqual(filtered["signal"], "HOLD")
+        self.assertEqual(filtered["rejection_code"], "delta_too_high")
+
+    def test_validate_momentum_entry_blocks_when_extended_from_breakout_level(self) -> None:
+        passed, reason = self.engine.validate_momentum_entry(
+            "BUY",
+            self._option_session_df(),
+            {"underlying_bias": "BULLISH", "volatility_regime": "NORMAL"},
+            latest_close=106.5,
+            option_vwap=103.0,
+            strategy_name="ATM_MOMENTUM",
+        )
+        self.assertFalse(passed)
+        self.assertIn("extended_from_level", reason)
+
+    def test_validate_mean_reversion_entry_blocks_when_extended_from_vwap(self) -> None:
+        passed, reason = self.engine.validate_mean_reversion_entry(
+            "BUY",
+            self._mean_reversion_session_df(),
+            {"underlying_bias": "BULLISH", "volatility_regime": "NORMAL"},
+            latest_close=102.9,
+            option_vwap=104.5,
+        )
+        self.assertFalse(passed)
+        self.assertIn("extended_from_level", reason)
+
+    def test_validate_mean_reversion_entry_blocks_on_weak_volume(self) -> None:
+        df = self._mean_reversion_session_df()
+        df.iloc[-1, df.columns.get_loc("Volume")] = 110.0
+        passed, reason = self.engine.validate_mean_reversion_entry(
+            "BUY",
+            df,
+            {"underlying_bias": "BULLISH", "volatility_regime": "NORMAL"},
+            latest_close=102.9,
+            option_vwap=102.4,
+        )
+        self.assertFalse(passed)
+        self.assertIn("weak_breakout", reason)
+
+    def test_validate_mean_reversion_entry_blocks_stale_signal(self) -> None:
+        df = self._mean_reversion_session_df()
+        analytics = {"underlying_bias": "BULLISH", "volatility_regime": "NORMAL", "underlying": "NIFTY"}
+        self.engine.mean_reversion_entry_setups["NIFTY:MEAN_REVERSION:BUY"] = {
+            "trade_day": df.index[-1].date().isoformat(),
+            "first_seen_candle_count": len(df) - (self.engine.max_signal_age_candles + 1),
+        }
+        passed, reason = self.engine.validate_mean_reversion_entry(
+            "BUY",
+            df,
+            analytics,
+            latest_close=102.9,
+            option_vwap=102.4,
+        )
+        self.assertFalse(passed)
+        self.assertIn("stale_breakout", reason)
+
+    def test_apply_signal_filters_applies_sideways_score_multiplier(self) -> None:
+        evaluation = {
+            "signal": "BUY",
+            "agreement_count": 1,
+            "score": 0.001,
+            "strategy": "ATM_VWAP_REVERSION",
+            "details": {},
+        }
+        self.engine.momentum_entry_mode = "LEGACY_RAW_DISABLED"
+        analytics = {
+            "underlying": "NIFTY",
+            "underlying_bias": "BULLISH",
+            "option_type": "CE",
+            "option_price": 120.0,
+            "delta": 0.2,
+            "iv": 0.2,
+            "iv_percentile": 0.0,
+            "days_to_expiry": 3,
+        }
+        with patch.object(self.engine, "get_underlying_bias", return_value={"bias": "BULLISH", "ema": 100.0, "vwap": 99.0, "close": 101.0}), \
+             patch.object(self.engine, "build_volatility_regime_context", return_value={
+                 "label": "SIDEWAYS",
+                 "session_range_pct": 0.5,
+                 "recent_range_pct": 0.3,
+                 "recent_vwap_deviation": 0.001,
+                 "iv_change_15m_pct": None,
+             }), \
+             patch.object(self.engine, "validate_mean_reversion_entry", return_value=(True, "Mean reversion validator passed")):
+            filtered = self.engine.apply_signal_filters(
+                evaluation,
+                self._mean_reversion_session_df(),
+                analytics=analytics,
+            )
+        self.assertEqual(filtered["signal"], "HOLD")
+        self.assertEqual(filtered["rejection_code"], "range_bound_rejection")
 
 
 if __name__ == "__main__":

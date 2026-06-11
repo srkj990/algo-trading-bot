@@ -31,6 +31,31 @@ from signal_scoring import get_atr_value
 from .options_equity import OptionsEquityEngine
 
 
+def compute_entry_quality_score(
+    fresh_signal,
+    vwap_aligned,
+    volume_confirmed,
+    rsi_confirmed,
+    breakout_confirmed,
+    trend_aligned,
+):
+    """Composite 0-100 entry-quality score (item 8 of entry-quality overhaul)."""
+    score = 0.0
+    if fresh_signal:
+        score += 25.0
+    if vwap_aligned:
+        score += 20.0
+    if volume_confirmed:
+        score += 20.0
+    if rsi_confirmed:
+        score += 10.0
+    if breakout_confirmed:
+        score += 15.0
+    if trend_aligned:
+        score += 10.0
+    return score
+
+
 class IntradayOptionsEngine(OptionsEquityEngine):
     settings = ENGINE_DEFAULTS["intraday_options"]
     name = "intraday_options"
@@ -68,6 +93,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
     max_symbol_allocation = float(settings["max_symbol_allocation"])
     min_contract_price = float(settings["min_contract_price"])
     min_abs_delta = float(settings["min_abs_delta"])
+    max_abs_delta = float(settings.get("max_abs_delta", 1.0))
     max_buy_iv_percentile = float(settings["max_buy_iv_percentile"])
     min_sell_iv_percentile = float(settings["min_sell_iv_percentile"])
     max_trades_per_underlying_per_day = INTRADAY_OPTIONS_MAX_TRADES_PER_UNDERLYING
@@ -87,6 +113,12 @@ class IntradayOptionsEngine(OptionsEquityEngine):
     momentum_confirmation_timeout_candles = int(settings["momentum_confirmation_timeout_candles"])
     momentum_pullback_timeout_candles = int(settings["momentum_pullback_timeout_candles"])
     momentum_pullback_band_pct = float(settings["momentum_pullback_band_pct"])
+    max_breakout_distance_pct = float(settings.get("max_breakout_distance_pct", 1.5))
+    max_signal_age_candles = int(settings.get("max_signal_age_candles", 2))
+    volume_confirmation_multiplier = float(settings.get("volume_confirmation_multiplier", 1.5))
+    sideways_score_multiplier = float(settings.get("sideways_score_multiplier", 1.5))
+    min_entry_quality_score = float(settings.get("min_entry_quality_score", 70.0))
+    entry_quality_filters_enabled = bool(settings.get("entry_quality_filters_enabled", True))
     mean_reversion_max_body_ratio = float(settings["mean_reversion_max_body_ratio"])
     mean_reversion_spike_multiplier = float(settings["mean_reversion_spike_multiplier"])
     mean_reversion_retest_band_pct = float(settings["mean_reversion_retest_band_pct"])
@@ -129,6 +161,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
     def __init__(self, sl_percent, target_percent, trailing_percent):
         super().__init__(sl_percent, target_percent, trailing_percent)
         self.momentum_entry_setups = {}
+        self.mean_reversion_entry_setups = {}
         self.momentum_entry_mode = "STAGED"
         self.runtime_state_dirty = False
 
@@ -737,6 +770,17 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             )
             return filtered
 
+        if self.entry_quality_filters_enabled and filtered["signal"] in {"BUY", "SELL"} and abs_delta > self.max_abs_delta:
+            filtered["signal"] = "HOLD"
+            filtered["agreement_count"] = 0
+            filtered["score"] = 0.0
+            filtered["rejection_code"] = "delta_too_high"
+            filtered["options_filter_note"] = (
+                f"delta_too_high: {analytics['delta']:.3f} above maximum absolute delta "
+                f"{self.max_abs_delta:.2f} (option move already mature)"
+            )
+            return filtered
+
         iv_percentile = analytics.get("iv_percentile")
         if (
             filtered.get("strategy") == "ATM_IV_EXPANSION"
@@ -813,6 +857,13 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                 filtered["agreement_count"] = 0
                 filtered["score"] = 0.0
                 filtered["options_filter_note"] = profile_reason
+                if profile_reason and ":" in profile_reason:
+                    code_prefix = profile_reason.split(":", 1)[0].strip()
+                    if code_prefix.replace("_", "").isalnum() and code_prefix.islower():
+                        filtered["rejection_code"] = code_prefix
+                filtered["entry_quality"] = self._build_entry_quality_summary(
+                    analytics, regime, abs_delta, iv_percentile, filtered.get("rejection_code")
+                )
                 return filtered
             if profile_reason:
                 notes.append(profile_reason)
@@ -828,16 +879,40 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             filtered["score"] += (iv_percentile / 100.0) * 0.05
         if notes:
             filtered["options_filter_note"] = " | ".join(notes)
-        if filtered["signal"] in {"BUY", "SELL"} and filtered["score"] < self.min_signal_score:
+        effective_min_signal_score = self.min_signal_score
+        if self.entry_quality_filters_enabled and regime["label"] == "SIDEWAYS":
+            effective_min_signal_score *= self.sideways_score_multiplier
+        if filtered["signal"] in {"BUY", "SELL"} and filtered["score"] < effective_min_signal_score:
             original_score = filtered["score"]
             filtered["signal"] = "HOLD"
             filtered["agreement_count"] = 0
             filtered["score"] = 0.0
+            filtered["rejection_code"] = (
+                "range_bound_rejection" if regime["label"] == "SIDEWAYS" else "low_signal_score"
+            )
             filtered["options_filter_note"] = (
                 f"Signal score {original_score:.4f} below minimum "
-                f"{self.min_signal_score:.4f}"
+                f"{effective_min_signal_score:.4f}"
+                + (" (SIDEWAYS regime)" if regime["label"] == "SIDEWAYS" else "")
             )
+        filtered["entry_quality"] = self._build_entry_quality_summary(
+            analytics, regime, abs_delta, iv_percentile, filtered.get("rejection_code")
+        )
         return filtered
+
+    def _build_entry_quality_summary(self, analytics, regime, abs_delta, iv_percentile, rejection_code):
+        return {
+            "delta": (analytics or {}).get("delta"),
+            "abs_delta": abs_delta,
+            "max_abs_delta": self.max_abs_delta,
+            "min_abs_delta": self.min_abs_delta,
+            "max_breakout_distance_pct": self.max_breakout_distance_pct,
+            "max_signal_age_candles": self.max_signal_age_candles,
+            "min_entry_quality_score": self.min_entry_quality_score,
+            "volatility_regime": regime.get("label"),
+            "iv_percentile": iv_percentile,
+            "rejection_code": rejection_code,
+        }
 
     def get_entry_profile(self, strategy_name):
         return self.entry_profiles.get(strategy_name)
@@ -852,6 +927,27 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             )
             if selected_profile in {"MOMENTUM", "MEAN_REVERSION", "VOLATILITY"}:
                 return selected_profile
+        if strategy_name is None:
+            details = (evaluation or {}).get("details") or {}
+            final_signal = (evaluation or {}).get("signal")
+            resolved_opt = (evaluation or {}).get("option_signal")
+            agreeing_profiles = {
+                self.get_entry_profile(name)
+                for name, item in details.items()
+                if item.get("option_signal") == resolved_opt
+                and (
+                    item.get("signal") == final_signal
+                    or item.get("option_signal") in {"BUY_CE", "BUY_PE"}
+                )
+            }
+            agreeing_profiles.discard(None)
+            if "MOMENTUM" in agreeing_profiles:
+                return "MOMENTUM"
+            if "MEAN_REVERSION" in agreeing_profiles:
+                return "MEAN_REVERSION"
+            if "VOLATILITY" in agreeing_profiles:
+                return "VOLATILITY"
+            return None
         return self.get_entry_profile(strategy_name)
 
     def build_volatility_regime_context(self, intraday_df, analytics=None):
@@ -933,11 +1029,18 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             for key, value in setups.items()
             if isinstance(value, dict)
         }
+        mr_setups = runtime_state.get("mean_reversion_entry_setups") or {}
+        self.mean_reversion_entry_setups = {
+            str(key): value
+            for key, value in mr_setups.items()
+            if isinstance(value, dict)
+        }
         self.runtime_state_dirty = False
 
     def export_runtime_state(self):
         return {
             "momentum_entry_setups": dict(self.momentum_entry_setups),
+            "mean_reversion_entry_setups": dict(self.mean_reversion_entry_setups),
         }
 
     def _mark_runtime_state_dirty(self):
@@ -957,6 +1060,15 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         option_type = str((analytics or {}).get("option_type") or signal or "UNKNOWN")
         strategy = str(strategy_name or "UNKNOWN")
         return f"{underlying}:{strategy}:{option_type.upper()}:{signal}"
+
+    def _clear_mean_reversion_setup(self, setup_key):
+        if setup_key in self.mean_reversion_entry_setups:
+            self.mean_reversion_entry_setups.pop(setup_key, None)
+            self._mark_runtime_state_dirty()
+
+    def _store_mean_reversion_setup(self, setup_key, payload):
+        self.mean_reversion_entry_setups[setup_key] = payload
+        self._mark_runtime_state_dirty()
 
     def _build_momentum_snapshot(
         self,
@@ -1023,6 +1135,12 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             (signal == "BUY" and latest_close > prev_high)
             or (signal == "SELL" and latest_close < prev_low)
         )
+        breakout_level = prev_high if signal == "BUY" else prev_low
+        breakout_distance_pct = (
+            abs(latest_close - breakout_level) / breakout_level * 100.0
+            if breakout_level
+            else 0.0
+        )
         pullback_band = max(option_vwap, ema_fast) * float(self.momentum_pullback_band_pct)
         pullback_ready = (
             signal == "BUY"
@@ -1058,6 +1176,8 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             "bias": bias,
             "trend_aligned": trend_aligned,
             "breakout_detected": breakout_detected,
+            "breakout_level": breakout_level,
+            "breakout_distance_pct": breakout_distance_pct,
             "pullback_ready": pullback_ready,
         }, None
 
@@ -1105,12 +1225,26 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                 setup.get("confirmed_candle_count", snapshot["candle_count"])
             )
             if snapshot["pullback_ready"]:
+                fresh_signal = waited <= self.max_signal_age_candles
+                quality_score = compute_entry_quality_score(
+                    fresh_signal=fresh_signal,
+                    vwap_aligned=snapshot["trend_aligned"],
+                    volume_confirmed=snapshot["volume_spike"],
+                    rsi_confirmed=True,
+                    breakout_confirmed=True,
+                    trend_aligned=snapshot["trend_aligned"],
+                )
                 self._clear_momentum_setup(setup_key)
+                if self.entry_quality_filters_enabled and quality_score < self.min_entry_quality_score:
+                    return False, (
+                        f"low_entry_quality: score={quality_score:.1f} below minimum "
+                        f"{self.min_entry_quality_score:.1f}"
+                    )
                 return True, (
                     "Momentum pullback entry ready: "
                     f"body_ratio={snapshot['body_ratio']:.2f}, volume={snapshot['latest_volume']:.0f}, "
                     f"ema_fast={snapshot['ema_fast']:.2f}, vwap={snapshot['option_vwap']:.2f}, "
-                    f"bias={snapshot['bias']}"
+                    f"bias={snapshot['bias']}, quality_score={quality_score:.1f}"
                 )
             if waited >= int(self.momentum_pullback_timeout_candles):
                 self._clear_momentum_setup(setup_key)
@@ -1150,10 +1284,30 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                     "Momentum entry validator blocked trade: breakout candle "
                     f"did not clear the previous {'high' if signal == 'BUY' else 'low'}"
                 )
+            if self.entry_quality_filters_enabled and snapshot["breakout_distance_pct"] > self.max_breakout_distance_pct:
+                self._clear_momentum_setup(setup_key)
+                return False, (
+                    f"extended_from_level: distance={snapshot['breakout_distance_pct']:.2f}% "
+                    f"from breakout level {snapshot['breakout_level']:.2f} exceeds max "
+                    f"{self.max_breakout_distance_pct:.2f}%"
+                )
+            quality_score = compute_entry_quality_score(
+                fresh_signal=True,
+                vwap_aligned=snapshot["trend_aligned"],
+                volume_confirmed=snapshot["volume_spike"],
+                rsi_confirmed=True,
+                breakout_confirmed=snapshot["breakout_detected"],
+                trend_aligned=snapshot["trend_aligned"],
+            )
             self._clear_momentum_setup(setup_key)
+            if self.entry_quality_filters_enabled and quality_score < self.min_entry_quality_score:
+                return False, (
+                    f"low_entry_quality: score={quality_score:.1f} below minimum "
+                    f"{self.min_entry_quality_score:.1f}"
+                )
             return True, (
                 "Momentum immediate entry enabled: breakout candle accepted without "
-                "follow-through and pullback staging"
+                f"follow-through and pullback staging, quality_score={quality_score:.1f}"
             )
 
         if setup and setup.get("state") == "awaiting_confirmation":
@@ -1195,6 +1349,14 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             return False, (
                 "Momentum entry validator blocked trade: breakout candle "
                 f"did not clear the previous {'high' if signal == 'BUY' else 'low'}"
+            )
+
+        if self.entry_quality_filters_enabled and snapshot["breakout_distance_pct"] > self.max_breakout_distance_pct:
+            self._clear_momentum_setup(setup_key)
+            return False, (
+                f"extended_from_level: distance={snapshot['breakout_distance_pct']:.2f}% "
+                f"from breakout level {snapshot['breakout_level']:.2f} exceeds max "
+                f"{self.max_breakout_distance_pct:.2f}%"
             )
 
         breakout_level = snapshot["latest_high"] if signal == "BUY" else snapshot["latest_low"]
@@ -1243,9 +1405,15 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         body = abs(latest_close - latest_open)
         body_ratio = body / max(candle_range, 1e-9)
 
+        latest_volume = float(latest["Volume"])
         recent = session_df.tail(lookback)
         recent_ranges = recent["High"] - recent["Low"]
         avg_range = float(recent_ranges.mean())
+        recent_for_volume = session_df.tail(lookback + 1).iloc[:-1]
+        if recent_for_volume.empty:
+            recent_for_volume = recent
+        avg_volume = float(recent_for_volume["Volume"].mean())
+        volume_ratio = latest_volume / avg_volume if avg_volume > 0 else 0.0
         near_vwap_band = option_vwap * float(self.mean_reversion_retest_band_pct)
         near_vwap = (
             latest_low <= option_vwap + near_vwap_band
@@ -1269,6 +1437,16 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                 "Mean-reversion entry validator blocked trade: "
                 f"price did not retest VWAP zone around {option_vwap:.2f}"
             )
+        vwap_distance_pct = (
+            abs(latest_close - option_vwap) / option_vwap * 100.0
+            if option_vwap
+            else 0.0
+        )
+        if self.entry_quality_filters_enabled and vwap_distance_pct > self.max_breakout_distance_pct:
+            return False, (
+                f"extended_from_level: distance={vwap_distance_pct:.2f}% from VWAP "
+                f"{option_vwap:.2f} exceeds max {self.max_breakout_distance_pct:.2f}%"
+            )
         if not controlled_candle:
             return False, (
                 "Mean-reversion entry validator blocked trade: "
@@ -1281,10 +1459,63 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                 f"{avg_range * self.mean_reversion_spike_multiplier:.2f}"
             )
 
+        volume_confirmed = volume_ratio >= float(self.volume_confirmation_multiplier)
+        if self.entry_quality_filters_enabled and not volume_confirmed:
+            return False, (
+                f"weak_breakout: volume {latest_volume:.0f} below required "
+                f"{avg_volume * self.volume_confirmation_multiplier:.0f} "
+                f"({self.volume_confirmation_multiplier:.2f}x avg_volume)"
+            )
+
+        underlying = str((analytics or {}).get("underlying") or "UNKNOWN")
+        setup_key = f"{underlying}:MEAN_REVERSION:{signal}"
+        trade_day = session_df.index[-1].date().isoformat()
+        candle_count = len(session_df)
+        setup = self.mean_reversion_entry_setups.get(setup_key)
+        if setup and setup.get("trade_day") != trade_day:
+            self._clear_mean_reversion_setup(setup_key)
+            setup = None
+        if setup is None:
+            self._store_mean_reversion_setup(
+                setup_key,
+                {"trade_day": trade_day, "first_seen_candle_count": candle_count},
+            )
+            setup = self.mean_reversion_entry_setups[setup_key]
+
+        signal_age = candle_count - int(setup.get("first_seen_candle_count", candle_count))
+        if self.entry_quality_filters_enabled and signal_age > self.max_signal_age_candles:
+            self._clear_mean_reversion_setup(setup_key)
+            return False, (
+                f"stale_breakout: VWAP retest age={signal_age} candle(s) exceeds max "
+                f"{self.max_signal_age_candles}"
+            )
+
+        bias = str((analytics or {}).get("underlying_bias") or "")
+        trend_aligned = (
+            (signal == "BUY" and bias == "BULLISH")
+            or (signal == "SELL" and bias == "BEARISH")
+        )
+        quality_score = compute_entry_quality_score(
+            fresh_signal=signal_age <= self.max_signal_age_candles,
+            vwap_aligned=near_vwap,
+            volume_confirmed=volume_confirmed,
+            rsi_confirmed=True,
+            breakout_confirmed=True,
+            trend_aligned=trend_aligned,
+        )
+        if self.entry_quality_filters_enabled and quality_score < self.min_entry_quality_score:
+            self._clear_mean_reversion_setup(setup_key)
+            return False, (
+                f"low_entry_quality: score={quality_score:.1f} below minimum "
+                f"{self.min_entry_quality_score:.1f}"
+            )
+
+        self._clear_mean_reversion_setup(setup_key)
         return True, (
             "Mean-reversion entry validator passed: "
             f"body_ratio={body_ratio:.2f}, range={candle_range:.2f}, "
-            f"avg_range={avg_range:.2f}, vwap={option_vwap:.2f}"
+            f"avg_range={avg_range:.2f}, vwap={option_vwap:.2f}, "
+            f"volume_ratio={volume_ratio:.2f}, quality_score={quality_score:.1f}"
         )
 
     def validate_volatility_entry(

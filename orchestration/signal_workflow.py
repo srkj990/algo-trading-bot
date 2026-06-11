@@ -482,6 +482,8 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
             "analytics": option_analytics,
             "atr": candidate_atr,
             "reason": evaluation.get("reason"),
+            "entry_quality": evaluation.get("entry_quality"),
+            "rejection_code": evaluation.get("rejection_code"),
         }
 
         context.log_event(

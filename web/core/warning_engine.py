@@ -420,6 +420,19 @@ def _check_blocked_signals(warnings, snapshots: dict, ts: str):
         bias = analytics.get("underlying_bias")
         if isinstance(bias, str) and bias:
             detail_parts.append(f"Underlying bias: {bias}")
+        rejection_code = snap.get("rejection_code")
+        if isinstance(rejection_code, str) and rejection_code:
+            detail_parts.append(f"Reason code: {rejection_code}")
+        entry_quality = snap.get("entry_quality") or {}
+        delta = entry_quality.get("delta")
+        if delta is not None:
+            try:
+                detail_parts.append(f"Delta: {float(delta):.3f}")
+            except (TypeError, ValueError):
+                pass
+        regime_label = entry_quality.get("volatility_regime")
+        if isinstance(regime_label, str) and regime_label and regime_label != "UNKNOWN":
+            detail_parts.append(f"Regime: {regime_label}")
         detail = " | ".join(detail_parts)
         short_sym = symbol.split(":")[-1] if ":" in symbol else symbol
         warnings.append(_w(

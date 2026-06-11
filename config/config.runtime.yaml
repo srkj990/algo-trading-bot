@@ -156,6 +156,7 @@ engine_defaults:
     max_symbol_allocation: 0.2 # used: max capital allocation per intraday-options structure
     min_contract_price: 8.0 # used: blocks too-cheap option premiums
     min_abs_delta: 0.2 # used: minimum absolute delta for intraday-options entries
+    max_abs_delta: 0.52 # used: maximum absolute delta for intraday-options entries (blocks chasing matured moves)
     max_buy_iv_percentile: 75.0 # used: buy-side IV percentile ceiling
     min_sell_iv_percentile: 15.0 # used: sell-side IV percentile floor
     entry_cutoff: "15:05" # used: time after which no new intraday-options entries are allowed
@@ -185,6 +186,12 @@ engine_defaults:
     momentum_confirmation_timeout_candles: 3 # used: timeout for momentum follow-through confirmation
     momentum_pullback_timeout_candles: 5 # used: timeout while waiting for momentum pullback entry
     momentum_pullback_band_pct: 0.0035 # used: EMA/VWAP pullback band for staged momentum entries
+    max_breakout_distance_pct: 1.5 # used: max % distance (on option premium) from breakout level/VWAP allowed at entry (blocks chasing extended moves)
+    max_signal_age_candles: 2 # used: max candles since breakout/VWAP-retest before a mean-reversion signal is considered stale
+    volume_confirmation_multiplier: 1.5 # used: min volume vs avg_volume_20 required for mean-reversion entry confirmation
+    sideways_score_multiplier: 1.5 # used: multiplier applied to min_signal_score when volatility regime is SIDEWAYS
+    min_entry_quality_score: 70.0 # used: minimum composite entry-quality score (0-100) required to allow an entry
+    entry_quality_filters_enabled: true # used: toggle for new entry-quality filters (freshness/distance/volume/score), for A/B backtest comparisons
     mean_reversion_max_body_ratio: 0.55 # used: max candle body ratio for mean-reversion entries
     mean_reversion_spike_multiplier: 1.4 # used: max candle-range spike for mean-reversion entries
     mean_reversion_retest_band_pct: 0.0035 # used: VWAP retest band for mean-reversion entries

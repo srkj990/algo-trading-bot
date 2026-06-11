@@ -135,6 +135,116 @@ Additionally, when a valid multi-strategy `signal="BUY"` was produced but `optio
 
 ---
 
+## [2026-06-11] Multi-strategy SELL/BUY_PE votes silently discarded as "tied or missing" + late/chasing entry overhaul
+
+### Symptom
+Replaying `runners/06_intraday_options/logs/algo_20260611_090725_to_20260611_154331.log` for SENSEX
+(mode "2", `ATM_TRAP_REVERSAL` + `ATM_VWAP_REVERSION`) showed repeated cycles where both strategies
+agreed `BUY_PE`, but `evaluate_symbol_signal` returned `final_signal="HOLD"` with the reason
+"Multi-strategy CE/PE votes tied or missing" (`orchestration/signal_workflow.py`). This stalled the
+scanner for long stretches (09:55-10:07, then a 71-minute gap), contributing directly to late entries.
+Separately, when a signal *did* fire, entries were taken after the move had already matured (delta
+0.54-0.56, RANGE_BOUND regime, "above VWAP + score > 1.1" only).
+
+### Root Causes
+
+**1. Regression of the [2026-06-04 fix](#2026-06-04-multi-strategy-mode-always-holds-for-intraday_options-buy_ce-buy_pe-not-counted) above**
+`OPTION_SIGNAL_TO_EXECUTION` maps both `BUY_CE` and `BUY_PE` to `execution_signal="BUY"`
+(`strategy.py:9-13`). The 06-04 fix's `if strat_signal == "BUY" or opt_sig == "BUY_CE":` branch
+matched first for `BUY_PE` strategies too (since `execution_signal=="BUY"` regardless), so the
+`elif opt_sig == "BUY_PE"` branch was dead code. `sell_count`/`pe_count` could never be
+incremented, so `final_signal` could never be `"SELL"` — a 2/2 `BUY_PE` agreement produced
+`final_signal="BUY"` with `ce_count==pe_count==0`, hitting the "tied or missing" guard.
+
+**2. Mode-"2" multi-strategy evaluations bypassed all entry-quality validators**
+`evaluate_symbol_signal` mode "2" returns `"strategy": None`. `resolve_entry_profile()` fell back
+to `get_entry_profile(None)` → `None`, so `apply_signal_filters` never ran
+`validate_momentum_entry`/`validate_mean_reversion_entry` (freshness, breakout-distance, volume,
+trend-alignment checks) — the trade was gated only by the generic VWAP-side filter and
+`min_signal_score`, matching the "VWAP + score-only" entry symptom.
+
+### Fixes
+
+**A. `signal_scoring.py:evaluate_symbol_signal()`** — classify each strategy's vote by
+`option_signal` first (`BUY_CE` → buy/CE vote, `BUY_PE` → sell/PE vote), falling back to
+`execution_signal` only when `option_signal` is absent:
+```python
+if opt_sig == "BUY_CE":
+    buy_count += 1
+    ce_count += 1
+elif opt_sig == "BUY_PE":
+    sell_count += 1
+    pe_count += 1
+elif strat_signal == "BUY":
+    buy_count += 1
+elif strat_signal == "SELL":
+    sell_count += 1
+```
+
+**B. `engines/intraday_options.py:resolve_entry_profile()`** — when `strategy_name is None` (mode
+"2"), inspect `evaluation["details"]` for strategies whose `option_signal` matches the resolved
+`option_signal`, map each to its `entry_profiles` value, and prefer `MOMENTUM` >
+`MEAN_REVERSION` > `VOLATILITY` if any agreeing strategy maps to that profile. This routes
+mode-"2" signals through the existing `validate_momentum_entry`/`validate_mean_reversion_entry`
+chain.
+
+**C. New entry-quality filters** (all gated by `entry_quality_filters_enabled`, default `true`,
+to allow A/B comparison by toggling to `false`):
+- **C1 — Signal freshness**: `max_signal_age_candles` (default 2). Momentum reuses the existing
+  `momentum_entry_setups` staging state; mean-reversion gets a new parallel
+  `mean_reversion_entry_setups` state machine tracking VWAP-retest age. Stale signals rejected
+  with `rejection_code="stale_breakout"`.
+- **C2 — Breakout/VWAP distance filter**: `max_breakout_distance_pct` (default **1.5%**, measured
+  against the **option premium** — momentum vs `prev_high`/`prev_low`, mean-reversion vs
+  `option_vwap`). Rejects extended/chasing entries with `rejection_code="extended_from_level"`.
+  (Note: 0.4% was considered first but rejected almost all entries since option premiums move
+  >0.4% per candle routinely; 1.5% chosen as the working default.)
+- **C4 — Delta ceiling**: `max_abs_delta` (default 0.52) in `apply_signal_filters`, alongside the
+  existing `min_abs_delta` floor. Rejects already-mature moves with
+  `rejection_code="delta_too_high"`.
+- **C5 — Volume confirmation for mean-reversion**: `volume_confirmation_multiplier` (default 1.5x
+  avg volume). Rejects with `rejection_code="weak_breakout"`.
+- **C6 — Range-bound protection**: `sideways_score_multiplier` (default 1.5x) raises
+  `min_signal_score` when `volatility_regime == "SIDEWAYS"`. Rejects with
+  `rejection_code="range_bound_rejection"`.
+- **C8 — Composite entry-quality score**: new `compute_entry_quality_score()` (0-100, weighted:
+  fresh breakout 25, VWAP alignment 20, volume expansion 20, RSI confirmation 10, breakout/ORB
+  confirmation 15, trend alignment 10). `min_entry_quality_score` (default 70.0). Rejects with
+  `rejection_code="low_entry_quality"`.
+- **C9 — Diagnostic rejection codes**: `filtered["rejection_code"]` parsed from the lowercase
+  prefix of `profile_reason` (e.g. `"stale_breakout: ..."` → `"stale_breakout"`), plus a new
+  `filtered["entry_quality"]` summary dict (delta, regime, distance/age thresholds, rejection
+  code) via `_build_entry_quality_summary()`.
+
+**D. Dashboard plumbing** — `orchestration/signal_workflow.py` now surfaces `entry_quality` and
+`rejection_code` in `symbol_snapshots`. `web/core/warning_engine.py:_check_blocked_signals()`
+appends "Reason code", "Delta", and "Regime" to the blocked-signal warning detail.
+
+**E. Backtest A/B support** — `entry_quality_filters_enabled: false` in
+`config/config.runtime.yaml` reproduces pre-overhaul filter behaviour for comparison runs.
+`backtesting.py._build_summary()` now also reports `profit_factor` (gross profit / gross loss).
+
+### New config knobs (`config/config.runtime.yaml` → `engine_defaults.intraday_options`)
+- `max_breakout_distance_pct: 1.5`
+- `max_signal_age_candles: 2`
+- `volume_confirmation_multiplier: 1.5`
+- `sideways_score_multiplier: 1.5`
+- `min_entry_quality_score: 70.0`
+- `entry_quality_filters_enabled: true`
+- `max_abs_delta: 0.52` (added alongside the existing `min_abs_delta`)
+
+### Files Changed
+- `signal_scoring.py`
+- `engines/intraday_options.py`
+- `config/config.runtime.yaml`
+- `orchestration/signal_workflow.py`
+- `web/core/warning_engine.py`
+- `backtesting.py`
+- `tests/unit/test_engine_workflows.py`
+- `tests/unit/test_signal_scoring_evaluate.py` (new)
+
+---
+
 ## [2026-06-04] Runner web servers serve stale local static/index.html instead of web/static/
 
 ### Symptom

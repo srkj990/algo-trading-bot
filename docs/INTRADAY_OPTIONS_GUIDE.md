@@ -174,6 +174,38 @@ Every signal passes through a filter chain before entry is allowed. If any filte
 | 11 | Cost/profit ratio | `expected_costs / expected_gross_profit > 0.20` | `intraday_options_max_entry_cost_ratio` |
 | 12 | Live spread | `(ask - bid) / mid > 1.5%` | `intraday_options_max_spread_pct` |
 | 13 | Open interest | `OI < 10,000` | `intraday_options_min_open_interest` |
+| 14 | Delta ceiling | `abs(delta) > 0.52` (move already mature) | `max_abs_delta` |
+| 15 | Range-bound score multiplier | SIDEWAYS regime AND `score < min_signal_score × 1.5` | `sideways_score_multiplier` |
+
+### Entry-quality filters (momentum & mean-reversion validators)
+
+In addition to the filter chain above, signals routed to `MOMENTUM` or `MEAN_REVERSION` entry
+profiles (via `resolve_entry_profile()` — including mode-"2" multi-strategy agreements) pass
+through `validate_momentum_entry()` / `validate_mean_reversion_entry()`. These add freshness,
+distance, and volume checks on top of the existing breakout/VWAP-retest/trend-alignment logic.
+All are gated by `entry_quality_filters_enabled` (set to `false` to restore pre-overhaul
+behaviour for A/B backtest comparison).
+
+| Check | Condition to BLOCK | `rejection_code` | Config key |
+|---|---|---|---|
+| Signal freshness | Breakout/VWAP-retest signal age exceeds max candles | `stale_breakout` | `max_signal_age_candles` (default 2) |
+| Breakout/VWAP distance | Price extended >X% (on option premium) from breakout level / VWAP | `extended_from_level` | `max_breakout_distance_pct` (default 1.5%) |
+| Volume confirmation (mean-reversion) | Latest volume < `volume_confirmation_multiplier` × avg volume | `weak_breakout` | `volume_confirmation_multiplier` (default 1.5x) |
+| Composite entry-quality score | Score below minimum (see below) | `low_entry_quality` | `min_entry_quality_score` (default 70.0) |
+
+**Composite entry-quality score** (`compute_entry_quality_score()`, 0-100):
+
+| Component | Points |
+|---|---|
+| Fresh signal (within `max_signal_age_candles`) | 25 |
+| VWAP alignment | 20 |
+| Volume expansion | 20 |
+| RSI confirmation | 10 |
+| Breakout/ORB confirmation | 15 |
+| Trend alignment (underlying bias matches option type) | 10 |
+
+The blocked-signal warning panel and `symbol_snapshots[symbol]["entry_quality"]` /
+`["rejection_code"]` surface these values for diagnostics on the dashboard.
 
 ### Underlying bias calculation
 
