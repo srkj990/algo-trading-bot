@@ -1216,3 +1216,62 @@ Signal was evaluated only on fully-closed 1m candles. Moves that happened within
 - `web/routes/config.py`
 - `web/static/index.html`
 - `tests/unit/test_config_and_trade_store.py` (updated valid entry modes)
+
+---
+
+## [2026-06-12] Intraday Options engine split: Buyer Only / Seller Only / Buy+Sell Both
+
+### Symptom
+A live trade log (`runners/06_intraday_options/logs/...sensex...`) showed a closed
+`PE 73600 SELL 214.50→165.05 +1,743` trade — confirming the engine already opens
+**genuine short/written option positions** when the multi-strategy aggregator (see the
+[2026-06-11 fix](#2026-06-11-multi-strategy-sellbuy_pe-votes-silently-discarded-as-tied-or-missing--latechasing-entry-overhaul)
+above) resolves `final_signal="SELL"` (`option_signal="BUY_PE"`,
+`transaction_type="SELL"`, sell-to-open, requires margin). Prior to this change there was
+no way to opt out of the seller side — the single `intraday_options` engine mixed
+long-CE-buy and short-PE-write trades unconditionally, which many retail accounts
+cannot margin for.
+
+### Change
+Split the single `IntradayOptionsEngine` into three separately-selectable engines that
+share 100% of `apply_signal_filters`, strategies, lot sizing, and exit logic, differing
+only in a new `trade_direction_mode` class attribute checked as the **first** gate in
+`apply_signal_filters`:
+
+| Engine choice | `name` | `trade_direction_mode` | Behavior |
+|---|---|---|---|
+| 6 — Buy + Sell Both | `intraday_options` (alias `IntradayOptionsBothEngine`) | `BUY_SELL_BOTH` | Unrestricted — unchanged from prior releases (current default). |
+| 7 — Buyer Only | `intraday_options_buyer` | `BUY_ONLY` | Long CE only; `SELL`-resolved scans forced to `HOLD`. |
+| 8 — Seller Only | `intraday_options_seller` | `SELL_ONLY` | Short PE (option-writing) only, requires margin; `BUY`-resolved scans forced to `HOLD`. |
+
+See [`Docs/INTRADAY_OPTIONS_GUIDE.md` Section 1.1](INTRADAY_OPTIONS_GUIDE.md#11-engine-variants--buyer--seller--both)
+for the full signal-model explanation and known limitations (no distinct "long PE"
+signal exists yet — Section 17).
+
+### Files Changed
+- `engines/intraday_options.py` — `trade_direction_mode` class attribute + gate at the
+  top of `apply_signal_filters`; new `IntradayOptionsBuyerEngine`,
+  `IntradayOptionsSellerEngine` subclasses; `IntradayOptionsBothEngine` alias.
+- `engines/__init__.py` — export new classes.
+- `config.py` — `INTRADAY_OPTIONS_ENGINE_NAMES` frozenset +
+  `is_intraday_options_engine_name()` helper; `INTRADAY_ENGINE_NAMES` updated so the new
+  engines get the "intraday" risk-style bucket.
+- `cli/configuration.py` — `ENGINE_OPTIONS["7"]`/`["8"]`, engine-choice prompt labels,
+  all `engine.name == "intraday_options"` checks broadened via
+  `INTRADAY_OPTIONS_ENGINE_NAMES`.
+- `cli/interactive_input.py` — `prompt_strategy_configuration` broadened.
+- `backtesting.py` — `ENGINE_OPTIONS["7"]`/`ENGINE_OPTIONS["8"]`, engine-class mapping in
+  `_build_engine_helper`, all `engine_name == "intraday_options"` checks broadened via
+  `is_intraday_options_engine_name()`.
+- `orchestration/session.py`, `orchestration/positions.py`,
+  `orchestration/signal_workflow.py` — all `engine.name`/`position.get("engine_name")`
+  equality checks against `"intraday_options"` broadened via
+  `is_intraday_options_engine_name()`.
+- `tick_entry/forming_candle.py` — activation check broadened.
+- `web/routes/config.py` — `/api/runtime-defaults` engine→period/interval map extended
+  for choices 7/8; `/api/backtest` checks broadened.
+- `web/static/index.html` — engine picker dropdowns (live + backtest) add options 7/8;
+  `IS_FNO`/`IS_IOPTS` JS helpers and `_enginePeriodInterval` fallback extended.
+- `tests/unit/test_engine_workflows.py` — new `IntradayOptionsDirectionModeTests`
+  asserting Buyer holds on SELL, Seller holds on BUY, Both passes both through
+  unchanged, and default `trade_direction_mode` values.

@@ -171,7 +171,9 @@
           <option value="3">3 · Futures Equity (NRML)</option>
           <option value="4">4 · Options Equity (NRML)</option>
           <option value="5">5 · Intraday Futures (MIS)</option>
-          <option value="6" selected>6 · Intraday Options (MIS ATM)</option>
+          <option value="6" selected>6 · Intraday Options - Buy &amp; Sell Both (MIS ATM)</option>
+          <option value="7">7 · Intraday Options - Buyer Only (long CE)</option>
+          <option value="8">8 · Intraday Options - Seller Only (writes PE, needs margin)</option>
         </select>
       </div>
       <div class="col-span-2 sm:col-span-1">
@@ -444,7 +446,9 @@
           <option value="3">3 · Futures Equity (NRML)</option>
           <option value="4">4 · Options Equity (NRML)</option>
           <option value="5">5 · Intraday Futures (MIS)</option>
-          <option value="6" selected>6 · Intraday Options (MIS ATM)</option>
+          <option value="6" selected>6 · Intraday Options - Buy &amp; Sell Both (MIS ATM)</option>
+          <option value="7">7 · Intraday Options - Buyer Only (long CE)</option>
+          <option value="8">8 · Intraday Options - Seller Only (writes PE, needs margin)</option>
         </select>
       </div>
       <div>
@@ -1040,13 +1044,14 @@ const FNO_STRATEGIES = {
   ATM_BREAKOUT_EXPANSION:'ATM_BREAKOUT_EXPANSION',
   ATM_IV_EXPANSION:'ATM_IV_EXPANSION', ATM_TRAP_REVERSAL:'ATM_TRAP_REVERSAL',
 };
-const IS_FNO   = e => ['3','4','5','6'].includes(e);
-const IS_IOPTS = e => e === '6';
+const IS_FNO   = e => ['3','4','5','6','7','8'].includes(e);
+const IS_IOPTS = e => e === '6' || e === '7' || e === '8';
 
 // Filled by loadRuntimeDefaults() — maps engine choice string → [period, interval]
 let _enginePeriodInterval = {
   '1': ['5d','5m'], '2': ['6mo','1d'], '3': ['2mo','15m'],
   '4': ['1mo','15m'], '5': ['5d','5m'], '6': ['1d','1m'],
+  '7': ['1d','1m'], '8': ['1d','1m'],
 };
 
 // ── init ────────────────────────────────────────────────────────────────────

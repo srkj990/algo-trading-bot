@@ -77,6 +77,8 @@ async def get_runtime_defaults() -> JSONResponse:
         "4": "options_equity",
         "5": "intraday_futures",
         "6": "intraday_options",
+        "7": "intraday_options",  # Buyer Only — shares period/interval defaults with Both
+        "8": "intraday_options",  # Seller Only — shares period/interval defaults with Both
     }
     engine_period_interval = {
         k: list(BACKTEST_DEFAULT_DATA.get(v, ["1d", "1m"]))
@@ -567,6 +569,7 @@ def _build_backtest_config(data: dict):
         SINGLE_SYMBOL_TABLE,
         get_risk_style_presets,
         get_runtime_config,
+        is_intraday_options_engine_name,
         INTRADAY_EQUITY_AUTO_NORMAL_MIN_CONFIRMATIONS,
     )
     from fno_data_fetcher import get_fno_spot_quote_symbol
@@ -624,7 +627,7 @@ def _build_backtest_config(data: dict):
             universe = build_fno_backtest_universe(engine_name, fno_underlying)
             summary_lines.append(f"F&O underlying: {fno_underlying}")
 
-        if engine_name == "intraday_options" and fno_underlying != "BOTH":
+        if is_intraday_options_engine_name(engine_name) and fno_underlying != "BOTH":
             fno_expiry = str(data.get("fno_expiry", ""))
             structure_mode = str(data.get("fno_structure", "SINGLE")).upper()
             if structure_mode == "PAIR":
@@ -685,7 +688,7 @@ def _build_backtest_config(data: dict):
 
     # ── strategy ──────────────────────────────────────────────────────────────
     strategy_mode_raw = str(data.get("strategy_mode", "2"))
-    if engine_name == "intraday_options":
+    if is_intraday_options_engine_name(engine_name):
         if strategy_mode_raw == "2":
             strategy_mode = "MULTI"
             strategy_name = None

@@ -22,6 +22,7 @@ from config import (
     SINGLE_SYMBOL_TABLE,
     get_runtime_config,
     get_risk_style_presets,
+    is_intraday_options_engine_name,
     TRANSACTION_COST_MODEL_ENABLED,
     TRANSACTION_SLIPPAGE_PCT_PER_SIDE,
 )
@@ -31,6 +32,8 @@ from engines import (
     IntradayEquityEngine,
     IntradayFuturesEngine,
     IntradayOptionsEngine,
+    IntradayOptionsBuyerEngine,
+    IntradayOptionsSellerEngine,
     OptionsEquityEngine,
 )
 from engines.common import build_position, evaluate_exit, resolve_trade_targets, update_trailing_stop
@@ -68,7 +71,9 @@ ENGINE_OPTIONS = {
     "3": FuturesEquityEngine,
     "4": OptionsEquityEngine,
     "5": IntradayFuturesEngine,
-    "6": IntradayOptionsEngine,
+    "6": IntradayOptionsEngine,        # Buy + Sell both (unrestricted, current default)
+    "7": IntradayOptionsBuyerEngine,   # Buyer only (long CE)
+    "8": IntradayOptionsSellerEngine,  # Seller only (writes PE, requires margin)
 }
 
 SUPPORTED_BACKTEST_FNO_SYMBOLS = {
@@ -241,8 +246,13 @@ class BacktestEngine:
             return OptionsEquityEngine(sl_percent, target_percent, trailing_percent)
         if self.config.engine_name == "intraday_futures":
             return IntradayFuturesEngine(sl_percent, target_percent, trailing_percent)
-        if self.config.engine_name == "intraday_options":
-            engine = IntradayOptionsEngine(sl_percent, target_percent, trailing_percent)
+        if is_intraday_options_engine_name(self.config.engine_name):
+            engine_cls = {
+                "intraday_options": IntradayOptionsEngine,
+                "intraday_options_buyer": IntradayOptionsBuyerEngine,
+                "intraday_options_seller": IntradayOptionsSellerEngine,
+            }[self.config.engine_name]
+            engine = engine_cls(sl_percent, target_percent, trailing_percent)
             # Backtest has no live WebSocket tick infrastructure, so STAGED mode never fires.
             # All entry modes except LEGACY_IMMEDIATE run as LEGACY_RAW in backtest.
             engine.momentum_entry_mode = "LEGACY_RAW"
@@ -254,7 +264,7 @@ class BacktestEngine:
         return None
 
     def fetch_history(self):
-        if self.config.engine_name == "intraday_options":
+        if is_intraday_options_engine_name(self.config.engine_name):
             return self._fetch_intraday_options_history()
 
         history = {}
@@ -467,7 +477,7 @@ class BacktestEngine:
                 continue
 
             if symbol in self.positions:
-                if self.config.engine_name == "intraday_options":
+                if is_intraday_options_engine_name(self.config.engine_name):
                     self._manage_intraday_options_position(
                         symbol=symbol,
                         latest_candle=latest_candle,
@@ -527,7 +537,7 @@ class BacktestEngine:
 
     def _signal_symbols(self):
         settings = self.config.option_backtest_settings or {}
-        if self.config.engine_name == "intraday_options":
+        if is_intraday_options_engine_name(self.config.engine_name):
             return tuple(settings.get("signal_symbols") or self.config.universe)
         return self.config.universe
 
@@ -583,7 +593,7 @@ class BacktestEngine:
 
     def _build_runtime_option_settings(self):
         settings = self.config.option_backtest_settings or {}
-        if self.config.engine_name != "intraday_options" or settings.get("structure_mode") != "SINGLE":
+        if not is_intraday_options_engine_name(self.config.engine_name) or settings.get("structure_mode") != "SINGLE":
             return None
         strike_mode = str(settings.get("strike_mode") or "ATM").upper()
         strike_offset = {"ATM": 0, "ATM_PLUS_1": 1, "ATM_MINUS_1": -1}.get(strike_mode, 0)
@@ -851,7 +861,7 @@ class BacktestEngine:
             if remaining_deployable <= 0:
                 break
 
-            if self.config.engine_name == "intraday_options":
+            if is_intraday_options_engine_name(self.config.engine_name):
                 min_contract_price = float(
                     getattr(self.engine_helper, "min_contract_price", 0.0) or 0.0
                 )
@@ -899,7 +909,7 @@ class BacktestEngine:
                 qty = sizing["quantity"]
             qty = min(qty, int(self.config.max_capital_per_trade / candidate["latest_close"]))
             qty = min(qty, int(remaining_deployable / candidate["latest_close"]))
-            if self.config.engine_name == "intraday_options":
+            if is_intraday_options_engine_name(self.config.engine_name):
                 qty = self.engine_helper.apply_entry_allocation_limit(
                     candidate["symbol"],
                     qty,
@@ -947,7 +957,7 @@ class BacktestEngine:
                 and self.config.engine_name not in {"delivery_equity"}
             ):
                 try:
-                    if self.config.engine_name == "intraday_options":
+                    if is_intraday_options_engine_name(self.config.engine_name):
                         src_symbol = candidate["symbol"]
                     else:
                         src_symbol = candidate.get("underlying_symbol") or candidate["symbol"]
@@ -982,7 +992,7 @@ class BacktestEngine:
             trailing_distance = float(actual_targets["trailing_distance"])
             stop_distance = float(actual_targets["stop_distance"])
             trailing_activation_distance = float(actual_targets["trailing_activation_distance"])
-            if self.config.engine_name == "intraday_options":
+            if is_intraday_options_engine_name(self.config.engine_name):
                 try:
                     self.positions[candidate["symbol"]] = self.engine_helper.build_trend_adaptive_position(
                         symbol=candidate["symbol"],
@@ -1345,7 +1355,7 @@ class BacktestEngine:
             )
             return float(breakdown.total)
 
-        if self.config.engine_name in {"options_equity", "intraday_options"}:
+        if self.config.engine_name == "options_equity" or is_intraday_options_engine_name(self.config.engine_name):
             breakdown = estimate_options_round_trip_cost(
                 entry_side=side,
                 entry_price=float(entry_price),
@@ -1716,7 +1726,7 @@ def prompt_fno_contract_selection(engine_name):
         return build_fno_backtest_universe(engine_name, selection), summary_lines, contract_settings
 
     expiry = prompt_fno_expiry(selection, "OPT" if "options" in engine_name else "FUT")
-    if engine_name == "intraday_options":
+    if is_intraday_options_engine_name(engine_name):
         summary_lines.append(
             f"{get_fno_display_name(selection)} | Expiry={expiry} | Underlying signal source={get_fno_spot_quote_symbol(selection)}"
         )
@@ -1725,7 +1735,7 @@ def prompt_fno_contract_selection(engine_name):
             f"{get_fno_display_name(selection)} | Expiry={expiry} | Backtest proxy={BACKTEST_FNO_SYMBOLS[selection]}"
         )
 
-    if engine_name == "intraday_options":
+    if is_intraday_options_engine_name(engine_name):
         print_prompt_help(
             "Choose whether to simulate dynamic ATM selection or a fixed two-leg range pair.",
             "1 for ATM single option",
@@ -1816,7 +1826,7 @@ def prompt_multi_strategy_selection(strategy_options):
 
 
 def prompt_strategy_setup(engine_class):
-    if engine_class.name == "intraday_options":
+    if is_intraday_options_engine_name(engine_class.name):
         _IOPTS_STRATEGIES = {
             "1": "ATM_MULTI",
             "2": "ATM_ORB",
@@ -1943,10 +1953,11 @@ def prompt_strategy_setup(engine_class):
 def prompt_backtest_config():
     print_prompt_help(
         "Choose which trading engine you want to backtest.",
-        "6 for INTRADAY OPTIONS",
+        "6 for INTRADAY OPTIONS BUY+SELL, 7 for BUYER ONLY, 8 for SELLER ONLY",
     )
     engine_choice = prompt_choice(
-        f"Trading engine: INTRADAY EQUITY(1), DELIVERY EQUITY(2), FUTURES EQUITY(3), OPTIONS EQUITY(4), INTRADAY FUTURES(5), INTRADAY OPTIONS(6) [default {_prompt_default_int('engine_choice', 1)}]: ",
+        "Trading engine: INTRADAY EQUITY(1), DELIVERY EQUITY(2), FUTURES EQUITY(3), OPTIONS EQUITY(4), INTRADAY FUTURES(5), "
+        f"INTRADAY OPTIONS BUY+SELL(6), INTRADAY OPTIONS BUYER ONLY(7), INTRADAY OPTIONS SELLER ONLY(8) [default {_prompt_default_int('engine_choice', 1)}]: ",
         [
             {"key": 1, "value": "1"},
             {"key": 2, "value": "2"},
@@ -1954,6 +1965,8 @@ def prompt_backtest_config():
             {"key": 4, "value": "4"},
             {"key": 5, "value": "5"},
             {"key": 6, "value": "6"},
+            {"key": 7, "value": "7"},
+            {"key": 8, "value": "8"},
         ],
         default=_prompt_default_int("engine_choice", 1),
     )
@@ -1978,7 +1991,7 @@ def prompt_backtest_config():
     bt_time_exit_minutes = None
     bt_forming_tick_enabled = None
     bt_forming_tick_confirm_ticks = None
-    if engine_class.name == "intraday_options":
+    if is_intraday_options_engine_name(engine_class.name):
         _entry_default_key = _prompt_default_int("intraday_options_entry_mode", 1)
         intraday_options_entry_mode = prompt_choice(
             f"Entry mode: Live Tick Confirm(1) / Live Staged(2) / Legacy Immediate(3)? [default {_entry_default_key}]: ",
@@ -2120,7 +2133,7 @@ def prompt_backtest_config():
         engine_class.name,
         (getattr(engine_class, "data_period", "6mo"), getattr(engine_class, "data_interval", "1d")),
     )
-    if engine_class.name == "intraday_options":
+    if is_intraday_options_engine_name(engine_class.name):
         print(
             "[SETUP] Configured intraday-options backtest defaults: "
             f"period={default_period} and interval={default_interval}."
@@ -2149,7 +2162,7 @@ def prompt_backtest_config():
         ]
     )
 
-    if engine_class.name == "intraday_options":
+    if is_intraday_options_engine_name(engine_class.name):
         if (option_backtest_settings or {}).get("structure_mode") == "SINGLE":
             summary_lines.append(
                 "Note: intraday options backtest now resolves real option contracts and uses option premium candles for entry, exit, and sizing."

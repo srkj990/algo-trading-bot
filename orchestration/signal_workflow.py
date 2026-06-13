@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
+from config import is_intraday_options_engine_name
 from engines.common import resolve_trade_targets
 from fno_data_fetcher import (
     get_atm_option_strike,
@@ -51,7 +52,7 @@ def should_enter_trade(
     # ATR-based adaptive levels, not from ASSET_CLASS_RISK_PROFILES percentages.
     # Recalculate cost/profit using the real ATR-based target so the profitability
     # check isn't gated on a percentage that never matches the actual exit level.
-    if context.engine.name == "intraday_options" and hasattr(context.engine, "get_trend_adaptive_level_spec"):
+    if is_intraday_options_engine_name(context.engine.name) and hasattr(context.engine, "get_trend_adaptive_level_spec"):
         level_spec = context.engine.get_trend_adaptive_level_spec(
             entry_price=resolved_entry_price,
             side=str(signal.get("signal") or "BUY"),
@@ -339,7 +340,7 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
         candidate_atr = get_atr_value(signal_data)
         trade_identity = symbol
         dynamic_atm_scan = (
-            engine.name == "intraday_options"
+            is_intraday_options_engine_name(engine.name)
             and cfg.atm_option_config is not None
             and symbol == cfg.atm_option_config["scan_symbol"]
         )
@@ -379,7 +380,7 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
             active_strategies = market_context["strategies"]
             active_min_confirmations = market_context["min_confirmations"]
 
-        if engine.name == "intraday_options" and cfg.atm_option_config and not dynamic_atm_scan:
+        if is_intraday_options_engine_name(engine.name) and cfg.atm_option_config and not dynamic_atm_scan:
             evaluation = {
                 "signal": "HOLD",
                 "agreement_count": 0,
@@ -440,7 +441,7 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
                     option_price=candidate_latest_close,
                 )
                 if (
-                    engine.name == "intraday_options"
+                    is_intraday_options_engine_name(engine.name)
                     and cfg.option_pair_config
                     and symbol in cfg.option_pair_config.get("symbols", [])
                 ):
@@ -454,7 +455,7 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
                 "min_confirmations": active_min_confirmations or 1,
                 "analytics": option_analytics,
             }
-            if engine.name == "intraday_options":
+            if is_intraday_options_engine_name(engine.name):
                 filter_kwargs["prefetched_underlying_df"] = signal_data if dynamic_atm_scan else None
             evaluation = engine.apply_signal_filters(
                 evaluation,
@@ -510,7 +511,7 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
             normalized_signal = None
         if (
             normalized_signal
-            and engine.name == "intraday_options"
+            and is_intraday_options_engine_name(engine.name)
             and cfg.option_pair_config
             and symbol in cfg.option_pair_config.get("symbols", [])
         ):
@@ -554,7 +555,7 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
                 }
             )
 
-    if engine.name == "intraday_options" and cfg.option_pair_config:
+    if is_intraday_options_engine_name(engine.name) and cfg.option_pair_config:
         pair_candidate = position_flow.build_option_pair_candidate(
             engine,
             cfg.option_pair_config,

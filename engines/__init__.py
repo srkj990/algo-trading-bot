@@ -8,6 +8,9 @@ __all__ = [
     "FuturesEquityEngine",
     "IntradayFuturesEngine",
     "IntradayOptionsEngine",
+    "IntradayOptionsBuyerEngine",
+    "IntradayOptionsSellerEngine",
+    "IntradayOptionsBothEngine",
     "IntradayEquityEngine",
     "OptionsEquityEngine",
 ]
@@ -17,6 +20,9 @@ _ENGINE_IMPORTS = {
     "FuturesEquityEngine": ".futures_equity",
     "IntradayFuturesEngine": ".intraday_futures",
     "IntradayOptionsEngine": ".intraday_options",
+    "IntradayOptionsBuyerEngine": ".intraday_options",
+    "IntradayOptionsSellerEngine": ".intraday_options",
+    "IntradayOptionsBothEngine": ".intraday_options",
     "IntradayEquityEngine": ".intraday_equity",
     "OptionsEquityEngine": ".options_equity",
 }

@@ -12,6 +12,7 @@ from config import (
     TRANSACTION_COST_MODEL_ENABLED,
     TRANSACTION_SLIPPAGE_PCT_PER_SIDE,
     get_runtime_config,
+    is_intraday_options_engine_name,
 )
 from executor import calculate_cost_aware_targets
 from executor import get_available_margin, get_quote
@@ -411,7 +412,7 @@ def _build_intraday_option_position_from_roll(context, current_position, symbol,
 
 def _maybe_roll_dynamic_atm_positions(context, symbol_snapshots, now) -> bool:
     cfg = context.config
-    if context.engine.name != "intraday_options" or not cfg.atm_option_config:
+    if not is_intraday_options_engine_name(context.engine.name) or not cfg.atm_option_config:
         return False
 
     roll_trigger_pct = float(context.runtime_config.fno.intraday_options_roll_trigger_pct or 0.0)
@@ -531,7 +532,7 @@ def run_trading_session(context):
     )
 
     # Apply session-config overrides to the live engine instance
-    if engine.name == "intraday_options":
+    if is_intraday_options_engine_name(engine.name):
         if getattr(cfg, "time_exit_minutes", None) is not None:
             engine.max_hold_minutes = int(cfg.time_exit_minutes)
         if getattr(cfg, "max_trades_per_underlying", None) is not None:
@@ -539,7 +540,7 @@ def run_trading_session(context):
 
     # Lazy expiry resolution for ATM engine — deferred from config-build time so
     # programmatic paper runners don't need a live Kite API key just to start.
-    if engine.name == "intraday_options" and cfg.atm_option_config and not cfg.atm_option_config.get("expiry"):
+    if is_intraday_options_engine_name(engine.name) and cfg.atm_option_config and not cfg.atm_option_config.get("expiry"):
         from fno_data_fetcher import get_available_expiries as _get_expiries
         _und = cfg.atm_option_config["underlying"]
         _available = _get_expiries(_und, instrument_type="OPT")
@@ -562,7 +563,7 @@ def run_trading_session(context):
     _forming_tick_enabled = bool(getattr(cfg, "forming_tick_enabled", False))
     if (
         _forming_tick_enabled
-        and getattr(engine, "name", "") == "intraday_options"
+        and is_intraday_options_engine_name(getattr(engine, "name", ""))
         and str(getattr(cfg, "intraday_options_entry_mode", "")).upper() == "LIVE_TICK_CONFIRM"
     ):
         from tick_entry.forming_candle import FormingCandlePreview
@@ -1223,7 +1224,7 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
         context.log_event(f"[LIMIT] {trade_identity} already traded today, skipping")
         return False
 
-    if engine.name == "intraday_options" and cfg.atm_option_config:
+    if is_intraday_options_engine_name(engine.name) and cfg.atm_option_config:
         same_underlying_open = any(
             ((position.get("entry_analytics") or {}).get("underlying") == trade_identity)
             for position in context.positions.values()
@@ -1246,7 +1247,7 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
         return False
 
     entry_price = float(candidate["latest_close"])
-    if engine.name == "intraday_options":
+    if is_intraday_options_engine_name(engine.name):
         live_entry_price = _resolve_live_entry_price(
             context,
             symbol,
@@ -1260,7 +1261,7 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
             candidate["latest_close"] = live_entry_price
             entry_price = live_entry_price
     atr_value = candidate.get("atr", 0.0)
-    if engine.name == "intraday_options" and cfg.atm_option_config:
+    if is_intraday_options_engine_name(engine.name) and cfg.atm_option_config:
         if hasattr(engine, "get_trend_adaptive_level_spec"):
             level_spec = engine.get_trend_adaptive_level_spec(
                 entry_price=entry_price,
@@ -1358,7 +1359,7 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
         return False
 
     estimated_trade_capital = entry_price * qty
-    if engine.name == "intraday_options" and cfg.atm_option_config:
+    if is_intraday_options_engine_name(engine.name) and cfg.atm_option_config:
         if hasattr(engine, "get_trend_adaptive_level_spec"):
             level_spec = engine.get_trend_adaptive_level_spec(
                 entry_price=entry_price,
@@ -1425,7 +1426,7 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
             )
             return False
 
-    if engine.name == "intraday_options" and cfg.atm_option_config:
+    if is_intraday_options_engine_name(engine.name) and cfg.atm_option_config:
         preflight_targets = calculate_cost_aware_targets(
             entry_price=float(entry_price),
             quantity=int(qty),
@@ -1518,7 +1519,7 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
     )
     position_extra_fields = {
         "trade_identity": trade_identity,
-        "dynamic_atm_roll_enabled": bool(engine.name == "intraday_options" and cfg.atm_option_config),
+        "dynamic_atm_roll_enabled": bool(is_intraday_options_engine_name(engine.name) and cfg.atm_option_config),
         "strike_offset": candidate.get("strike_offset", 0),
         "strike_offset_mode": candidate.get("strike_offset_mode", "ATM"),
         "entry_underlying_price": (candidate.get("analytics") or {}).get("underlying_price"),
@@ -1534,7 +1535,7 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
         "entry_strategy": candidate.get("strategy") or candidate.get("entry_strategy"),
         "signal_score": float(candidate.get("score") or 0.0),
     }
-    if engine.name == "intraday_options" and cfg.atm_option_config and hasattr(engine, "build_trend_adaptive_position"):
+    if is_intraday_options_engine_name(engine.name) and cfg.atm_option_config and hasattr(engine, "build_trend_adaptive_position"):
         context.positions[symbol] = engine.build_trend_adaptive_position(
             symbol=symbol,
             side=candidate["signal"],

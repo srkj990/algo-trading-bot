@@ -1,6 +1,6 @@
 # Intraday Options Engine — Complete Feature Reference
 
-> **Engine:** `intraday_options` (Engine 6)  
+> **Engines:** `intraday_options` (6, Buy+Sell Both), `intraday_options_buyer` (7, Buyer Only), `intraday_options_seller` (8, Seller Only)  
 > **Data:** 1-day history, 1-minute candles  
 > **Instruments:** NSE NIFTY (NFO) and BSE SENSEX (BFO) ATM options  
 > **Order product:** MIS (intraday)
@@ -10,6 +10,7 @@
 ## Table of Contents
 
 1. [Overview](#1-overview)
+   - [1.1 Engine Variants — Buyer / Seller / Both](#11-engine-variants--buyer--seller--both)
 2. [Session Lifecycle](#2-session-lifecycle)
 3. [Underlying & Contract Selection](#3-underlying--contract-selection)
 4. [Lot Sizing Modes](#4-lot-sizing-modes)
@@ -25,24 +26,65 @@
 14. [All Configurable Parameters](#14-all-configurable-parameters)
 15. [Backtest Performance Summary](#15-backtest-performance-summary)
 16. [Web UI — Live Session Features](#16-web-ui--live-session-features)
+17. [Known Limitations](#17-known-limitations)
 
 ---
 
 ## 1. Overview
 
-The Intraday Options Engine buys ATM (At-The-Money) CE or PE options on NIFTY or SENSEX intraday, based on directional signals from one or more strategies. It is a momentum/breakout-first engine — all trades are MIS (closed same day), premium-only (no delta-hedging), and sized by available capital.
+The Intraday Options Engine trades ATM (At-The-Money) CE or PE options on NIFTY or SENSEX intraday, based on directional signals from one or more strategies. It is a momentum/breakout-first engine — all trades are MIS (closed same day), premium-only (no delta-hedging), and sized by available capital.
 
 **Signal flow:**
 
 ```
 Market data (1m candles)
     → Strategy signal (BUY_CE / BUY_PE / HOLD)
-    → Signal filters (regime, delta, IV, score)
+    → Signal filters (regime, delta, IV, score, trade-direction mode)
     → Entry mode validation (staged / tick-confirm / immediate)
     → Position built with adaptive stop + target + trailing
     → Runner partial exits (if enabled, ≥2 lots)
     → Final exit: trailing stop / time exit / hard stop / square-off
 ```
+
+---
+
+### 1.1 Engine Variants — Buyer / Seller / Both
+
+The multi-strategy aggregator (`signal_scoring.evaluate_symbol_signal`) resolves
+every scan to a `final_signal` of `BUY`, `SELL`, or `HOLD`:
+
+| `final_signal` | Option side | Order | Position type | Margin |
+|-----------------|-------------|-------|----------------|--------|
+| `BUY`  | `BUY_CE` (long call) | `transaction_type=BUY`  | Long, defined-risk (premium paid) | None beyond premium |
+| `SELL` | `BUY_PE` (short put / option-writing) | `transaction_type=SELL` | Short, sell-to-open | **Margin required** |
+
+> **Naming note:** in this codebase's signal model, "BUY" always means a long
+> call (`BUY_CE`) and "SELL" always means writing a put (`BUY_PE`,
+> sell-to-open). There is no separate "buy a put outright" (long PE) signal —
+> see [Section 17 — Known Limitations](#17-known-limitations).
+
+Three engines share 100% of the filters, strategies, lot sizing, and exit
+logic above. They differ only in a `trade_direction_mode` class attribute that
+gates `apply_signal_filters` before any other check:
+
+| Engine choice | `name` | `trade_direction_mode` | Behavior |
+|---------------|--------|--------------------------|----------|
+| **6 — Buy + Sell Both** | `intraday_options` (alias `IntradayOptionsBothEngine`) | `BUY_SELL_BOTH` | No restriction — current default, unchanged from prior releases. |
+| **7 — Buyer Only** | `intraday_options_buyer` | `BUY_ONLY` | Opens long-CE positions only. A `SELL`-resolved scan is forced to `HOLD` with `options_filter_note="Trade direction mode BUY_ONLY blocks SELL (short PE / option-writing) entries"`. |
+| **8 — Seller Only** | `intraday_options_seller` | `SELL_ONLY` | Opens short-PE (option-writing) positions only — **requires margin**. A `BUY`-resolved scan is forced to `HOLD` with `options_filter_note="Trade direction mode SELL_ONLY blocks BUY (long CE) entries"`. |
+
+**Choosing an engine:**
+- **Buyer Only (7)** — for accounts without F&O sell margin, or traders who
+  only want defined-risk (premium-capped) exposure. Holds (no entry) on bars
+  where the aggregator would have written a PE.
+- **Seller Only (8)** — for accounts with sufficient margin who want to
+  collect premium via short PE only. Holds on bars where the aggregator
+  would have bought a CE.
+- **Buy + Sell Both (6)** — unrestricted, takes whichever side the aggregator
+  resolves to. This is the original engine identity and config key; all 69+
+  existing `engine_name == "intraday_options"`-keyed config blocks
+  (`fno.intraday_options_*`, `engine_defaults.intraday_options`, etc.) apply
+  identically to all three engines.
 
 ---
 
@@ -1008,5 +1050,33 @@ runners/06_intraday_options/Results/SessionReports/
 |------|-------------|
 | **PAPER** | Simulates fills locally — no Kite API calls. Trade book shows fake order IDs (`PAPER-xxxxx`). Charges = ₹0. |
 | **LIVE** | Sends real orders to Kite. Real order IDs returned. Exchange charges apply. |
+
+---
+
+## 17. Known Limitations
+
+### 17.1 No distinct "long PE" signal
+
+`final_signal == "SELL"` always means **writing** a put (`BUY_PE` /
+`transaction_type=SELL`, sell-to-open) — see
+[Section 1.1](#11-engine-variants--buyer--seller--both). There is currently no
+signal path that produces a **long PE** (buy-to-open put, defined-risk bearish
+bet). A trader who wants "Buyer Only, but for bearish setups too" cannot get
+that from `intraday_options_buyer` today — that engine only ever opens long CE
+positions and holds on every bearish (`SELL`-resolved) bar.
+
+Adding a true long-PE signal would require a new signal path in
+`signal_scoring.evaluate_symbol_signal` (a fourth resolved direction alongside
+`BUY`/`SELL`/`HOLD`) and a corresponding `transaction_type=BUY` + `option_type=PE`
+order path in `executor.py`. Not implemented in this release.
+
+### 17.2 Seller engine margin preflight
+
+`intraday_options_seller` (engine 8) opens short-PE (option-writing)
+positions, which require margin beyond the premium. The existing pre-flight
+order validation (`calculate_cost_aware_targets` / margin check in
+`orchestration/session.py`) was written with long-only (premium-debit) trades
+in mind. Confirm available margin is checked correctly for sell-to-open option
+writes before relying on engine 8 in live trading with real capital.
 
 **To trade live:** Set Execution Mode = **LIVE** in the Configure tab before clicking Start. Verify in the session log: `Execution mode: LIVE` and `[EXECUTION] Provider: KITE`.

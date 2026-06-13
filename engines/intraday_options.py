@@ -96,6 +96,10 @@ class IntradayOptionsEngine(OptionsEquityEngine):
     max_abs_delta = float(settings.get("max_abs_delta", 1.0))
     max_buy_iv_percentile = float(settings["max_buy_iv_percentile"])
     min_sell_iv_percentile = float(settings["min_sell_iv_percentile"])
+    # BUY_ONLY: long CE only (final_signal == "BUY"). SELL_ONLY: short PE /
+    # option-writing only (final_signal == "SELL"). BUY_SELL_BOTH: no
+    # restriction (current default). Subclasses below override this.
+    trade_direction_mode = "BUY_SELL_BOTH"
     max_trades_per_underlying_per_day = INTRADAY_OPTIONS_MAX_TRADES_PER_UNDERLYING
     expiry_warning_days = INTRADAY_OPTIONS_EXPIRY_WARNING_DAYS
     vega_crush_block_percent = INTRADAY_OPTIONS_VEGA_CRUSH_BLOCK_PERCENT
@@ -606,6 +610,26 @@ class IntradayOptionsEngine(OptionsEquityEngine):
     ):
         del intraday_history_df, min_confirmations
         filtered = dict(evaluation)
+
+        if filtered.get("signal") in {"BUY", "SELL"}:
+            mode = str(getattr(self, "trade_direction_mode", "BUY_SELL_BOTH")).upper()
+            if mode == "BUY_ONLY" and filtered["signal"] == "SELL":
+                filtered["signal"] = "HOLD"
+                filtered["agreement_count"] = 0
+                filtered["score"] = 0.0
+                filtered["options_filter_note"] = (
+                    "Trade direction mode BUY_ONLY blocks SELL (short PE / option-writing) entries"
+                )
+                return filtered
+            if mode == "SELL_ONLY" and filtered["signal"] == "BUY":
+                filtered["signal"] = "HOLD"
+                filtered["agreement_count"] = 0
+                filtered["score"] = 0.0
+                filtered["options_filter_note"] = (
+                    "Trade direction mode SELL_ONLY blocks BUY (long CE) entries"
+                )
+                return filtered
+
         if str(getattr(self, "momentum_entry_mode", "STAGED")).upper() == "LEGACY_RAW":
             entry_profile = self.resolve_entry_profile(filtered, analytics=analytics)
             if entry_profile == "MOMENTUM" and filtered.get("signal") in {"BUY", "SELL"}:
@@ -1762,3 +1786,26 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         except NotImplementedError as ex:
             log_event(f"[RECON] Intraday options startup sync unavailable: {ex}", "warning")
             return persisted_positions
+
+
+class IntradayOptionsBuyerEngine(IntradayOptionsEngine):
+    """Long-call only: opens positions only when final_signal == "BUY"
+    (BUY_CE). Holds when the multi-strategy aggregator resolves to a
+    SELL/short-PE (option-writing) trade."""
+
+    name = "intraday_options_buyer"
+    trade_direction_mode = "BUY_ONLY"
+
+
+class IntradayOptionsSellerEngine(IntradayOptionsEngine):
+    """Option-writer only: opens positions only when final_signal == "SELL"
+    (BUY_PE / short-PE, transaction_type=SELL — requires margin). Holds when
+    the multi-strategy aggregator resolves to a BUY/long-CE trade."""
+
+    name = "intraday_options_seller"
+    trade_direction_mode = "SELL_ONLY"
+
+
+# Back-compat / clarity alias: the "intraday_options" config key keeps its
+# current unrestricted (Buy + Sell both) behavior under an explicit name.
+IntradayOptionsBothEngine = IntradayOptionsEngine

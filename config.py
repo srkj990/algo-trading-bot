@@ -1419,12 +1419,31 @@ INTRADAY_ENGINE_NAMES = frozenset(
         "intraday_equity",
         "intraday_futures",
         "intraday_options",
+        "intraday_options_buyer",
+        "intraday_options_seller",
     }
 )
 
 
 def is_intraday_engine_name(engine_name: str | None) -> bool:
     return str(engine_name or "").strip().lower() in INTRADAY_ENGINE_NAMES
+
+
+INTRADAY_OPTIONS_ENGINE_NAMES = frozenset(
+    {
+        "intraday_options",
+        "intraday_options_buyer",
+        "intraday_options_seller",
+    }
+)
+
+
+def is_intraday_options_engine_name(engine_name: str | None) -> bool:
+    """True for the base intraday_options engine and its Buyer/Seller-only
+    variants. All three share apply_signal_filters/strategy machinery and
+    config (ENGINE_DEFAULTS["intraday_options"]); they differ only in
+    trade_direction_mode."""
+    return str(engine_name or "").strip().lower() in INTRADAY_OPTIONS_ENGINE_NAMES
 
 
 def get_risk_style_presets(engine_name: str | None = None) -> dict[str, dict[str, Any]]:

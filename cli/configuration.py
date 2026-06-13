@@ -17,6 +17,8 @@ from engines import (
     IntradayEquityEngine,
     IntradayFuturesEngine,
     IntradayOptionsEngine,
+    IntradayOptionsBuyerEngine,
+    IntradayOptionsSellerEngine,
     OptionsEquityEngine,
 )
 from executor import set_execution_mode, set_execution_provider
@@ -54,7 +56,19 @@ ENGINE_OPTIONS = {
     "3": FuturesEquityEngine,
     "4": OptionsEquityEngine,
     "5": IntradayFuturesEngine,
-    "6": IntradayOptionsEngine,
+    "6": IntradayOptionsEngine,        # Buy + Sell both (unrestricted, current default)
+    "7": IntradayOptionsBuyerEngine,   # Buyer only (long CE)
+    "8": IntradayOptionsSellerEngine,  # Seller only (writes PE, requires margin)
+}
+
+# Engine names that share the intraday_options config sub-flow (lot mode,
+# entry mode, structure mode, strategy selection). All three subclass
+# IntradayOptionsEngine and inherit its apply_signal_filters/strategy machinery,
+# differing only in trade_direction_mode.
+INTRADAY_OPTIONS_ENGINE_NAMES = {
+    IntradayOptionsEngine.name,
+    IntradayOptionsBuyerEngine.name,
+    IntradayOptionsSellerEngine.name,
 }
 
 
@@ -172,7 +186,9 @@ def log_session_config_summary(config: "SessionConfig") -> None:
         "3": "Futures Equity (FNO futures)",
         "4": "Options Equity (FNO options)",
         "5": "Intraday Futures (MIS, F&O)",
-        "6": "Intraday Options (MIS, ATM)",
+        "6": "Intraday Options - Buy & Sell Both (MIS, ATM)",
+        "7": "Intraday Options - Buyer Only (long CE)",
+        "8": "Intraday Options - Seller Only (writes PE, needs margin)",
     }
     rows: list[tuple[str, str]] = [
         ("Engine",            engine_labels.get(config.engine_choice, config.engine_choice)),
@@ -490,7 +506,7 @@ def prompt_fno_contract_selection(
             )
         return contracts, "FNO", None, None
 
-    if engine_name == "intraday_options":
+    if engine_name in INTRADAY_OPTIONS_ENGINE_NAMES:
         default_structure_mode = int(_runtime_prompt_default("intraday_options_structure_mode", 1))
         structure_mode = cli_input.prompt_choice(
             f"Options structure: ATM SINGLE OPTION(1) or TWO-LEG RANGE PAIR(2)? [default {default_structure_mode}]: ",
@@ -603,17 +619,23 @@ def collect_session_configuration() -> SessionConfig:
     log_event("[SETUP]   OPTIONS EQUITY: Positional index options on NIFTY 50 and SENSEX with ATM strike assist")
     log_event("[SETUP]   INTRADAY FUTURES: MIS index futures with auto square-off and lot-aware sizing")
     log_event("[SETUP]   INTRADAY OPTIONS: MIS index options with Greeks/IV filters and auto square-off")
+    log_event("[SETUP]     - BUY & SELL BOTH (6): no direction restriction (current default)")
+    log_event("[SETUP]     - BUYER ONLY (7): long CE only, defined risk, holds on SELL signals")
+    log_event("[SETUP]     - SELLER ONLY (8): writes/shorts PE only, requires margin, holds on BUY signals")
     log_help("Pick the engine first so the bot can ask only the prompts relevant to that trading style. Example: 6 for INTRADAY OPTIONS")
 
     engine_choice = cli_input.prompt_choice(
-        "Engine: INTRADAY EQUITY(1), DELIVERY EQUITY(2), FUTURES EQUITY(3), OPTIONS EQUITY(4), INTRADAY FUTURES(5), INTRADAY OPTIONS(6)? [default 1]: ",
+        "Engine: INTRADAY EQUITY(1), DELIVERY EQUITY(2), FUTURES EQUITY(3), OPTIONS EQUITY(4), INTRADAY FUTURES(5), "
+        "INTRADAY OPTIONS BUY+SELL(6), INTRADAY OPTIONS BUYER ONLY(7), INTRADAY OPTIONS SELLER ONLY(8)? [default 1]: ",
         [
             {"label": "INTRADAY EQUITY", "key": 1, "value": "1"},
             {"label": "DELIVERY EQUITY", "key": 2, "value": "2"},
             {"label": "FUTURES EQUITY", "key": 3, "value": "3"},
             {"label": "OPTIONS EQUITY", "key": 4, "value": "4"},
             {"label": "INTRADAY FUTURES", "key": 5, "value": "5"},
-            {"label": "INTRADAY OPTIONS", "key": 6, "value": "6"},
+            {"label": "INTRADAY OPTIONS BUY+SELL BOTH", "key": 6, "value": "6"},
+            {"label": "INTRADAY OPTIONS BUYER ONLY", "key": 7, "value": "7"},
+            {"label": "INTRADAY OPTIONS SELLER ONLY", "key": 8, "value": "8"},
         ],
         default=1,
     )
@@ -698,7 +720,7 @@ def collect_session_configuration() -> SessionConfig:
 
     option_pair_config = None
     atm_option_config = None
-    if engine_choice in {"3", "4", "5", "6"}:
+    if engine_choice in {"3", "4", "5", "6", "7", "8"}:
         selected_symbols, symbol_mode, option_pair_config, atm_option_config = prompt_fno_contract_selection(
             ENGINE_OPTIONS[engine_choice].name
         )
@@ -745,7 +767,7 @@ def collect_session_configuration() -> SessionConfig:
         target_percent=target_percent,
         trailing_percent=trailing_percent,
     )
-    if engine.name == "intraday_options":
+    if engine.name in INTRADAY_OPTIONS_ENGINE_NAMES:
         engine.sl_percent = 10.0
         engine.target_percent = 20.0
         engine.trailing_percent = 7.5
@@ -769,8 +791,12 @@ def collect_session_configuration() -> SessionConfig:
         log_event("[SETUP] Supported F&O underlyings in this build: NIFTY 50 and SENSEX.")
         if "intraday" in engine.name:
             log_event("[SETUP] Intraday F&O will use MIS product, lot-based quantity rounding, and auto square-off near market close.")
-        if engine.name == "intraday_options":
+        if engine.name in INTRADAY_OPTIONS_ENGINE_NAMES:
             log_event("[SETUP] Intraday ATM options scalping uses dynamic ATM contract selection, 10% stop-loss, 20% target, and cooldown-managed entries.")
+            if engine.name == IntradayOptionsBuyerEngine.name:
+                log_event("[SETUP] Buyer-only engine: opens long CE positions only; SELL/short-PE signals are held.")
+            elif engine.name == IntradayOptionsSellerEngine.name:
+                log_event("[SETUP] Seller-only engine: writes/shorts PE positions only (requires margin); BUY/long-CE signals are held.")
 
     log_event(f"[MAIN] Engine selected: {engine.name}")
     log_event(
@@ -784,7 +810,7 @@ def collect_session_configuration() -> SessionConfig:
     forming_tick_enabled = None
     forming_tick_confirm_ticks = None
     partial_exit_enabled = None
-    if engine.name == "intraday_options" and atm_option_config:
+    if engine.name in INTRADAY_OPTIONS_ENGINE_NAMES and atm_option_config:
         intraday_options_lot_mode = str(
             runtime_config.fno.intraday_options_lot_mode or "CAPITAL_BASED"
         ).upper()
@@ -927,7 +953,7 @@ def collect_session_configuration() -> SessionConfig:
         engine,
         DEFAULT_CONFIRMATIONS,
     )
-    if engine.name == "intraday_options":
+    if engine.name in INTRADAY_OPTIONS_ENGINE_NAMES:
         engine.momentum_entry_mode = (
             "LEGACY_RAW"
             if intraday_options_entry_mode == "LEGACY_IMMEDIATE"
@@ -1188,7 +1214,7 @@ def build_session_config_from_dict(data: dict) -> SessionConfig:
 
     # ── engine instance ───────────────────────────────────────────────────────
     engine = engine_cls(sl_percent=sl_percent, target_percent=target_percent, trailing_percent=trailing_percent)
-    if engine.name == "intraday_options":
+    if engine.name in INTRADAY_OPTIONS_ENGINE_NAMES:
         engine.sl_percent = 10.0
         engine.target_percent = 20.0
         engine.trailing_percent = 7.5
@@ -1224,7 +1250,7 @@ def build_session_config_from_dict(data: dict) -> SessionConfig:
         top_n_count = int(data.get("top_n_count", 1)) if entry_selection_mode == "TOPN" else 1
 
     # ── strategy ──────────────────────────────────────────────────────────────
-    if engine.name == "intraday_options":
+    if engine.name in INTRADAY_OPTIONS_ENGINE_NAMES:
         mode = str(data.get("strategy_mode", "1"))
         if mode not in {"1", "2"}:
             mode = "1"
@@ -1282,7 +1308,7 @@ def build_session_config_from_dict(data: dict) -> SessionConfig:
     forming_tick_enabled: bool | None = None
     forming_tick_confirm_ticks: int | None = None
     partial_exit_enabled_live: bool | None = None
-    if engine.name == "intraday_options" and atm_option_config:
+    if engine.name in INTRADAY_OPTIONS_ENGINE_NAMES and atm_option_config:
         _lot_mode_from_form = str(data.get("intraday_options_lot_mode", "")).strip().upper()
         intraday_options_lot_mode = (
             _lot_mode_from_form

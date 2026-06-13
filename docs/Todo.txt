@@ -130,6 +130,47 @@ Quality
   [x] Backtest uses same resolve_trade_targets() and adaptive builders as live
 
 
+COMPLETED (2026-06-12)
+---------------------
+
+Intraday Options Engine Split — Buyer Only / Seller Only / Buy+Sell Both
+  [x] engines/intraday_options.py: trade_direction_mode gate (BUY_ONLY /
+      SELL_ONLY / BUY_SELL_BOTH) as first check in apply_signal_filters
+  [x] New IntradayOptionsBuyerEngine (engine 7, long CE only) and
+      IntradayOptionsSellerEngine (engine 8, short PE / writes options,
+      requires margin); IntradayOptionsBothEngine alias for engine 6
+      (unchanged, current default)
+  [x] config.py: is_intraday_options_engine_name() helper +
+      INTRADAY_OPTIONS_ENGINE_NAMES; INTRADAY_ENGINE_NAMES updated for
+      risk-style bucket
+  [x] cli/configuration.py, cli/interactive_input.py, backtesting.py,
+      orchestration/{session,positions,signal_workflow}.py,
+      tick_entry/forming_candle.py, web/routes/config.py: all
+      engine.name == "intraday_options" checks broadened to cover all
+      three engines
+  [x] web/static/index.html: engine picker (live + backtest) offers
+      choices 6/7/8; IS_FNO/IS_IOPTS JS helpers updated
+  [x] Unit tests: IntradayOptionsDirectionModeTests (Buyer holds SELL,
+      Seller holds BUY, Both passes through unchanged)
+  [x] Docs: INTRADAY_OPTIONS_GUIDE.md Section 1.1 (engine variants) +
+      Section 17 (known limitations); bugs_and_fixes.md 2026-06-12 entry
+
+Multi-Strategy SELL/BUY_PE Vote Counting + Late-Entry Overhaul (2026-06-11)
+  [x] signal_scoring.py: BUY_PE votes now counted as sell_count/pe_count
+      (previously dead code — 2/2 BUY_PE agreement produced final_signal
+      "BUY" with ce_count==pe_count==0, hitting the "tied or missing" guard)
+  [x] engines/intraday_options.py resolve_entry_profile(): mode-"2"
+      (multi-strategy) signals now route through
+      validate_momentum_entry/validate_mean_reversion_entry via
+      per-strategy entry_profiles lookup
+  [x] New entry-quality filters C1-C9 (entry_quality_filters_enabled,
+      default true): signal freshness (C1), breakout/VWAP distance (C2),
+      delta ceiling (C4), volume confirmation for mean-reversion (C5),
+      range-bound score multiplier (C6), composite entry-quality score
+      (C8), diagnostic rejection codes (C9)
+  [x] See bugs_and_fixes.md 2026-06-11 entry for full root-cause detail
+
+
 COMPLETED (2026-06-04)
 ---------------------
 
@@ -239,6 +280,19 @@ F&O Analytics
   [ ] General multi-strike basket logic
   [ ] Basket-aware options engine
 
+Intraday Options Engine
+  [ ] Long-PE ("buy a put outright") as a distinct signal/engine — today
+      BUY_PE always resolves to the SELL/short-PE (option-writing)
+      direction; a true long-put buyer mode would need a new signal path
+      in signal_scoring.evaluate_symbol_signal (see
+      INTRADAY_OPTIONS_GUIDE.md Section 17.1)
+  [ ] Seller-engine (intraday_options_seller, engine 8) margin/notional
+      preflight check — confirm pre-flight order validation
+      (calculate_cost_aware_targets / margin check in
+      orchestration/session.py) correctly covers sell-to-open option
+      writes, not just premium-debit long trades (see
+      INTRADAY_OPTIONS_GUIDE.md Section 17.2)
+
 Documentation
   [ ] Architecture diagrams (session loop state machine, position lifecycle)
   [ ] Docstrings on all public API functions
@@ -279,3 +333,4 @@ Tick entry design:
   runs first. Tick entry only monitors candidates not yet entered. If the
   WebSocket is unavailable it falls back to REST LTP polling. If REST also
   fails, the next closed-candle cycle handles entry normally.
+

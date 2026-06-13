@@ -25,6 +25,8 @@ from typing import Any
 
 import pandas as pd
 
+from config import is_intraday_options_engine_name
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,7 +57,7 @@ class FormingCandlePreview:
         """
         candidates = []
         engine = getattr(self._ctx, "engine", None)
-        if engine is None or getattr(engine, "name", "") != "intraday_options":
+        if engine is None or not is_intraday_options_engine_name(getattr(engine, "name", "")):
             return candidates
 
         scanner = getattr(engine, "scan_signals", None)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from config import MANUAL_SYMBOL_TABLE, NIFTY50_SYMBOLS, SINGLE_SYMBOL_TABLE
+from config import MANUAL_SYMBOL_TABLE, NIFTY50_SYMBOLS, SINGLE_SYMBOL_TABLE, is_intraday_options_engine_name
 from logger import log_event
 
 
@@ -246,7 +246,7 @@ _IOPTS_HINTS = {
 
 
 def prompt_strategy_configuration(engine, default_confirmations):
-    if engine.name == "intraday_options":
+    if is_intraday_options_engine_name(engine.name):
         log_event("[SETUP] Intraday options — choose Single (one strategy) or Multi (combine, N must agree)")
         log_help("Single: pick one ATM strategy. Multi: pick several — entry fires only when N agree. Example: 1 for Single")
         iopts_mode = prompt_choice(

@@ -8,6 +8,7 @@ from engines.common import count_open_structures, get_deployed_capital, update_t
 from config import (
     INTRADAY_OPTIONS_THETA_EXIT_MIN_MINUTES,
     INTRADAY_OPTIONS_THETA_EXIT_RATIO,
+    is_intraday_options_engine_name,
 )
 from models.position_adapter import (
     calculate_position_pnl,
@@ -118,7 +119,7 @@ def normalize_partial_exit_quantity(
         return 0
 
     lot_size = max(1, int(position.get("lot_size") or 1))
-    if position.get("engine_name") != "intraday_options" or lot_size <= 1:
+    if not is_intraday_options_engine_name(position.get("engine_name")) or lot_size <= 1:
         return exit_qty
 
     if current_qty % lot_size != 0:
@@ -299,7 +300,7 @@ def get_theta_exit_reason(
     snapshot: dict[str, Any],
     now: datetime,
 ) -> str | None:
-    if position.get("engine_name") != "intraday_options":
+    if not is_intraday_options_engine_name(position.get("engine_name")):
         return None
     if position_side(position) != "BUY":
         return None
@@ -865,7 +866,7 @@ def manage_open_positions(
                 exit_quantities = list(position.get("runner_exit_quantities") or [0, 0, 0])
                 current_qty = int(position.get("quantity") or 0)
                 two_lot_trailing_only_runner = (
-                    position.get("engine_name") == "intraday_options"
+                    is_intraday_options_engine_name(position.get("engine_name"))
                     and int(action.get("level_index", -1)) == 0
                     and int(exit_quantities[0] or 0) > 0
                     and int(exit_quantities[1] or 0) == 0
