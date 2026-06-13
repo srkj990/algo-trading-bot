@@ -1357,3 +1357,20 @@ the container scroll — producing the overlapping layout.
 ### Files Changed
 - `web/static/index.html` — `<style>` flex-shrink fix; `appendBtTrade()` card
   template; `renderBacktestResults()` header/row template (`colspan` 11→12).
+
+### Follow-up: final results table replaced with the same expandable cards as the running view
+The new "Entry Reason" column in the final results table showed `—` for every
+row, because `t.entry_reason` was empty for those trades while the richer
+analytics (strategy, score, ATR, IV, stop loss, hold time, partial exits) were
+only available via the running view's expandable cards. Per user request, the
+final "Trades (N)" table now reuses the exact same card rendering as the
+running view, so both "during running" and "after running" show identical,
+complete per-trade details.
+
+- Extracted `appendBtTrade()`'s card markup into a shared
+  `buildTradeCardHtml(t, uid)` function.
+- `#bt-trades-body` container changed from a `<table>` to the same
+  `display:flex;flex-direction:column;overflow-y:auto` card list as
+  `#btr-trades-body`, with `flex-shrink:0` on each card.
+- `renderBacktestResults()` now renders one card per trade via
+  `buildTradeCardHtml()`.
