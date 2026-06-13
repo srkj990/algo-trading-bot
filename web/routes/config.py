@@ -1030,8 +1030,9 @@ def _compute_regime_analytics(trades_df, capital: float) -> list[dict]:
         wins = sum(1 for p in pnls if p > 0)
         net = sum(pnls)
         result.append({
-            "regime": sess,
+            "session": sess,
             "trades": len(rows),
+            "wins": wins,
             "win_rate": round(wins / len(rows) * 100, 1) if rows else 0.0,
             "net_pnl": round(net, 2),
             "avg_pnl": round(net / len(rows), 2) if rows else 0.0,

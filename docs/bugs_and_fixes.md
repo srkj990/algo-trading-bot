@@ -1400,3 +1400,27 @@ during a *running* backtest (`backtesting.py:1290-1304`) and that
 - `web/routes/config.py` — `_summarise()`: added `_safe_str`/`_safe_int`
   helpers (moved `_safe` earlier in the function) and extended `trades_list`
   entries with the additional fields above.
+
+---
+
+## [2026-06-13] Backtest results: "Session Performance (by Time of Day)" table — Session column blank, Wins always 0
+
+### Symptom
+After a backtest, the "Session Performance (by Time of Day)" table showed
+"—" in every row's Session column and `0` in every row's Wins column, even
+though Trades/Win%/Net P&L/Avg P&L were populated correctly.
+
+### Root Cause
+Field-name mismatch between `_compute_regime_analytics()` (`web/routes/
+config.py`) and the frontend renderer (`web/static/index.html:2111-2129`):
+the backend returned each session bucket as `{"regime": sess, "trades": ...,
+"win_rate": ..., "net_pnl": ..., "avg_pnl": ..., "return_pct": ...}` (no
+`wins` key), while the frontend reads `s.session` and `s.wins`.
+
+### Fix
+`_compute_regime_analytics()` now returns `"session"` (renamed from
+`"regime"`) and adds a `"wins"` count to each `by_session` entry.
+
+### Files Changed
+- `web/routes/config.py` — `_compute_regime_analytics()`: `"regime"` →
+  `"session"`, added `"wins"` to each `by_session` entry.
