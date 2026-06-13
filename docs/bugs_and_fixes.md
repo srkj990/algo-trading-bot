@@ -1374,3 +1374,29 @@ complete per-trade details.
   `#btr-trades-body`, with `flex-shrink:0` on each card.
 - `renderBacktestResults()` now renders one card per trade via
   `buildTradeCardHtml()`.
+
+### Follow-up 2: cards in the final results view still showed almost nothing
+Even with the card layout, the final results cards only showed "Charges",
+"Exit reason", and "Gross" — the same fields the old table had. The cause was
+upstream: `web/routes/config.py::_summarise()` built `trades_list` from
+`trades_df` using only `symbol/side/entry_time/exit_time/entry_price/
+exit_price/quantity/pnl/net_pnl/charges/exit_reason/strategy` — none of the
+richer per-trade fields (`entry_reason`, `score`, `atr`, `hold_minutes`,
+`partial_exit_count`, `partial_exit_events`, `underlying_symbol`,
+`option_type`, `underlying_close_at_entry`) that `_on_trade()` already streams
+during a *running* backtest (`backtesting.py:1290-1304`) and that
+`buildTradeCardHtml()` expects.
+
+- `_summarise()` now also includes `entry_reason`, `score`, `atr`,
+  `hold_minutes`, `partial_exit_count`, `partial_exit_events`, `underlying`
+  (from `underlying_symbol`), `option_type`, and `underlying_close_at_entry`
+  in each `trades_list` entry, using new `_safe_str`/`_safe_int` helpers
+  (alongside the existing `_safe`/`_ff`) to handle pandas `NaN`/`None` safely.
+- `iv` and `stop_loss` are not persisted on closed trades in `trades_df` and
+  remain absent from both the running and final views — a pre-existing gap,
+  not introduced by this change.
+
+### Files Changed (Follow-up 2)
+- `web/routes/config.py` — `_summarise()`: added `_safe_str`/`_safe_int`
+  helpers (moved `_safe` earlier in the function) and extended `trades_list`
+  entries with the additional fields above.

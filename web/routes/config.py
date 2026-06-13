@@ -796,10 +796,29 @@ def _build_backtest_config(data: dict):
 
     summary_lines.extend([
         f"Engine={engine_name}",
-        f"Risk style={risk_style['name']}",
-        f"Strategy mode={strategy_mode} | Strategies={', '.join(strategies)}",
+        f"Risk style={risk_style['name']} | risk%={risk_style['risk_percent']} "
+        f"| ATR stop x={risk_style['atr_stop_multiplier']} | Trailing ATR x={risk_style['trailing_atr_multiplier']} "
+        f"| Target R:R={risk_style['target_risk_reward']}",
+        f"Strategy mode={strategy_mode} | Strategies={', '.join(strategies)} | Min confirmations={min_confirmations}",
         f"Period={period} | Interval={interval}",
+        f"Position limits: max_positions={max_positions} | max_capital_per_trade={max_capital_per_trade:.2f} "
+        f"| max_capital_deployed={max_capital_deployed:.2f} | top_n={top_n} "
+        f"| one_trade_per_symbol_per_day={one_trade_per_symbol_per_day}",
     ])
+
+    if is_intraday_options_engine_name(engine_name):
+        summary_lines.append(
+            f"Exit mode={bt_exit_mode} | Lot mode={intraday_options_lot_mode} | Entry mode={intraday_options_entry_mode}"
+        )
+        summary_lines.append(
+            "Session overrides: "
+            f"max_trades_per_underlying={bt_max_trades if bt_max_trades is not None else 'default'} "
+            f"| time_exit_minutes={bt_time_exit_minutes if bt_time_exit_minutes is not None else 'default'} "
+            f"| forming_tick_enabled={bt_forming_tick_enabled if bt_forming_tick_enabled is not None else 'default'} "
+            f"| forming_tick_confirm_ticks={bt_forming_tick_confirm_ticks if bt_forming_tick_confirm_ticks is not None else 'default'} "
+            f"| partial_exit_enabled={bt_partial_exit_enabled if bt_partial_exit_enabled is not None else 'default'} "
+            f"| daily_max_loss_pct={bt_daily_max_loss_pct if bt_daily_max_loss_pct is not None else 'default'}"
+        )
 
     return BacktestConfig(
         engine_name=engine_name,
@@ -866,6 +885,31 @@ def _summarise(summary: dict, paths: tuple) -> dict:
         step = max(1, len(eq_df) // 300)
         equity_points = [round(float(v), 2) for v in eq_df["equity"].iloc[::step]]
 
+    def _safe(v):
+        if v is None:
+            return None
+        try:
+            f = float(v)
+            return None if math.isnan(f) or math.isinf(f) else round(f, 4)
+        except (TypeError, ValueError):
+            return None
+
+    def _safe_str(v):
+        if v is None:
+            return ""
+        if isinstance(v, float) and math.isnan(v):
+            return ""
+        return str(v)
+
+    def _safe_int(v):
+        if v is None:
+            return None
+        try:
+            f = float(v)
+            return None if math.isnan(f) else int(f)
+        except (TypeError, ValueError):
+            return None
+
     # per-trade list (closed only)
     trades_list: list[dict] = []
     if not trades_df.empty:
@@ -886,17 +930,17 @@ def _summarise(summary: dict, paths: tuple) -> dict:
                 "net_pnl": round(net, 2),
                 "charges": round(charges, 2),
                 "exit_reason": str(row.get("exit_reason", "")),
+                "entry_reason": _safe_str(row.get("entry_reason")),
                 "strategy": str(row.get("strategy") or ""),
+                "score": _safe(row.get("score")),
+                "atr": _safe(row.get("atr")),
+                "hold_minutes": _safe_int(row.get("hold_minutes")),
+                "partial_exit_count": _safe_int(row.get("partial_exit_count")) or 0,
+                "partial_exit_events": row.get("partial_exit_events") if isinstance(row.get("partial_exit_events"), list) else [],
+                "underlying": _safe_str(row.get("underlying_symbol")),
+                "option_type": _safe_str(row.get("option_type")),
+                "underlying_close_at_entry": _safe(row.get("underlying_close_at_entry")),
             })
-
-    def _safe(v):
-        if v is None:
-            return None
-        try:
-            f = float(v)
-            return None if math.isnan(f) or math.isinf(f) else round(f, 4)
-        except (TypeError, ValueError):
-            return None
 
     # ── regime analytics (B.13) ────────────────────────────────────────────────
     regime_analytics = _compute_regime_analytics(trades_df, cfg.capital)
