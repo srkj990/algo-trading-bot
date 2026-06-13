@@ -143,6 +143,45 @@ def _synthetic_expiries(instrument_type: str) -> list[str]:
     return expiries
 
 
+_FNO_DATA_TIMEOUT_SECONDS = 10.0
+
+
+def _fetch_fno_payload(underlying: str, instrument_type: str) -> dict[str, Any]:
+    """Blocking Kite lookup — run off the event loop via an executor so a slow
+    or unreachable broker connection can't freeze the whole web server."""
+    from fno_data_fetcher import (
+        get_atm_option_strike,
+        get_available_expiries,
+        get_available_option_strikes,
+    )
+    expiries = get_available_expiries(underlying, instrument_type=instrument_type)
+    if not expiries:
+        return {
+            "expiries": [],
+            "error": f"No expiries found for {underlying} ({instrument_type}). "
+                     "Ensure Kite credentials are configured and market data is available.",
+        }
+    result: dict[str, Any] = {"expiries": expiries, "source": "kite"}
+    if instrument_type == "OPT":
+        nearest = expiries[0]
+        try:
+            atm_ce = get_atm_option_strike(underlying, nearest, "CE")
+            atm_pe = get_atm_option_strike(underlying, nearest, "PE")
+            ce_strikes = get_available_option_strikes(underlying, nearest, "CE")
+            pe_strikes = get_available_option_strikes(underlying, nearest, "PE")
+            result.update({
+                "nearest_expiry": nearest,
+                "atm_strike": atm_ce,
+                "atm_ce": atm_ce,
+                "atm_pe": atm_pe,
+                "ce_strikes": ce_strikes[:20],
+                "pe_strikes": pe_strikes[:20],
+            })
+        except Exception as strike_exc:
+            result["strike_error"] = str(strike_exc)
+    return result
+
+
 @router.get("/api/fno-data")
 async def get_fno_data(
     underlying: str = "NIFTY",
@@ -152,48 +191,34 @@ async def get_fno_data(
     """
     Return available expiries and ATM strike for a given F&O underlying.
     Always fetches real expiries from Kite. Falls back to synthetic Thursday
-    dates only if Kite is unavailable, so the form remains usable.
+    dates only if Kite is unavailable or unreachable, so the form remains usable.
     """
+    import asyncio
+
     try:
-        from fno_data_fetcher import (
-            get_atm_option_strike,
-            get_available_expiries,
-            get_available_option_strikes,
+        loop = asyncio.get_running_loop()
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, _fetch_fno_payload, underlying, instrument_type),
+            timeout=_FNO_DATA_TIMEOUT_SECONDS,
         )
-        expiries = get_available_expiries(underlying, instrument_type=instrument_type)
-        if not expiries:
-            return JSONResponse({
-                "expiries": [],
-                "error": f"No expiries found for {underlying} ({instrument_type}). "
-                         "Ensure Kite credentials are configured and market data is available.",
-            })
-        result: dict[str, Any] = {"expiries": expiries, "source": "kite"}
-        if instrument_type == "OPT":
-            nearest = expiries[0]
-            try:
-                atm_ce = get_atm_option_strike(underlying, nearest, "CE")
-                atm_pe = get_atm_option_strike(underlying, nearest, "PE")
-                ce_strikes = get_available_option_strikes(underlying, nearest, "CE")
-                pe_strikes = get_available_option_strikes(underlying, nearest, "PE")
-                result.update({
-                    "nearest_expiry": nearest,
-                    "atm_strike": atm_ce,
-                    "atm_ce": atm_ce,
-                    "atm_pe": atm_pe,
-                    "ce_strikes": ce_strikes[:20],
-                    "pe_strikes": pe_strikes[:20],
-                })
-            except Exception as strike_exc:
-                result["strike_error"] = str(strike_exc)
         return JSONResponse(result)
     except Exception as exc:
         # Fall back to synthetic Thursday expiries so the form remains usable
-        # even when Kite credentials are missing or the market is closed.
+        # even when Kite credentials are missing, the market is closed, or the
+        # broker connection is slow/unreachable (e.g. DNS hangs that ignore
+        # the request-level timeout).
+        if isinstance(exc, asyncio.TimeoutError):
+            error_text = (
+                f"Timed out after {_FNO_DATA_TIMEOUT_SECONDS:.0f}s waiting for Kite "
+                f"instrument data for {underlying} ({instrument_type})."
+            )
+        else:
+            error_text = str(exc)
         synthetic = _synthetic_expiries(instrument_type)
         return JSONResponse({
             "expiries": synthetic,
             "source": "synthetic",
-            "error": str(exc),
+            "error": error_text,
             "hint": "Could not reach Kite — showing estimated expiry dates. "
                     "Verify credentials for live trading.",
         }, status_code=200)

@@ -43,6 +43,11 @@
   .tab-btn.active{background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-bottom:1px solid #1e293b}
   .tab-btn.inactive{background:transparent;color:#64748b}
   .tab-btn.inactive:hover{color:#94a3b8}
+  /* Trade cards inside a scrollable flex column must not be allowed to shrink
+     below their content height — otherwise the flexbox shrink algorithm
+     squeezes them all to fit max-height instead of letting the container
+     scroll, which makes the cards overlap/garble. */
+  #btr-trades-body > div, #why-trades-body > div{flex-shrink:0}
   .fade-in{animation:fadeIn .3s ease-in}
   @keyframes fadeIn{from{opacity:0}to{opacity:1}}
   .spinner{width:18px;height:18px;border:2px solid #334155;border-top-color:#3b82f6;border-radius:50%;display:inline-block;animation:spin .7s linear infinite;vertical-align:middle}
@@ -930,10 +935,10 @@
       <div class="overflow-x-auto" style="max-height:260px;overflow-y:auto">
         <table><thead><tr>
           <th>Symbol</th><th>Side</th><th>Entry Time</th><th>Exit Time</th>
-          <th>Entry</th><th>Exit</th><th>Qty</th><th>Gross P&amp;L</th><th>Charges</th><th>Net P&amp;L</th><th>Reason</th>
+          <th>Entry</th><th>Exit</th><th>Qty</th><th>Gross P&amp;L</th><th>Charges</th><th>Net P&amp;L</th><th>Reason</th><th>Entry Reason</th>
         </tr></thead>
         <tbody id="bt-trades-body">
-          <tr><td colspan="11" class="text-slate-500 text-center py-4">No trades</td></tr>
+          <tr><td colspan="12" class="text-slate-500 text-center py-4">No trades</td></tr>
         </tbody></table>
       </div>
     </div>
@@ -2095,7 +2100,7 @@ function renderBacktestResults(r) {
   const trades = r.trades || [];
   const tb = document.getElementById('bt-trades-body');
   setTxt('bt-trade-count', trades.length ? `(${trades.length})` : '');
-  if (!trades.length) { tb.innerHTML = `<tr><td colspan="11" class="text-slate-500 text-center py-4">No trades</td></tr>`; return; }
+  if (!trades.length) { tb.innerHTML = `<tr><td colspan="12" class="text-slate-500 text-center py-4">No trades</td></tr>`; return; }
   tb.innerHTML = trades.map(t => {
     const gross   = t.pnl ?? 0;
     const net     = t.net_pnl ?? gross;
@@ -2114,6 +2119,7 @@ function renderBacktestResults(r) {
       <td class="font-mono text-slate-500 text-xs">${charges != null ? '−'+fmt(charges) : '—'}</td>
       <td class="font-mono font-semibold ${netCls}">${net >= 0 ? '+' : ''}${fmt(net)}</td>
       <td class="text-xs text-slate-400">${t.exit_reason || '—'}</td>
+      <td class="text-xs text-slate-500 max-w-xs truncate" title="${escHtml(t.entry_reason||'')}">${escHtml(t.entry_reason||'') || '—'}</td>
     </tr>`;
   }).join('');
 
@@ -2394,7 +2400,7 @@ function appendBtTrade(t) {
   const card = document.createElement('div');
   card.className = 'rounded border border-slate-700 bg-slate-800/60 overflow-hidden';
   card.innerHTML = `
-    <div class="flex items-center gap-2 px-3 py-2 cursor-pointer select-none hover:bg-slate-700/40 transition-colors"
+    <div class="flex items-center gap-2 px-3 pt-2 pb-1 cursor-pointer select-none hover:bg-slate-700/40 transition-colors"
          onclick="document.getElementById('${uid}').classList.toggle('hidden')">
       <span class="font-mono text-sm font-semibold text-slate-200 min-w-[80px]">${sym}</span>
       <span class="text-xs px-1 rounded ${sideCls}">${t.side || ''}</span>
@@ -2405,6 +2411,8 @@ function appendBtTrade(t) {
       <span class="font-mono text-sm font-bold ${netCls}">${net >= 0 ? '+' : ''}₹${loc(net)}</span>
       <span class="text-slate-600 text-xs ml-1">▾</span>
     </div>
+    ${t.entry_reason ? `<div class="px-3 pb-2 text-xs text-slate-500 truncate cursor-pointer" title="${escHtml(t.entry_reason)}"
+         onclick="document.getElementById('${uid}').classList.toggle('hidden')">${escHtml(t.entry_reason)}</div>` : ''}
     <div id="${uid}" class="hidden px-3 pb-3 pt-1 border-t border-slate-700/60 text-xs">
       <div class="flex flex-wrap gap-x-3 gap-y-1 text-xs mb-1">${detailRows}</div>
       <div class="flex gap-3 mt-1 text-xs">

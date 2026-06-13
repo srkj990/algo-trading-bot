@@ -1275,3 +1275,85 @@ signal exists yet — Section 17).
 - `tests/unit/test_engine_workflows.py` — new `IntradayOptionsDirectionModeTests`
   asserting Buyer holds on SELL, Seller holds on BUY, Both passes both through
   unchanged, and default `trade_direction_mode` values.
+
+---
+
+## [2026-06-13] Nifty/Sensex expiry dropdown stuck in "loading" forever
+
+### Symptom
+On the intraday-options web dashboard, the expiry dropdown spun forever
+("Unable to fetch nifty/sensex expiry"). Once Kite indices started showing
+live data (ticker bar working, VIX populated), the expiry field still fell
+back to a synthetic date with `⚠ Strike info unavailable: Timed out after 10s
+waiting for Kite instrument data for NIFTY (OPT)`.
+
+### Root Causes
+Three layered bugs, all stemming from blocking calls inside `async def`
+FastAPI routes — on a single-threaded uvicorn event loop, one blocking call
+freezes **every** endpoint, not just the caller:
+
+1. **`web/routes/config.py` `/api/fno-data`** — called `kite.instruments()`
+   and friends synchronously inside the route coroutine. A slow/hanging Kite
+   call froze the whole server (`curl` returned `HTTP_CODE:000` — TCP
+   connected, zero response — after 20s).
+2. **`web/routes/session.py` `/api/indices`** — same pattern for the
+   Nifty/Sensex/VIX quote fetch, which runs on every page load and every 10s
+   poll, so it re-froze the loop continuously.
+3. **`network_utils.py` `_KITE_MIN_INTERVAL_SECONDS["instruments"] = 86400.0`**
+   — a module-global, operation-keyed rate limiter that called
+   `time.sleep(~86399)` on any second "instruments" fetch in the same process
+   (e.g. a different exchange). `get_cached_kite_instruments()` already
+   provides daily file-based caching per exchange
+   (`state/kite_cache/instruments_{EXCHANGE}_{YYYYMMDD}.json`), making this
+   in-memory throttle redundant and actively harmful.
+
+### Fixes
+- `/api/fno-data` and `/api/indices` now run their blocking Kite/yfinance
+  calls via `loop.run_in_executor(None, fn, ...)` wrapped in
+  `asyncio.wait_for(..., timeout=10.0)`, with a synthetic-data/error fallback
+  on `asyncio.TimeoutError` so the route always returns within 10s and the
+  event loop never blocks.
+- Removed the `"instruments"` entry from `_KITE_MIN_INTERVAL_SECONDS` in
+  `network_utils.py` — instrument lists are already cached daily per exchange
+  via `get_cached_kite_instruments()`.
+
+### Files Changed
+- `web/routes/config.py` — `_FNO_DATA_TIMEOUT_SECONDS`, `_fetch_fno_payload()`
+  helper, executor+timeout wrapping in `get_fno_data`.
+- `web/routes/session.py` — `_INDICES_FETCH_TIMEOUT_SECONDS`, executor+timeout
+  wrapping for `_fetch_indices`/`_fetch_vix` in `get_indices`.
+- `network_utils.py` — removed the 24h `"instruments"` rate-limit entry.
+
+---
+
+## [2026-06-13] Backtest "TRADES (N)" panel: overlapping cards + no entry-reason visibility
+
+### Symptom
+During a running backtest, the live "TRADES (N)" card list (`#btr-trades-body`)
+showed overlapping/garbled rows once the list grew beyond the panel's
+`max-height`. Separately, the entry signal/reason for each trade was only
+visible after expanding a card (running view) and not shown at all in the
+final results table (`#bt-trades-body`).
+
+### Root Cause
+`#btr-trades-body` (and `#why-trades-body`) are `display:flex;
+flex-direction:column` containers with `max-height` + `overflow-y:auto`. Flex
+children default to `flex-shrink:1`, so once total card height exceeded
+`max-height`, the browser shrank/squished the cards to fit instead of letting
+the container scroll — producing the overlapping layout.
+
+### Fixes
+- Added `#btr-trades-body > div, #why-trades-body > div{flex-shrink:0}` so
+  cards keep their natural height and the container scrolls instead of
+  squishing.
+- `appendBtTrade()` now renders `t.entry_reason` as an always-visible,
+  truncated line under the card header (with a `title` tooltip for the full
+  text), in addition to the existing "Signal" line inside the
+  expand/collapse detail panel.
+- `renderBacktestResults()`'s final trades table gained a new "Entry Reason"
+  column (`<td>` showing `t.entry_reason`, truncated with a `title` tooltip),
+  matching the pattern already used by the live "Trade Book Today" table.
+
+### Files Changed
+- `web/static/index.html` — `<style>` flex-shrink fix; `appendBtTrade()` card
+  template; `renderBacktestResults()` header/row template (`colspan` 11→12).

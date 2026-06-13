@@ -19,7 +19,6 @@ _kite_last_call_at = {}
 _KITE_MIN_INTERVAL_SECONDS = {
     "historical_data": 0.4,
     "quote": 0.75,
-    "instruments": 86400.0,
     "orders": 0.1,
 }
 _KITE_CACHE_DIR = Path(__file__).parent / "state" / "kite_cache"

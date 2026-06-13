@@ -5,6 +5,7 @@ GET /api/indices  — live Nifty 50, Sensex LTP (Kite), and India VIX (yfinance)
 """
 from __future__ import annotations
 
+import asyncio
 import time
 
 from fastapi import APIRouter
@@ -23,6 +24,10 @@ _INDICES_CACHE_TTL = 8.0  # seconds
 _vix_cache: float | None = None
 _vix_cache_ts: float = 0.0
 _VIX_CACHE_TTL = 60.0  # seconds
+
+# Bound on the blocking Kite/yfinance lookups below — protects the single
+# uvicorn event loop from a DNS/socket hang that ignores library-level timeouts.
+_INDICES_FETCH_TIMEOUT_SECONDS = 10.0
 
 
 @router.get("/api/state")
@@ -63,11 +68,24 @@ async def get_indices() -> JSONResponse:
     if now - _indices_cache_ts < _INDICES_CACHE_TTL and _indices_cache:
         return JSONResponse(_indices_cache)
 
-    result = _fetch_indices()
+    loop = asyncio.get_running_loop()
+    try:
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, _fetch_indices),
+            timeout=_INDICES_FETCH_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        result = {"nifty": None, "sensex": None, "source": "error"}
 
     # VIX — separate cache with longer TTL
     if now - _vix_cache_ts >= _VIX_CACHE_TTL:
-        vix = _fetch_vix()
+        try:
+            vix = await asyncio.wait_for(
+                loop.run_in_executor(None, _fetch_vix),
+                timeout=_INDICES_FETCH_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            vix = None
         _vix_cache = vix
         _vix_cache_ts = now
         # Push VIX into active session state so warning engine can pick it up
