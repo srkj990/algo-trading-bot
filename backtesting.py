@@ -58,12 +58,7 @@ from orchestration.positions import normalize_partial_exit_quantity
 from orchestration.signal_workflow import scan_symbols, should_enter_trade
 from risk_manager import atr_position_size, position_size, resolve_daily_max_loss_pct
 from signal_scoring import get_atr_value
-from transaction_costs import CostBreakdown, estimate_intraday_equity_round_trip_cost
-from transaction_costs import (
-    estimate_delivery_equity_round_trip_cost,
-    estimate_futures_round_trip_cost,
-    estimate_options_round_trip_cost,
-)
+from transaction_costs import CostBreakdown, estimate_round_trip_cost_for_engine
 
 _ZERO_COST_BREAKDOWN = CostBreakdown(
     turnover=0.0, brokerage=0.0, stt=0.0, exchange_txn=0.0,
@@ -1348,51 +1343,15 @@ class BacktestEngine:
         if not TRANSACTION_COST_MODEL_ENABLED:
             return _ZERO_COST_BREAKDOWN
 
-        if (
-            self.config.engine_name == "intraday_equity"
-            and symbol.endswith(".NS")
-            and ":" not in symbol
-        ):
-            return estimate_intraday_equity_round_trip_cost(
-                entry_side=side,
-                entry_price=float(entry_price),
-                exit_price=float(exit_price),
-                quantity=int(quantity),
-                slippage_pct_per_side=float(TRANSACTION_SLIPPAGE_PCT_PER_SIDE or 0.0),
-            )
-
-        if (
-            self.config.engine_name == "delivery_equity"
-            and symbol.endswith(".NS")
-            and ":" not in symbol
-        ):
-            return estimate_delivery_equity_round_trip_cost(
-                entry_side=side,
-                entry_price=float(entry_price),
-                exit_price=float(exit_price),
-                quantity=int(quantity),
-                slippage_pct_per_side=float(TRANSACTION_SLIPPAGE_PCT_PER_SIDE or 0.0),
-            )
-
-        if self.config.engine_name in {"futures_equity", "intraday_futures"}:
-            return estimate_futures_round_trip_cost(
-                entry_side=side,
-                entry_price=float(entry_price),
-                exit_price=float(exit_price),
-                quantity=int(quantity),
-                slippage_pct_per_side=float(TRANSACTION_SLIPPAGE_PCT_PER_SIDE or 0.0),
-            )
-
-        if self.config.engine_name == "options_equity" or is_intraday_options_engine_name(self.config.engine_name):
-            return estimate_options_round_trip_cost(
-                entry_side=side,
-                entry_price=float(entry_price),
-                exit_price=float(exit_price),
-                quantity=int(quantity),
-                slippage_pct_per_side=float(TRANSACTION_SLIPPAGE_PCT_PER_SIDE or 0.0),
-            )
-
-        return _ZERO_COST_BREAKDOWN
+        return estimate_round_trip_cost_for_engine(
+            engine_name=self.config.engine_name,
+            symbol=symbol,
+            entry_side=side,
+            entry_price=float(entry_price),
+            exit_price=float(exit_price),
+            quantity=int(quantity),
+            slippage_pct_per_side=float(TRANSACTION_SLIPPAGE_PCT_PER_SIDE or 0.0),
+        )
 
     @staticmethod
     def _resolve_exit_fill_price(*, position, latest_candle, exit_reason, fallback_close):

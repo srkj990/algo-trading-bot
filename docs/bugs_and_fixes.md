@@ -1513,3 +1513,68 @@ the expected ~₹70-72 range.
 `net_pnl = pnl`. This pre-existing gap is out of scope for this backtest-only
 fix but should be addressed separately (live options exits should call
 `estimate_options_round_trip_cost()` the same way backtests now do).
+
+---
+
+## [2026-06-15] Live/paper charges all-engines parity + transaction cost rate alignment with Zerodha pricing table
+
+### Follow-up to the 2026-06-13 options charges fix
+
+This follow-up closes the "Known Limitation" above and aligns all four
+engine cost models (equity intraday, equity delivery, futures, options) with
+Zerodha's published charges table.
+
+### Changes
+
+1. **Live/paper `daily_max_loss_pct` now reflects charges for every engine.**
+   `orchestration/positions.py::record_closed_trade()` previously only
+   computed `estimated_charges`/`net_pnl` for `engine_name ==
+   "intraday_equity"`; all other engines (delivery equity, futures,
+   `intraday_options`/buyer/seller, options equity) reported
+   `estimated_charges = 0.0` and `net_pnl = pnl`, so the live daily-loss
+   check (`orchestration/session.py`, `web/state.py` — both use `net_pnl`)
+   silently ignored charges for those engines. Fixed by routing
+   `record_closed_trade()` through the new shared
+   `transaction_costs.estimate_round_trip_cost_for_engine()` dispatcher for
+   **all** engines, gated only on `transaction_cost_model_enabled`. The
+   resulting per-trade `charges_breakdown` (brokerage/stt/exchange_txn/sebi/
+   stamp/gst/slippage/total) is now also stored on `TradeRecord`
+   (`models/trade_record.py`) and surfaced in `trade_book`.
+
+2. **New shared dispatcher** `transaction_costs.estimate_round_trip_cost_for_engine()`
+   replaces the duplicated engine-name branching that previously lived only
+   in `backtesting.py::_estimate_transaction_charges()`. Both backtest and
+   live/paper now compute charges via the same code path, so results are
+   directly comparable.
+
+3. **Rate corrections to match Zerodha's published Equity/Currency/Commodity
+   charges table** (`transaction_costs.py`):
+   - Equity intraday & equity delivery: exchange transaction charge
+     `0.00345%` → **`0.00307%`** (NSE).
+   - Equity delivery STT/CTT: was sell-side only (`0.1%`) → now **`0.1% on
+     both buy and sell** legs (added `stt_buy_rate` to
+     `_estimate_round_trip_cost`).
+   - Futures: sell-side STT `0.02%` → **`0.05%`**; exchange transaction
+     charge `0.002%` → **`0.00183%`** (NSE).
+   - Options GST base: `(brokerage + transaction_charges)` →
+     **`(brokerage + sebi + transaction_charges)`** per the table's "18% on
+     (brokerage + SEBI charges + transaction charges)" — a sub-cent change
+     (SEBI charges are ~₹0.02 on a typical trade).
+
+### Files Changed
+- `transaction_costs.py` — rate corrections above; new
+  `estimate_round_trip_cost_for_engine()` dispatcher + `_ZERO_COST_BREAKDOWN`.
+- `backtesting.py` — `_estimate_transaction_charges()` now delegates to
+  `estimate_round_trip_cost_for_engine()`.
+- `orchestration/positions.py` — `record_closed_trade()` computes charges
+  for all engines via the shared dispatcher and stores `charges_breakdown`.
+- `models/trade_record.py` — added `charges_breakdown: dict[str, float] |
+  None` field to `TradeRecord`.
+
+### Verification
+- `python -m pytest tests/unit/ -q` → 217 passed, 2 pre-existing unrelated
+  failures (no new regressions).
+- Spot-checked `estimate_round_trip_cost_for_engine()` for `intraday_options`
+  (₹71.15 total on the BUY 65@151.30/SELL 65@156.35 example, matching the
+  ~₹71 expectation) and `intraday_equity` (₹26.70 on a 10-share ₹2500→₹2520
+  round trip).

@@ -31,6 +31,7 @@ class TradeRecord:
     entry_strategy: str | None = None
     signal_score: float | None = None
     entry_analytics: dict[str, Any] | None = None
+    charges_breakdown: dict[str, float] | None = None
     trade_id: str = field(default_factory=lambda: uuid4().hex)
     recorded_at: str = field(default_factory=_timestamp)
 

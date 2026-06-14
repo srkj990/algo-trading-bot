@@ -45,7 +45,7 @@ def estimate_intraday_equity_round_trip_cost(
     brokerage_rate_per_side: float = 0.0003,  # 0.03%
     brokerage_cap_per_order: float = 20.0,
     stt_sell_rate: float = 0.00025,  # 0.025% on sell side
-    exchange_txn_rate_per_side: float = 0.0000345,  # NSE: ~0.00345%
+    exchange_txn_rate_per_side: float = 0.0000307,  # NSE: 0.00307%
     sebi_rate_per_side: float = 0.000001,  # 0.0001%
     stamp_buy_rate: float = 0.00003,  # 0.003% on buy side (intraday equity)
     gst_rate: float = 0.18,  # on brokerage + exchange + sebi
@@ -123,7 +123,8 @@ def estimate_delivery_equity_round_trip_cost(
     brokerage_rate_per_side: float = 0.0,
     brokerage_cap_per_order: float = 20.0,
     stt_sell_rate: float = 0.001,  # 0.1% on sell side
-    exchange_txn_rate_per_side: float = 0.0000345,
+    stt_buy_rate: float = 0.001,  # 0.1% on buy side (equity delivery STT/CTT applies both sides)
+    exchange_txn_rate_per_side: float = 0.0000307,  # NSE: 0.00307%
     sebi_rate_per_side: float = 0.000001,
     stamp_buy_rate: float = 0.00015,  # 0.015% on buy side
     gst_rate: float = 0.18,
@@ -137,6 +138,7 @@ def estimate_delivery_equity_round_trip_cost(
         brokerage_rate_per_side=brokerage_rate_per_side,
         brokerage_cap_per_order=brokerage_cap_per_order,
         stt_sell_rate=stt_sell_rate,
+        stt_buy_rate=stt_buy_rate,
         exchange_txn_rate_per_side=exchange_txn_rate_per_side,
         sebi_rate_per_side=sebi_rate_per_side,
         stamp_buy_rate=stamp_buy_rate,
@@ -153,8 +155,8 @@ def estimate_futures_round_trip_cost(
     slippage_pct_per_side: float = 0.0,
     brokerage_rate_per_side: float = 0.0003,
     brokerage_cap_per_order: float = 20.0,
-    stt_sell_rate: float = 0.0002,  # approx futures sell-side STT
-    exchange_txn_rate_per_side: float = 0.00002,
+    stt_sell_rate: float = 0.0005,  # 0.05% on sell side
+    exchange_txn_rate_per_side: float = 0.0000183,  # NSE: 0.00183%
     sebi_rate_per_side: float = 0.000001,
     stamp_buy_rate: float = 0.00002,
     gst_rate: float = 0.18,
@@ -182,7 +184,7 @@ OPTIONS_STT_SELL_RATE = 0.0015           # 0.15% on sell-side premium turnover
 OPTIONS_EXCHANGE_TXN_RATE = 0.0003553    # 0.03553% on total premium turnover (NSE)
 OPTIONS_SEBI_RATE = 10.0 / 10_000_000    # Rs 10 per crore of total turnover
 OPTIONS_STAMP_BUY_RATE = 0.00003         # 0.003% on buy-side premium turnover
-OPTIONS_GST_RATE = 0.18                  # 18% on (brokerage + exchange txn charges)
+OPTIONS_GST_RATE = 0.18                  # 18% on (brokerage + SEBI charges + exchange txn charges)
 
 
 def calculate_option_charges(buy_price: float, sell_price: float, quantity: int) -> dict:
@@ -217,7 +219,7 @@ def calculate_option_charges(buy_price: float, sell_price: float, quantity: int)
     transaction_charges = total_turnover * OPTIONS_EXCHANGE_TXN_RATE
     sebi = total_turnover * OPTIONS_SEBI_RATE
     stamp_duty = buy_turnover * OPTIONS_STAMP_BUY_RATE
-    gst = (brokerage + transaction_charges) * OPTIONS_GST_RATE
+    gst = (brokerage + sebi + transaction_charges) * OPTIONS_GST_RATE
 
     total_charges = brokerage + stt + transaction_charges + sebi + stamp_duty + gst
 
@@ -282,6 +284,59 @@ def estimate_options_round_trip_cost(
     )
 
 
+_ZERO_COST_BREAKDOWN = CostBreakdown(
+    turnover=0.0, brokerage=0.0, stt=0.0, exchange_txn=0.0,
+    sebi=0.0, stamp=0.0, gst=0.0, slippage=0.0,
+)
+
+# Engines sharing apply_signal_filters/strategy machinery with the base
+# intraday options engine -- kept in sync with config.INTRADAY_OPTIONS_ENGINE_NAMES.
+_INTRADAY_OPTIONS_ENGINE_NAMES = frozenset(
+    {"intraday_options", "intraday_options_buyer", "intraday_options_seller"}
+)
+
+
+def estimate_round_trip_cost_for_engine(
+    *,
+    engine_name: str | None,
+    symbol: str,
+    entry_side: str,
+    entry_price: float,
+    exit_price: float,
+    quantity: int,
+    slippage_pct_per_side: float = 0.0,
+) -> CostBreakdown:
+    """Dispatch to the correct round-trip cost estimator for `engine_name`.
+
+    Shared by backtesting and live/paper position-close accounting so both
+    paths compute identical charges for the same engine/symbol/leg prices.
+    """
+    engine_name = str(engine_name or "")
+    symbol = str(symbol or "")
+
+    kwargs = dict(
+        entry_side=entry_side,
+        entry_price=float(entry_price),
+        exit_price=float(exit_price),
+        quantity=int(quantity),
+        slippage_pct_per_side=float(slippage_pct_per_side or 0.0),
+    )
+
+    if engine_name == "intraday_equity" and symbol.endswith(".NS") and ":" not in symbol:
+        return estimate_intraday_equity_round_trip_cost(**kwargs)
+
+    if engine_name == "delivery_equity" and symbol.endswith(".NS") and ":" not in symbol:
+        return estimate_delivery_equity_round_trip_cost(**kwargs)
+
+    if engine_name in {"futures_equity", "intraday_futures"}:
+        return estimate_futures_round_trip_cost(**kwargs)
+
+    if engine_name == "options_equity" or engine_name in _INTRADAY_OPTIONS_ENGINE_NAMES:
+        return estimate_options_round_trip_cost(**kwargs)
+
+    return _ZERO_COST_BREAKDOWN
+
+
 def _estimate_round_trip_cost(
     *,
     entry_side: str,
@@ -296,6 +351,7 @@ def _estimate_round_trip_cost(
     sebi_rate_per_side: float,
     stamp_buy_rate: float,
     gst_rate: float,
+    stt_buy_rate: float = 0.0,
 ) -> CostBreakdown:
     qty = int(quantity or 0)
     if qty <= 0 or entry_price <= 0 or exit_price <= 0:
@@ -330,7 +386,7 @@ def _estimate_round_trip_cost(
     brokerage = brokerage_per_side * 2.0
     exchange_txn = average_leg_value * exchange_txn_rate_per_side * 2.0
     sebi = average_leg_value * sebi_rate_per_side * 2.0
-    stt = sell_value * stt_sell_rate
+    stt = sell_value * stt_sell_rate + buy_value * stt_buy_rate
     stamp = buy_value * stamp_buy_rate
     gst_base = brokerage + exchange_txn + sebi
     gst = gst_rate * gst_base

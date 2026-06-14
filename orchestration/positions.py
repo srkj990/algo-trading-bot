@@ -20,7 +20,7 @@ from models.position_adapter import (
 from reporting import summarize_by_exit_reason
 from models.trade_record import TradeRecord
 from trade_store import TradeStore
-from transaction_costs import estimate_intraday_equity_round_trip_cost
+from transaction_costs import estimate_round_trip_cost_for_engine
 
 
 def _coerce_positive_int(value: Any, default: int = 0) -> int:
@@ -207,14 +207,12 @@ def record_closed_trade(
     pnl, pnl_pct = calculate_position_pnl(position, float(exit_price))
 
     estimated_charges = 0.0
+    charges_breakdown: dict[str, float] = {}
     net_pnl = pnl
-    if (
-        transaction_cost_model_enabled
-        and position.get("engine_name") == "intraday_equity"
-        and symbol.endswith(".NS")
-        and ":" not in symbol
-    ):
-        breakdown = estimate_intraday_equity_round_trip_cost(
+    if transaction_cost_model_enabled:
+        breakdown = estimate_round_trip_cost_for_engine(
+            engine_name=position.get("engine_name"),
+            symbol=symbol,
             entry_side=side,
             entry_price=entry_price,
             exit_price=float(exit_price),
@@ -223,6 +221,16 @@ def record_closed_trade(
         )
         estimated_charges = float(breakdown.total)
         net_pnl = pnl - estimated_charges
+        charges_breakdown = {
+            "brokerage": round(float(breakdown.brokerage), 2),
+            "stt": round(float(breakdown.stt), 2),
+            "exchange_txn": round(float(breakdown.exchange_txn), 2),
+            "sebi": round(float(breakdown.sebi), 2),
+            "stamp": round(float(breakdown.stamp), 2),
+            "gst": round(float(breakdown.gst), 2),
+            "slippage": round(float(breakdown.slippage), 2),
+            "total": round(estimated_charges, 2),
+        }
 
     raw_analytics = position.get("entry_analytics") or {}
     safe_analytics: dict[str, Any] = {}
@@ -255,6 +263,7 @@ def record_closed_trade(
         entry_strategy=position.get("entry_strategy"),
         signal_score=float(position["signal_score"]) if position.get("signal_score") is not None else None,
         entry_analytics=safe_analytics or None,
+        charges_breakdown=charges_breakdown or None,
     )
     payload = trade.to_dict()
     trade_book.append(payload)
