@@ -1424,3 +1424,92 @@ the backend returned each session bucket as `{"regime": sess, "trades": ...,
 ### Files Changed
 - `web/routes/config.py` — `_compute_regime_analytics()`: `"regime"` →
   `"session"`, added `"wins"` to each `by_session` entry.
+
+---
+
+## [2026-06-13] Intraday options backtest charges underestimated by ~half (₹28.98 vs ~₹71 expected)
+
+### Symptom
+For a BUY 65 @ ₹151.30 / SELL 65 @ ₹156.35 trade (Gross +₹328.25), the
+backtest reported `Charges: ₹28.98`. Validated against Zerodha's published
+F&O Options charges table, the realistic figure for this trade is ~₹70-72.
+
+### Root Cause
+`estimate_options_round_trip_cost()` in `transaction_costs.py` delegated to
+the generic `_estimate_round_trip_cost()` helper with options-specific
+overrides that did not match Zerodha's actual F&O options pricing:
+- Brokerage modeled as `0.03% capped at ₹20` per side (~₹6 total) instead of
+  a flat ₹20 per executed order (₹40 total for one buy + one sell).
+- STT modeled at `0.05%` of sell-side turnover instead of the correct
+  `0.15%` (NSE options STT post-Oct-2024).
+- Exchange transaction charges and other minor components used slightly
+  different rates than NSE's current options schedule.
+
+### Fix
+Replaced the options cost model with a dedicated, exact implementation per
+Zerodha's published F&O options charges, applied to **premium turnover**
+(`price × quantity`), not contract/notional value:
+
+- **Brokerage**: ₹20 per executed order → ₹40 per round trip (flat, no %/cap).
+- **STT**: `sell_turnover × 0.15%`.
+- **Exchange transaction charges (NSE)**: `(buy_turnover + sell_turnover) × 0.03553%`.
+- **SEBI charges**: `total_turnover × (₹10 / ₹1 crore)`.
+- **Stamp duty**: `buy_turnover × 0.003%` (buy side only).
+- **GST**: `18% × (brokerage + exchange_transaction_charges)`.
+- **Total**: sum of all of the above. `net_pnl = gross_pnl - total_charges`.
+
+For the example trade this now produces `total_charges ≈ ₹71.14`, matching
+the expected ~₹70-72 range.
+
+### Implementation
+- **`transaction_costs.py`**:
+  - Added `calculate_option_charges(buy_price, sell_price, quantity)` →
+    returns `{brokerage, stt, transaction_charges, sebi, stamp_duty, gst,
+    total_charges}` per the formulas above.
+  - Rewrote `estimate_options_round_trip_cost(entry_side, entry_price,
+    exit_price, quantity, slippage_pct_per_side)` to call
+    `calculate_option_charges()` (mapping `entry_side="SELL"`/option-writing
+    so the entry premium is the sell-side leg) and return a `CostBreakdown`
+    with the new values; slippage remains a separate additive model-only cost.
+  - Other engines' cost functions (`estimate_intraday_equity_round_trip_cost`,
+    `estimate_delivery_equity_round_trip_cost`, `estimate_futures_round_trip_cost`)
+    are unchanged.
+- **`backtesting.py`**:
+  - `_estimate_transaction_charges()` now returns the full `CostBreakdown`
+    object (was `float`); a `_ZERO_COST_BREAKDOWN` constant covers the
+    disabled-model / unsupported-engine fallbacks.
+  - Added `_cost_breakdown_to_dict()` / `_add_charge_breakdowns()` helpers to
+    accumulate a per-trade `charges_breakdown` dict (brokerage, stt,
+    exchange_txn, sebi, stamp, gst, slippage, total) across partial and final
+    exits.
+  - `_partial_exit_position()` and `_exit_position()` now store
+    `position["realized_charges_breakdown"]` and write
+    `trade["charges_breakdown"]` on the closed trade record, and include
+    `"charges_breakdown"` in the `_on_trade()` WS payload for the running view.
+  - `_build_summary()` now also returns a `charges_summary` dict with
+    `total_brokerage`, `total_stt`, `total_exchange_charges`,
+    `total_sebi_charges`, `total_stamp_duty`, `total_gst`, `total_slippage`,
+    `total_charges` aggregated across all closed trades.
+- **`web/routes/config.py`**:
+  - `_summarise()` adds a `charges_breakdown` dict (brokerage/stt/exchange_txn/
+    sebi/stamp/gst/slippage) to each entry in `trades_list`, and a top-level
+    `charges_summary` dict (from `_build_summary()`'s new totals).
+- **`web/static/index.html`**:
+  - `buildTradeCardHtml()` now renders a per-component charges breakdown row
+    (Brokerage / STT / Exchange charges / SEBI charges / Stamp duty / GST) in
+    each trade's detail panel.
+  - New "Charges Summary" section (between Regime Analytics and Failure
+    Analysis) shows the aggregated totals for the whole backtest.
+- **`tests/unit/test_transaction_costs.py`** (new): unit tests for
+  `calculate_option_charges()` (BUY 65@151.30 / SELL 65@156.35 → total ≈
+  ₹71.14, within ±₹2 of the expected ~₹71) and
+  `estimate_options_round_trip_cost()` for both BUY-entry and SELL-entry
+  (option-writing) cases.
+
+### Known Limitation (not fixed in this change)
+`orchestration/positions.py::record_closed_trade()` only computes
+`estimated_charges` for `engine_name == "intraday_equity"` positions — live
+`intraday_options` position exits still report `estimated_charges = 0.0` and
+`net_pnl = pnl`. This pre-existing gap is out of scope for this backtest-only
+fix but should be addressed separately (live options exits should call
+`estimate_options_round_trip_cost()` the same way backtests now do).
