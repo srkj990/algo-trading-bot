@@ -175,6 +175,63 @@ def estimate_futures_round_trip_cost(
     )
 
 
+# Zerodha F&O Options charges (round-trip = one buy order + one sell order),
+# rates applied to option premium turnover (not contract/notional value).
+OPTIONS_BROKERAGE_PER_ORDER = 20.0       # flat Rs 20 per executed order
+OPTIONS_STT_SELL_RATE = 0.0015           # 0.15% on sell-side premium turnover
+OPTIONS_EXCHANGE_TXN_RATE = 0.0003553    # 0.03553% on total premium turnover (NSE)
+OPTIONS_SEBI_RATE = 10.0 / 10_000_000    # Rs 10 per crore of total turnover
+OPTIONS_STAMP_BUY_RATE = 0.00003         # 0.003% on buy-side premium turnover
+OPTIONS_GST_RATE = 0.18                  # 18% on (brokerage + exchange txn charges)
+
+
+def calculate_option_charges(buy_price: float, sell_price: float, quantity: int) -> dict:
+    """Estimate Zerodha-style round-trip charges for one options buy + sell leg.
+
+    `buy_price`/`sell_price` are the premiums for the buy-side and sell-side
+    legs respectively (regardless of which leg was the entry vs the exit) —
+    all rates apply to premium turnover, as appropriate for an options-buyer
+    strategy (long CE/PE opened then closed).
+    """
+    qty = int(quantity or 0)
+    buy_price = float(buy_price or 0.0)
+    sell_price = float(sell_price or 0.0)
+
+    if qty <= 0 or buy_price <= 0 or sell_price <= 0:
+        return {
+            "brokerage": 0.0,
+            "stt": 0.0,
+            "transaction_charges": 0.0,
+            "sebi": 0.0,
+            "stamp_duty": 0.0,
+            "gst": 0.0,
+            "total_charges": 0.0,
+        }
+
+    buy_turnover = buy_price * qty
+    sell_turnover = sell_price * qty
+    total_turnover = buy_turnover + sell_turnover
+
+    brokerage = 2 * OPTIONS_BROKERAGE_PER_ORDER
+    stt = sell_turnover * OPTIONS_STT_SELL_RATE
+    transaction_charges = total_turnover * OPTIONS_EXCHANGE_TXN_RATE
+    sebi = total_turnover * OPTIONS_SEBI_RATE
+    stamp_duty = buy_turnover * OPTIONS_STAMP_BUY_RATE
+    gst = (brokerage + transaction_charges) * OPTIONS_GST_RATE
+
+    total_charges = brokerage + stt + transaction_charges + sebi + stamp_duty + gst
+
+    return {
+        "brokerage": round(brokerage, 2),
+        "stt": round(stt, 2),
+        "transaction_charges": round(transaction_charges, 2),
+        "sebi": round(sebi, 2),
+        "stamp_duty": round(stamp_duty, 2),
+        "gst": round(gst, 2),
+        "total_charges": round(total_charges, 2),
+    }
+
+
 def estimate_options_round_trip_cost(
     *,
     entry_side: str = "BUY",
@@ -182,27 +239,46 @@ def estimate_options_round_trip_cost(
     exit_price: float,
     quantity: int,
     slippage_pct_per_side: float = 0.0,
-    brokerage_rate_per_side: float = 0.0003,
-    brokerage_cap_per_order: float = 20.0,
-    stt_sell_rate: float = 0.0005,  # approx options sell-side premium STT
-    exchange_txn_rate_per_side: float = 0.00053,
-    sebi_rate_per_side: float = 0.000001,
-    stamp_buy_rate: float = 0.00003,
-    gst_rate: float = 0.18,
 ) -> CostBreakdown:
-    return _estimate_round_trip_cost(
-        entry_side=entry_side,
-        entry_price=entry_price,
-        exit_price=exit_price,
-        quantity=quantity,
-        slippage_pct_per_side=slippage_pct_per_side,
-        brokerage_rate_per_side=brokerage_rate_per_side,
-        brokerage_cap_per_order=brokerage_cap_per_order,
-        stt_sell_rate=stt_sell_rate,
-        exchange_txn_rate_per_side=exchange_txn_rate_per_side,
-        sebi_rate_per_side=sebi_rate_per_side,
-        stamp_buy_rate=stamp_buy_rate,
-        gst_rate=gst_rate,
+    qty = int(quantity or 0)
+    entry_price = float(entry_price or 0.0)
+    exit_price = float(exit_price or 0.0)
+
+    if qty <= 0 or entry_price <= 0 or exit_price <= 0:
+        return CostBreakdown(
+            turnover=0.0,
+            brokerage=0.0,
+            stt=0.0,
+            exchange_txn=0.0,
+            sebi=0.0,
+            stamp=0.0,
+            gst=0.0,
+            slippage=0.0,
+        )
+
+    entry_side = (entry_side or "BUY").upper()
+    if entry_side == "SELL":
+        # sell-to-open / buy-to-close (option writing): entry premium is the
+        # sell-side leg, exit premium is the buy-side leg.
+        buy_price, sell_price = exit_price, entry_price
+    else:
+        # buy-to-open / sell-to-close (option buying).
+        buy_price, sell_price = entry_price, exit_price
+
+    charges = calculate_option_charges(buy_price, sell_price, qty)
+
+    average_leg_value = ((buy_price + sell_price) / 2.0) * qty
+    slippage = average_leg_value * float(slippage_pct_per_side or 0.0) * 2.0
+
+    return CostBreakdown(
+        turnover=(buy_price + sell_price) * qty,
+        brokerage=charges["brokerage"],
+        stt=charges["stt"],
+        exchange_txn=charges["transaction_charges"],
+        sebi=charges["sebi"],
+        stamp=charges["stamp_duty"],
+        gst=charges["gst"],
+        slippage=slippage,
     )
 
 

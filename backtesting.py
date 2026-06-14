@@ -58,12 +58,31 @@ from orchestration.positions import normalize_partial_exit_quantity
 from orchestration.signal_workflow import scan_symbols, should_enter_trade
 from risk_manager import atr_position_size, position_size, resolve_daily_max_loss_pct
 from signal_scoring import get_atr_value
-from transaction_costs import estimate_intraday_equity_round_trip_cost
+from transaction_costs import CostBreakdown, estimate_intraday_equity_round_trip_cost
 from transaction_costs import (
     estimate_delivery_equity_round_trip_cost,
     estimate_futures_round_trip_cost,
     estimate_options_round_trip_cost,
 )
+
+_ZERO_COST_BREAKDOWN = CostBreakdown(
+    turnover=0.0, brokerage=0.0, stt=0.0, exchange_txn=0.0,
+    sebi=0.0, stamp=0.0, gst=0.0, slippage=0.0,
+)
+
+_CHARGE_BREAKDOWN_FIELDS = ("brokerage", "stt", "exchange_txn", "sebi", "stamp", "gst", "slippage")
+
+
+def _cost_breakdown_to_dict(breakdown: CostBreakdown) -> dict:
+    result = {field: round(float(getattr(breakdown, field)), 2) for field in _CHARGE_BREAKDOWN_FIELDS}
+    result["total"] = round(float(breakdown.total), 2)
+    return result
+
+
+def _add_charge_breakdowns(accumulated: dict | None, breakdown: CostBreakdown) -> dict:
+    accumulated = accumulated or {field: 0.0 for field in (*_CHARGE_BREAKDOWN_FIELDS, "total")}
+    addition = _cost_breakdown_to_dict(breakdown)
+    return {key: round(accumulated.get(key, 0.0) + addition[key], 2) for key in addition}
 
 ENGINE_OPTIONS = {
     "1": IntradayEquityEngine,
@@ -1205,15 +1224,19 @@ class BacktestEngine:
             pnl = (float(entry_price) - float(exit_price)) * exit_qty
             self.cash -= float(exit_price) * exit_qty
 
-        estimated_charges = self._estimate_transaction_charges(
+        cost_breakdown = self._estimate_transaction_charges(
             symbol=symbol,
             side=side,
             entry_price=float(entry_price),
             exit_price=float(exit_price),
             quantity=int(exit_qty),
         )
+        estimated_charges = float(cost_breakdown.total)
         position["realized_pnl_parts"] = float(position.get("realized_pnl_parts") or 0.0) + float(pnl)
         position["realized_charges_parts"] = float(position.get("realized_charges_parts") or 0.0) + float(estimated_charges)
+        position["realized_charges_breakdown"] = _add_charge_breakdowns(
+            position.get("realized_charges_breakdown"), cost_breakdown
+        )
         partial_events = list(position.get("partial_exit_events") or [])
         partial_events.append(
             {
@@ -1239,19 +1262,23 @@ class BacktestEngine:
         side = position_side(position)
         pnl, _ = calculate_position_pnl(position, exit_price)
 
-        estimated_charges = self._estimate_transaction_charges(
+        cost_breakdown = self._estimate_transaction_charges(
             symbol=symbol,
             side=side,
             entry_price=entry_price,
             exit_price=float(exit_price),
             quantity=quantity,
         )
+        estimated_charges = float(cost_breakdown.total)
         net_pnl = pnl - estimated_charges
         realized_pnl_parts = float(position.get("realized_pnl_parts") or 0.0)
         realized_charges_parts = float(position.get("realized_charges_parts") or 0.0)
         total_pnl = float(pnl) + realized_pnl_parts
         total_estimated_charges = float(estimated_charges) + realized_charges_parts
         total_net_pnl = total_pnl - total_estimated_charges
+        total_charges_breakdown = _add_charge_breakdowns(
+            position.get("realized_charges_breakdown"), cost_breakdown
+        )
 
         if side == "BUY":
             self.cash += exit_price * quantity
@@ -1265,6 +1292,7 @@ class BacktestEngine:
                 trade["exit_reason"] = reason
                 trade["pnl"] = total_pnl
                 trade["estimated_charges"] = total_estimated_charges
+                trade["charges_breakdown"] = total_charges_breakdown
                 trade["net_pnl"] = total_net_pnl
                 trade["partial_exit_count"] = len(position.get("partial_exit_events") or [])
                 trade["partial_exit_events"] = position.get("partial_exit_events") or []
@@ -1285,6 +1313,7 @@ class BacktestEngine:
                     "quantity": quantity,
                     "pnl": round(float(total_pnl), 2),
                     "charges": round(float(total_estimated_charges), 2),
+                    "charges_breakdown": total_charges_breakdown,
                     "net_pnl": round(float(total_net_pnl), 2),
                     "exit_reason": reason,
                     "entry_reason": trade.get("entry_reason") or "",
@@ -1313,59 +1342,57 @@ class BacktestEngine:
         entry_price,
         exit_price,
         quantity,
-    ):
+    ) -> CostBreakdown:
+        """Return a detailed CostBreakdown (brokerage/stt/exchange_txn/sebi/stamp/gst/slippage)
+        for one round-trip (one entry leg + one exit/partial-exit leg)."""
         if not TRANSACTION_COST_MODEL_ENABLED:
-            return 0.0
+            return _ZERO_COST_BREAKDOWN
 
         if (
             self.config.engine_name == "intraday_equity"
             and symbol.endswith(".NS")
             and ":" not in symbol
         ):
-            breakdown = estimate_intraday_equity_round_trip_cost(
+            return estimate_intraday_equity_round_trip_cost(
                 entry_side=side,
                 entry_price=float(entry_price),
                 exit_price=float(exit_price),
                 quantity=int(quantity),
                 slippage_pct_per_side=float(TRANSACTION_SLIPPAGE_PCT_PER_SIDE or 0.0),
             )
-            return float(breakdown.total)
 
         if (
             self.config.engine_name == "delivery_equity"
             and symbol.endswith(".NS")
             and ":" not in symbol
         ):
-            breakdown = estimate_delivery_equity_round_trip_cost(
+            return estimate_delivery_equity_round_trip_cost(
                 entry_side=side,
                 entry_price=float(entry_price),
                 exit_price=float(exit_price),
                 quantity=int(quantity),
                 slippage_pct_per_side=float(TRANSACTION_SLIPPAGE_PCT_PER_SIDE or 0.0),
             )
-            return float(breakdown.total)
 
         if self.config.engine_name in {"futures_equity", "intraday_futures"}:
-            breakdown = estimate_futures_round_trip_cost(
+            return estimate_futures_round_trip_cost(
                 entry_side=side,
                 entry_price=float(entry_price),
                 exit_price=float(exit_price),
                 quantity=int(quantity),
                 slippage_pct_per_side=float(TRANSACTION_SLIPPAGE_PCT_PER_SIDE or 0.0),
             )
-            return float(breakdown.total)
 
         if self.config.engine_name == "options_equity" or is_intraday_options_engine_name(self.config.engine_name):
-            breakdown = estimate_options_round_trip_cost(
+            return estimate_options_round_trip_cost(
                 entry_side=side,
                 entry_price=float(entry_price),
                 exit_price=float(exit_price),
                 quantity=int(quantity),
                 slippage_pct_per_side=float(TRANSACTION_SLIPPAGE_PCT_PER_SIDE or 0.0),
             )
-            return float(breakdown.total)
 
-        return 0.0
+        return _ZERO_COST_BREAKDOWN
 
     @staticmethod
     def _resolve_exit_fill_price(*, position, latest_candle, exit_reason, fallback_close):
@@ -1456,6 +1483,15 @@ class BacktestEngine:
         total_estimated_charges = float(
             closed_trades["estimated_charges"].fillna(0.0).sum()
         ) if not closed_trades.empty and "estimated_charges" in closed_trades.columns else 0.0
+
+        charges_summary = {key: 0.0 for key in (*_CHARGE_BREAKDOWN_FIELDS, "total")}
+        if not closed_trades.empty and "charges_breakdown" in closed_trades.columns:
+            for breakdown in closed_trades["charges_breakdown"]:
+                if not isinstance(breakdown, dict):
+                    continue
+                for key in charges_summary:
+                    charges_summary[key] += float(breakdown.get(key, 0.0) or 0.0)
+        charges_summary = {key: round(value, 2) for key, value in charges_summary.items()}
         total_gross_pnl = float(
             closed_trades["pnl"].fillna(0.0).sum()
         ) if not closed_trades.empty and "pnl" in closed_trades.columns else 0.0
@@ -1477,6 +1513,16 @@ class BacktestEngine:
             "profit_factor": profit_factor,
             "max_drawdown_percent": max_drawdown,
             "total_estimated_charges": total_estimated_charges,
+            "charges_summary": {
+                "total_brokerage": charges_summary["brokerage"],
+                "total_stt": charges_summary["stt"],
+                "total_exchange_charges": charges_summary["exchange_txn"],
+                "total_sebi_charges": charges_summary["sebi"],
+                "total_stamp_duty": charges_summary["stamp"],
+                "total_gst": charges_summary["gst"],
+                "total_slippage": charges_summary["slippage"],
+                "total_charges": charges_summary["total"],
+            },
             "total_gross_pnl": total_gross_pnl,
             "total_net_pnl": total_net_pnl,
             "tick_entry_fills": tick_fills,

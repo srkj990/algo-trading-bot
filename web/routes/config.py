@@ -918,6 +918,8 @@ def _summarise(summary: dict, paths: tuple) -> dict:
             gross = float(row.get("pnl") or 0)
             charges = float(row.get("estimated_charges") or 0)
             net = float(row.get("net_pnl") or (gross - charges))
+            breakdown = row.get("charges_breakdown")
+            charges_breakdown = breakdown if isinstance(breakdown, dict) else {}
             trades_list.append({
                 "symbol": str(row.get("symbol", "")),
                 "side": str(row.get("side", "")),
@@ -929,6 +931,15 @@ def _summarise(summary: dict, paths: tuple) -> dict:
                 "pnl": round(gross, 2),
                 "net_pnl": round(net, 2),
                 "charges": round(charges, 2),
+                "charges_breakdown": {
+                    "brokerage": _safe(charges_breakdown.get("brokerage")) or 0.0,
+                    "stt": _safe(charges_breakdown.get("stt")) or 0.0,
+                    "exchange_txn": _safe(charges_breakdown.get("exchange_txn")) or 0.0,
+                    "sebi": _safe(charges_breakdown.get("sebi")) or 0.0,
+                    "stamp": _safe(charges_breakdown.get("stamp")) or 0.0,
+                    "gst": _safe(charges_breakdown.get("gst")) or 0.0,
+                    "slippage": _safe(charges_breakdown.get("slippage")) or 0.0,
+                },
                 "exit_reason": str(row.get("exit_reason", "")),
                 "entry_reason": _safe_str(row.get("entry_reason")),
                 "strategy": str(row.get("strategy") or ""),
@@ -959,6 +970,10 @@ def _summarise(summary: dict, paths: tuple) -> dict:
         "win_rate_pct": _safe(summary.get("win_rate_percent")),
         "max_drawdown_pct": _safe(summary.get("max_drawdown_percent")),
         "total_charges": _safe(summary.get("total_estimated_charges")),
+        "charges_summary": {
+            key: _safe(val) or 0.0
+            for key, val in (summary.get("charges_summary") or {}).items()
+        },
         "total_gross_pnl": _safe(summary.get("total_gross_pnl")),
         "total_net_pnl": _safe(summary.get("total_net_pnl")),
         "tick_entry_fills": int(summary.get("tick_entry_fills") or 0),

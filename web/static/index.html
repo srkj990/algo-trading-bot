@@ -964,6 +964,45 @@
     </div>
   </div>
 
+  <!-- Charges Summary -->
+  <div class="card p-3 mb-3" id="bt-charges-section" style="display:none">
+    <div class="section-label mb-3">Charges Summary</div>
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div class="card p-3" style="background:#0f172a">
+        <div class="section-label">Brokerage</div>
+        <div id="bt-cs-brokerage" class="text-lg font-bold font-mono">—</div>
+      </div>
+      <div class="card p-3" style="background:#0f172a">
+        <div class="section-label">STT</div>
+        <div id="bt-cs-stt" class="text-lg font-bold font-mono">—</div>
+      </div>
+      <div class="card p-3" style="background:#0f172a">
+        <div class="section-label">Exchange Charges</div>
+        <div id="bt-cs-exchange" class="text-lg font-bold font-mono">—</div>
+      </div>
+      <div class="card p-3" style="background:#0f172a">
+        <div class="section-label">SEBI Charges</div>
+        <div id="bt-cs-sebi" class="text-lg font-bold font-mono">—</div>
+      </div>
+      <div class="card p-3" style="background:#0f172a">
+        <div class="section-label">Stamp Duty</div>
+        <div id="bt-cs-stamp" class="text-lg font-bold font-mono">—</div>
+      </div>
+      <div class="card p-3" style="background:#0f172a">
+        <div class="section-label">GST</div>
+        <div id="bt-cs-gst" class="text-lg font-bold font-mono">—</div>
+      </div>
+      <div class="card p-3" style="background:#0f172a">
+        <div class="section-label">Slippage</div>
+        <div id="bt-cs-slippage" class="text-lg font-bold font-mono">—</div>
+      </div>
+      <div class="card p-3" style="background:#0f172a">
+        <div class="section-label">Total Charges</div>
+        <div id="bt-cs-total" class="text-lg font-bold font-mono text-amber-400">—</div>
+      </div>
+    </div>
+  </div>
+
   <!-- Failure Analysis -->
   <div class="card p-3 mb-3" id="bt-failure-section" style="display:none">
     <div class="section-label mb-3">Failure Analysis</div>
@@ -2150,6 +2189,21 @@ function renderBacktestResults(r) {
     }
   }
 
+  // charges summary
+  const cs = r.charges_summary;
+  if (cs) {
+    const csSec = document.getElementById('bt-charges-section');
+    if (csSec) csSec.style.display = '';
+    setTxt('bt-cs-brokerage', `₹${fmt(cs.total_brokerage ?? 0)}`);
+    setTxt('bt-cs-stt', `₹${fmt(cs.total_stt ?? 0)}`);
+    setTxt('bt-cs-exchange', `₹${fmt(cs.total_exchange_charges ?? 0)}`);
+    setTxt('bt-cs-sebi', `₹${fmt(cs.total_sebi_charges ?? 0)}`);
+    setTxt('bt-cs-stamp', `₹${fmt(cs.total_stamp_duty ?? 0)}`);
+    setTxt('bt-cs-gst', `₹${fmt(cs.total_gst ?? 0)}`);
+    setTxt('bt-cs-slippage', `₹${fmt(cs.total_slippage ?? 0)}`);
+    setTxt('bt-cs-total', `₹${fmt(cs.total_charges ?? 0)}`);
+  }
+
   // failure analysis
   const fa = r.failure_analysis;
   if (fa) {
@@ -2356,6 +2410,23 @@ function buildTradeCardHtml(t, uid) {
     }).join('');
   }
 
+  // Charges breakdown (per Zerodha F&O options charge model)
+  let chargesBreakdownHtml = '';
+  const cb = t.charges_breakdown;
+  if (cb && (cb.brokerage || cb.stt || cb.exchange_txn || cb.sebi || cb.stamp || cb.gst)) {
+    const rows = [
+      ['Brokerage', cb.brokerage],
+      ['STT', cb.stt],
+      ['Exchange charges', cb.exchange_txn],
+      ['SEBI charges', cb.sebi],
+      ['Stamp duty', cb.stamp],
+      ['GST', cb.gst],
+    ].filter(([, v]) => v != null).map(([k, v]) =>
+      `<span class="text-slate-500">${k}:</span> <span class="text-slate-300">₹${loc(v)}</span>`
+    ).join('<span class="text-slate-700"> · </span>');
+    chargesBreakdownHtml = `<div class="flex flex-wrap gap-x-3 gap-y-1 text-xs mt-1 text-slate-400">${rows}</div>`;
+  }
+
   // Detail panel (hidden by default)
   const ivStr  = t.iv ? `${t.iv.toFixed(1)}% IV` : '';
   const detailRows = [
@@ -2395,6 +2466,7 @@ function buildTradeCardHtml(t, uid) {
         <span class="text-slate-300">${t.exit_reason || '—'}</span>
         ${gross !== net ? `<span class="text-slate-500 ml-2">Gross:</span><span class="font-mono ${grsCls}">${gross >= 0 ? '+' : ''}₹${loc(gross)}</span>` : ''}
       </div>
+      ${chargesBreakdownHtml}
       ${partialHtml ? `<div class="mt-2"><div class="text-slate-500 mb-1">Partial exits:</div>${partialHtml}</div>` : ''}
     </div>`;
 }
