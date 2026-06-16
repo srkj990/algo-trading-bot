@@ -1921,8 +1921,15 @@ class IntradayOptionsSellerEngine(IntradayOptionsEngine):
             except Exception:
                 pass
 
-        # Regime gate: block sellers in expansion regime (unless it's an exhaustion play)
-        regime = self.build_volatility_regime_context(session_df, analytics)
+        # Regime gate: block sellers in expansion regime (unless it's an exhaustion play).
+        # Use underlying data — options intraday range is huge on expiry day (60-80%), which
+        # would falsely classify every session as EXPANSION if we used option session_df.
+        underlying_for_regime = (
+            prefetched_underlying_df
+            if prefetched_underlying_df is not None
+            else intraday_df
+        )
+        regime = self.build_volatility_regime_context(underlying_for_regime, analytics)
         filtered["volatility_regime"] = regime["label"]
         analytics["volatility_regime"] = regime["label"]
         analytics["volatility_regime_context"] = regime
@@ -1955,17 +1962,6 @@ class IntradayOptionsSellerEngine(IntradayOptionsEngine):
             filtered["score"] = 0.0
             filtered["options_filter_note"] = (
                 f"Seller delta ceiling: |delta|={abs_delta:.2f} > {seller_max_delta} — too deep ITM/ATM"
-            )
-            return filtered
-
-        # Score floor (shared with buyer engine)
-        score = float(filtered.get("score") or 0.0)
-        if score < float(self.min_signal_score):
-            filtered["signal"] = "HOLD"
-            filtered["agreement_count"] = 0
-            filtered["score"] = 0.0
-            filtered["options_filter_note"] = (
-                f"Seller score floor: score={score:.3f} < min={self.min_signal_score}"
             )
             return filtered
 

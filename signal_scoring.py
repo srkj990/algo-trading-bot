@@ -16,7 +16,11 @@ def get_strategy_score(strategy_name, df, signal_payload):
     normalized_atr = (atr_value / close) if close > 0 and atr_value == atr_value else 0.0
     score = 0.0
 
-    if strategy_name.startswith("ATM_"):
+    if strategy_name.startswith("ATM_") or strategy_name in {
+        "SHORT_THETA_AFTER_11AM",
+        "LOW_VOLATILITY_RANGE_SELL",
+        "EXHAUSTION_SELL",
+    }:
         return float(signal_payload.get("strength", 0.0)) + (normalized_atr * 0.1)
 
     if strategy_name == "MA" and len(df) >= MIN_CANDLES["MA"]:
