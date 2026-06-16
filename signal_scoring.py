@@ -76,7 +76,7 @@ def evaluate_symbol_signal(
         signal = signal_payload["execution_signal"]
         opt_sig = signal_payload.get("option_signal") or ""
         score = get_strategy_score(strategy_name, data, signal_payload)
-        _is_active = signal in {"BUY", "SELL"} or opt_sig in {"BUY_CE", "BUY_PE"}
+        _is_active = signal in {"BUY", "SELL"} or opt_sig in {"BUY_CE", "BUY_PE", "SELL_CE", "SELL_PE"}
         return {
             "signal": signal,
             "agreement_count": 1 if _is_active else 0,
@@ -129,6 +129,12 @@ def evaluate_symbol_signal(
         elif opt_sig == "BUY_PE":
             sell_count += 1
             pe_count += 1
+        elif opt_sig == "SELL_CE":
+            sell_count += 1
+            ce_count += 1
+        elif opt_sig == "SELL_PE":
+            sell_count += 1
+            pe_count += 1
         elif strat_signal == "BUY":
             buy_count += 1
         elif strat_signal == "SELL":
@@ -149,7 +155,7 @@ def evaluate_symbol_signal(
         for item in details.values()
         if item["signal"] == final_signal
         or (final_signal == "BUY" and item.get("option_signal") == "BUY_CE")
-        or (final_signal == "SELL" and item.get("option_signal") == "BUY_PE")
+        or (final_signal == "SELL" and item.get("option_signal") in {"BUY_PE", "SELL_CE", "SELL_PE"})
     )
 
     # Resolve option_signal: majority vote among agreeing strategies.
@@ -157,6 +163,16 @@ def evaluate_symbol_signal(
     # SELL → PE (directional short via put).
     resolved_option_signal = None
     resolved_option_type = None
+
+    # Detect whether agreeing strategies are seller-type (SELL_CE / SELL_PE)
+    sell_ce_votes = sum(
+        1 for v in details.values() if v.get("option_signal") == "SELL_CE"
+    )
+    sell_pe_votes = sum(
+        1 for v in details.values() if v.get("option_signal") == "SELL_PE"
+    )
+    is_seller_mode = sell_ce_votes > 0 or sell_pe_votes > 0
+
     if final_signal == "BUY":
         if ce_count >= pe_count and ce_count > 0:
             resolved_option_signal = "BUY_CE"
@@ -165,18 +181,28 @@ def evaluate_symbol_signal(
             resolved_option_signal = "BUY_PE"
             resolved_option_type = "PE"
     elif final_signal == "SELL":
-        if pe_count >= ce_count and pe_count > 0:
-            resolved_option_signal = "BUY_PE"
-            resolved_option_type = "PE"
-        elif ce_count > pe_count:
-            resolved_option_signal = "BUY_CE"
-            resolved_option_type = "CE"
+        if is_seller_mode:
+            # Seller strategies: majority CE/PE vote determines which contract to write
+            if ce_count >= pe_count and ce_count > 0:
+                resolved_option_signal = "SELL_CE"
+                resolved_option_type = "CE"
+            elif pe_count > ce_count:
+                resolved_option_signal = "SELL_PE"
+                resolved_option_type = "PE"
+        else:
+            # Legacy buyer-engine SELL direction → buy PE (short put via buyer engine)
+            if pe_count >= ce_count and pe_count > 0:
+                resolved_option_signal = "BUY_PE"
+                resolved_option_type = "PE"
+            elif ce_count > pe_count:
+                resolved_option_signal = "BUY_CE"
+                resolved_option_type = "CE"
 
     # Pick best-scoring agreeing strategy's metadata for selected_profile / components
     best_detail = max(
         (v for v in details.values() if v["signal"] == final_signal
          or (final_signal == "BUY" and v.get("option_signal") == "BUY_CE")
-         or (final_signal == "SELL" and v.get("option_signal") == "BUY_PE")),
+         or (final_signal == "SELL" and v.get("option_signal") in {"BUY_PE", "SELL_CE", "SELL_PE"})),
         key=lambda v: v["score"],
         default={},
     )

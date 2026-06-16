@@ -34,7 +34,7 @@ The system is operated entirely through a browser-based web UI — no console in
 | 5 | `intraday_futures` | `MIS` | `3m` live / `5m` backtest | Intraday index futures |
 | 6 | `intraday_options` | `MIS` | `1m` | Intraday ATM option runner — both directions (long + short) |
 | 7 | `intraday_options_buyer` | `MIS` | `1m` | Intraday ATM option buyer only — BUY CE (bullish) / BUY PE (bearish), no margin required |
-| 8 | `intraday_options_seller` | `MIS` | `1m` | Intraday ATM option writer only — SELL PE (bullish) / SELL CE (bearish), margin required |
+| 8 | `intraday_options_seller` | `MIS` | `1m` | Independent Seller — 5 premium-decay strategies (ORB failure, VWAP fade, theta, low-vol range, exhaustion); SELL_CE/SELL_PE signals, HARD_TARGET exits |
 
 ---
 

@@ -540,6 +540,12 @@ class FnoConfig:
     intraday_options_theta_exit_ratio: float
     intraday_options_theta_exit_min_minutes: int
     intraday_options_sell_margin_pct: float
+    intraday_options_seller_max_adx: float
+    intraday_options_seller_adx_period: int
+    intraday_options_seller_target_decay_pct: float
+    intraday_options_seller_stop_pct: float
+    intraday_options_seller_min_iv_percentile: float
+    intraday_options_seller_max_delta: float
 
     def validate(self) -> None:
         if not self.underlying_details:
@@ -970,6 +976,24 @@ def _default_runtime_config_map() -> dict[str, Any]:
             ),
             "intraday_options_sell_margin_pct": float(
                 os.getenv("INTRADAY_OPTIONS_SELL_MARGIN_PCT", "0.12")
+            ),
+            "intraday_options_seller_max_adx": float(
+                os.getenv("INTRADAY_OPTIONS_SELLER_MAX_ADX", "22.0")
+            ),
+            "intraday_options_seller_adx_period": int(
+                os.getenv("INTRADAY_OPTIONS_SELLER_ADX_PERIOD", "14")
+            ),
+            "intraday_options_seller_target_decay_pct": float(
+                os.getenv("INTRADAY_OPTIONS_SELLER_TARGET_DECAY_PCT", "30.0")
+            ),
+            "intraday_options_seller_stop_pct": float(
+                os.getenv("INTRADAY_OPTIONS_SELLER_STOP_PCT", "60.0")
+            ),
+            "intraday_options_seller_min_iv_percentile": float(
+                os.getenv("INTRADAY_OPTIONS_SELLER_MIN_IV_PERCENTILE", "10.0")
+            ),
+            "intraday_options_seller_max_delta": float(
+                os.getenv("INTRADAY_OPTIONS_SELLER_MAX_DELTA", "0.45")
             ),
         },
         "engine_defaults": {

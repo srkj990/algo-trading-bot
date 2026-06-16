@@ -24,6 +24,7 @@ from executor_fno import get_options_positions
 from fno_data_fetcher import get_contract_lot_size, get_fno_spot_quote_symbol
 from data_fetcher import get_data
 from indicators import compute_vwap
+from strategy import compute_adx
 from logger import log_event
 from risk_manager import calculate_target_price
 from signal_scoring import get_atr_value
@@ -1814,12 +1815,228 @@ class IntradayOptionsBuyerEngine(IntradayOptionsEngine):
 
 
 class IntradayOptionsSellerEngine(IntradayOptionsEngine):
-    """Options writer: opens short positions in both directions — SELL PE on bullish signals
-    (PE loses value when market rises), SELL CE on bearish signals (CE loses value when market
-    falls). Never buys options long."""
+    """Independent option seller engine with five dedicated premium-decay strategies.
+
+    All strategies generate SELL_CE or SELL_PE signals directly — no contract pre-flip.
+    Exit levels are premium-percentage based (not ATR). Position uses HARD_TARGET mode:
+    the seller collects decay to a fixed target; no trailing stop movement.
+
+    Strategies:
+      ATM_ORB_FAILURE_SELL    — failed breakout re-enters ORB range
+      ATM_VWAP_FADE_SELL      — low-ADX price stretch from VWAP
+      SHORT_THETA_AFTER_11AM  — afternoon theta capture in contained session
+      LOW_VOLATILITY_RANGE_SELL — contracting ATR + ADX with OTM offset
+      EXHAUSTION_SELL         — extreme RSI + far-from-VWAP with weakening momentum
+    """
 
     name = "intraday_options_seller"
     trade_direction_mode = "SELL_ONLY"
+    supported_strategies = {
+        "1": "ATM_ORB_FAILURE_SELL",
+        "2": "ATM_VWAP_FADE_SELL",
+        "3": "SHORT_THETA_AFTER_11AM",
+        "4": "LOW_VOLATILITY_RANGE_SELL",
+        "5": "EXHAUSTION_SELL",
+    }
+    entry_profiles = {
+        "ATM_ORB_FAILURE_SELL":    "SELLER_MEAN_REVERSION",
+        "ATM_VWAP_FADE_SELL":      "SELLER_MEAN_REVERSION",
+        "SHORT_THETA_AFTER_11AM":  "SELLER_THETA",
+        "LOW_VOLATILITY_RANGE_SELL": "SELLER_THETA",
+        "EXHAUSTION_SELL":         "SELLER_MEAN_REVERSION",
+    }
+
+    def apply_signal_filters(
+        self,
+        evaluation,
+        intraday_df,
+        intraday_history_df=None,
+        min_confirmations=1,
+        analytics=None,
+        prefetched_underlying_df=None,
+    ):
+        del intraday_history_df, min_confirmations
+        filtered = dict(evaluation)
+
+        # Seller engine never buys — block any non-SELL signal immediately
+        if filtered.get("signal") != "SELL":
+            filtered["signal"] = "HOLD"
+            filtered["agreement_count"] = 0
+            filtered["score"] = 0.0
+            filtered["options_filter_note"] = "Seller engine: non-SELL signal blocked"
+            return filtered
+
+        # Seller strategies generate option_type directly — skip buyer bias filter
+        if analytics is not None:
+            analytics["skip_underlying_bias"] = True
+
+        if analytics is None:
+            if prefetched_underlying_df is not None:
+                return filtered
+            filtered["options_filter_note"] = "Greeks unavailable"
+            return filtered
+
+        filtered["analytics"] = analytics
+        notes = []
+
+        session_df = intraday_df.loc[
+            intraday_df.index.date == intraday_df.index[-1].date()
+        ]
+        latest_close = float(session_df.iloc[-1]["Close"])
+        option_vwap = float(compute_vwap(session_df).iloc[-1])
+        filtered["vwap_bias"] = (
+            "BULLISH" if latest_close > option_vwap
+            else "BEARISH" if latest_close < option_vwap
+            else "NEUTRAL"
+        )
+
+        # ADX gate: sellers need low-to-moderate trend; high ADX means premium may not decay
+        try:
+            from config import get_config
+            cfg = get_config()
+            seller_max_adx = float(getattr(cfg, "intraday_options_seller_max_adx", 22.0))
+            adx_period = int(getattr(cfg, "intraday_options_seller_adx_period", 14))
+            seller_min_iv_pct = float(getattr(cfg, "intraday_options_seller_min_iv_percentile", 10.0))
+            seller_max_delta = float(getattr(cfg, "intraday_options_seller_max_delta", 0.45))
+        except Exception:
+            seller_max_adx = 22.0
+            adx_period = 14
+            seller_min_iv_pct = 10.0
+            seller_max_delta = 0.45
+
+        if prefetched_underlying_df is not None and len(prefetched_underlying_df) >= adx_period * 2:
+            try:
+                adx_df = compute_adx(prefetched_underlying_df, period=adx_period)
+                adx_val = float(adx_df["adx"].iloc[-1])
+                filtered["seller_adx"] = adx_val
+                if adx_val > seller_max_adx:
+                    filtered["signal"] = "HOLD"
+                    filtered["agreement_count"] = 0
+                    filtered["score"] = 0.0
+                    filtered["options_filter_note"] = (
+                        f"Seller ADX gate: ADX={adx_val:.1f} > {seller_max_adx} — strong trend, skip writing"
+                    )
+                    return filtered
+                notes.append(f"ADX={adx_val:.1f}")
+            except Exception:
+                pass
+
+        # Regime gate: block sellers in expansion regime (unless it's an exhaustion play)
+        regime = self.build_volatility_regime_context(session_df, analytics)
+        filtered["volatility_regime"] = regime["label"]
+        analytics["volatility_regime"] = regime["label"]
+        analytics["volatility_regime_context"] = regime
+        strategy_name = str(evaluation.get("strategy") or "")
+        if regime["label"] == "EXPANSION" and strategy_name != "EXHAUSTION_SELL":
+            filtered["signal"] = "HOLD"
+            filtered["agreement_count"] = 0
+            filtered["score"] = 0.0
+            filtered["options_filter_note"] = (
+                "Seller regime gate: volatility EXPANSION — premium spike risk, skip writing"
+            )
+            return filtered
+
+        # IV floor: require minimum IV percentile so there is worthwhile premium to collect
+        iv_pct = float((analytics or {}).get("iv_percentile") or 0.0)
+        if iv_pct < seller_min_iv_pct:
+            filtered["signal"] = "HOLD"
+            filtered["agreement_count"] = 0
+            filtered["score"] = 0.0
+            filtered["options_filter_note"] = (
+                f"Seller IV floor: IV percentile {iv_pct:.1f}% < {seller_min_iv_pct}% — not enough premium"
+            )
+            return filtered
+
+        # Delta ceiling: prefer slightly OTM; overly deep ITM options carry too much delta risk
+        abs_delta = abs(float((analytics or {}).get("delta") or 0.0))
+        if abs_delta > seller_max_delta:
+            filtered["signal"] = "HOLD"
+            filtered["agreement_count"] = 0
+            filtered["score"] = 0.0
+            filtered["options_filter_note"] = (
+                f"Seller delta ceiling: |delta|={abs_delta:.2f} > {seller_max_delta} — too deep ITM/ATM"
+            )
+            return filtered
+
+        # Score floor (shared with buyer engine)
+        score = float(filtered.get("score") or 0.0)
+        if score < float(self.min_signal_score):
+            filtered["signal"] = "HOLD"
+            filtered["agreement_count"] = 0
+            filtered["score"] = 0.0
+            filtered["options_filter_note"] = (
+                f"Seller score floor: score={score:.3f} < min={self.min_signal_score}"
+            )
+            return filtered
+
+        if notes:
+            filtered.setdefault("options_filter_note", "; ".join(notes))
+        return filtered
+
+    def get_seller_level_spec(self, entry_price: float) -> dict:
+        """Premium-percentage exit levels for a short option position."""
+        try:
+            from config import get_config
+            cfg = get_config()
+            target_pct = float(getattr(cfg, "intraday_options_seller_target_decay_pct", 30.0))
+            stop_pct = float(getattr(cfg, "intraday_options_seller_stop_pct", 60.0))
+        except Exception:
+            target_pct = 30.0
+            stop_pct = 60.0
+        entry = float(entry_price)
+        stop_price = entry * (1.0 + stop_pct / 100.0)
+        target_price = max(0.01, entry * (1.0 - target_pct / 100.0))
+        return {
+            "stop_loss_price": stop_price,
+            "target": target_price,
+            "trailing_stop": stop_price,
+            "exit_mode": "HARD_TARGET",
+        }
+
+    def build_seller_position(
+        self,
+        *,
+        symbol,
+        side,
+        quantity,
+        entry_price,
+        atr,
+        lot_size,
+        now,
+        entry_analytics,
+        engine_name,
+        execution_mode,
+        order_product,
+        extra_fields=None,
+    ):
+        """Build a short-premium position dict with fixed decay-% exits and HARD_TARGET mode."""
+        level_spec = self.get_seller_level_spec(entry_price)
+        payload = {
+            "symbol": symbol,
+            "side": side,
+            "quantity": quantity,
+            "entry_price": float(entry_price),
+            "stop_loss": level_spec["stop_loss_price"],
+            "target": level_spec["target"],
+            "trailing_stop": level_spec["trailing_stop"],
+            "trailing_distance": None,
+            "trailing_activation_distance": None,
+            "trailing_active": False,
+            "atr": atr,
+            "stop_distance": level_spec["stop_loss_price"] - float(entry_price),
+            "lot_size": lot_size,
+            "entry_analytics": entry_analytics,
+            "entry_time": now.isoformat(),
+            "engine_name": engine_name,
+            "execution_mode": execution_mode,
+            "order_product": order_product,
+            "exit_mode": "HARD_TARGET",
+            "runner_enabled": False,
+            "runner_partial_exit_enabled": False,
+        }
+        if extra_fields:
+            payload.update(extra_fields)
+        return build_position(**payload)
 
 
 # Back-compat / clarity alias: the "intraday_options" config key keeps its

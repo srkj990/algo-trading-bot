@@ -1,0 +1,15 @@
+## Seller Engine — Future: Straddle/Strangle Multi-Leg Support
+
+- SHORT_THETA_AFTER_11AM: spec calls for selling BOTH CE and PE simultaneously (short straddle)
+- LOW_VOLATILITY_RANGE_SELL: spec calls for selling BOTH OTM CE and OTM PE (short strangle)
+- Currently implemented as single-leg using a VWAP/range tiebreaker to pick one side
+- Multi-leg requires:
+    * Parallel position tracking for both legs (CE and PE)
+    * Combined P&L calculation across both legs
+    * Coordinated exits: stop one leg when premium spikes, optionally hold the other
+    * Or: close both legs when either leg is stopped (conservative approach)
+- Architecture notes:
+    * Position dict already has a "pair_id" field — use it to link CE/PE legs
+    * Exit logic would close both legs on any stop trigger (conservative) or manage independently
+    * Lot sizing: margin scales with both legs — need to halve per-leg allocation vs single-leg
+    * Signal workflow: would need to place two simultaneous orders via execute_order_pair()

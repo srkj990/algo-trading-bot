@@ -1554,27 +1554,44 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
         "signal_score": float(candidate.get("score") or 0.0),
     }
     if is_intraday_options_engine_name(engine.name) and cfg.atm_option_config and hasattr(engine, "build_trend_adaptive_position"):
-        context.positions[symbol] = engine.build_trend_adaptive_position(
-            symbol=symbol,
-            side=candidate["signal"],
-            quantity=qty,
-            entry_price=actual_entry_price,
-            atr=float(atr_value or 0.0),
-            signal_score=float(candidate.get("score") or 0.0),
-            analytics=candidate.get("analytics") or {},
-            lot_size=get_contract_lot_size(symbol) if ":" in symbol else 1,
-            now=now,
-            entry_analytics=candidate.get("analytics"),
-            engine_name=engine.name,
-            execution_mode=context.config.execution_mode,
-            order_product=engine.order_product,
-            premium_volatility_distance=float(
-                candidate.get("premium_volatility_distance") or 0.0
-            ),
-            extra_fields=position_extra_fields,
-            risk_style_name=cfg.risk_style_name,
-            partial_exit_override=getattr(cfg, "partial_exit_enabled", None),
-        )
+        lot_size = get_contract_lot_size(symbol) if ":" in symbol else 1
+        if engine.name == "intraday_options_seller" and hasattr(engine, "build_seller_position"):
+            context.positions[symbol] = engine.build_seller_position(
+                symbol=symbol,
+                side=candidate["signal"],
+                quantity=qty,
+                entry_price=actual_entry_price,
+                atr=float(atr_value or 0.0),
+                lot_size=lot_size,
+                now=now,
+                entry_analytics=candidate.get("analytics"),
+                engine_name=engine.name,
+                execution_mode=context.config.execution_mode,
+                order_product=engine.order_product,
+                extra_fields=position_extra_fields,
+            )
+        else:
+            context.positions[symbol] = engine.build_trend_adaptive_position(
+                symbol=symbol,
+                side=candidate["signal"],
+                quantity=qty,
+                entry_price=actual_entry_price,
+                atr=float(atr_value or 0.0),
+                signal_score=float(candidate.get("score") or 0.0),
+                analytics=candidate.get("analytics") or {},
+                lot_size=lot_size,
+                now=now,
+                entry_analytics=candidate.get("analytics"),
+                engine_name=engine.name,
+                execution_mode=context.config.execution_mode,
+                order_product=engine.order_product,
+                premium_volatility_distance=float(
+                    candidate.get("premium_volatility_distance") or 0.0
+                ),
+                extra_fields=position_extra_fields,
+                risk_style_name=cfg.risk_style_name,
+                partial_exit_override=getattr(cfg, "partial_exit_enabled", None),
+            )
     elif engine.name in {"intraday_equity", "delivery_equity"} and hasattr(engine, "build_trend_adaptive_position"):
         context.positions[symbol] = engine.build_trend_adaptive_position(
             symbol=symbol,

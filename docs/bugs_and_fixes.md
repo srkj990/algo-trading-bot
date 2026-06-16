@@ -1892,3 +1892,39 @@ Three layers:
 - `backtesting.py` — `self.trades.append()`: added `stop_loss/target/trailing_stop`; `_on_trade()`: added `trailing_stop`
 - `web/routes/config.py` — `_summarise()`: added `stop_loss/target/trailing_stop` to trades list
 - `web/static/index.html` — trade detail card: added Target and Trailing stop display rows
+
+---
+
+## [2026-06-17] Engine 8 overhauled: Independent Seller strategies replace directional flip
+
+### Problem
+Engine 8 (`intraday_options_seller`) derived all trades by flipping buyer-engine signals
+(bullish BUY_CE → SELL_PE, bearish BUY_PE → SELL_CE). This made the seller entirely dependent
+on buyer-oriented momentum logic. The same ADX/VWAP/entry-quality validators designed for
+buyers blocked most genuine premium-decay opportunities (low ADX, sideways, exhaustion plays).
+
+### Fix
+Replaced engine 8 internals with five independent seller strategies:
+
+| Strategy | Logic |
+|----------|-------|
+| `ATM_ORB_FAILURE_SELL` | Failed ORB breakout — premium spiked on the move, now decays |
+| `ATM_VWAP_FADE_SELL` | Price stretched from VWAP in low-ADX session → mean-reversion decay |
+| `SHORT_THETA_AFTER_11AM` | Post-11AM theta capture when ADX < 15 and day is contained |
+| `LOW_VOLATILITY_RANGE_SELL` | Contracting ATR + ADX → OTM premium decay (strike_offset ±1) |
+| `EXHAUSTION_SELL` | RSI extreme + price far from VWAP + weakening momentum |
+
+New signal types `SELL_CE` / `SELL_PE` generate the contract directly — no pre-flip in
+`signal_workflow.py`. New seller filter chain: ADX gate (>22 blocks), EXPANSION regime gate,
+IV percentile floor, delta ceiling, score floor. Exits use `HARD_TARGET` mode with
+premium-% levels (`stop = entry×1.6`, `target = entry×0.7`).
+
+### Files Changed
+- `strategy.py` — `compute_adx()`, `SELL_CE`/`SELL_PE` signal types, 5 strategy functions, dispatch
+- `signal_scoring.py` — `SELL_CE`/`SELL_PE` vote counting, score aggregation, option_signal resolution
+- `orchestration/signal_workflow.py` — extend option_signal guard + ATM contract resolve for `SELL_CE`/`SELL_PE`
+- `engines/intraday_options.py` — `IntradayOptionsSellerEngine`: new strategies, `apply_signal_filters`, `get_seller_level_spec`, `build_seller_position`
+- `backtesting.py` + `orchestration/session.py` — route engine 8 to `build_seller_position`
+- `config.py` + `config/config.runtime.yaml` — 6 new seller config params
+- `web/static/index.html` + `cli/configuration.py` — engine 8 label updated to "Independent Seller"
+- `tests/unit/test_seller_strategies.py` — 16 new unit tests covering all 5 strategies + filter chain + multi-strategy aggregation

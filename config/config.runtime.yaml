@@ -86,6 +86,12 @@ fno:
   intraday_options_theta_exit_ratio: 0.08 # used: theta-decay ratio threshold for intraday-options exit
   intraday_options_theta_exit_min_minutes: 10 # used: minimum hold before theta-decay exit logic can trigger
   intraday_options_sell_margin_pct: 0.12 # used: fraction of underlying price used as margin-per-unit for SELL_ONLY lot sizing (SPAN+exposure ≈ 10-15% for index options)
+  intraday_options_seller_max_adx: 22.0 # used: ADX gate — block seller entry if ADX exceeds this (strong trend)
+  intraday_options_seller_adx_period: 14 # used: Wilder ADX period for seller engine filter
+  intraday_options_seller_target_decay_pct: 30.0 # used: seller profit target — exit when premium decays by this %
+  intraday_options_seller_stop_pct: 60.0 # used: seller stop loss — exit when premium rises by this %
+  intraday_options_seller_min_iv_percentile: 10.0 # used: minimum IV percentile for seller entry (need worthwhile premium)
+  intraday_options_seller_max_delta: 0.45 # used: maximum abs(delta) for seller entries (prefer slightly OTM)
 
 engine_defaults:
   delivery_equity:

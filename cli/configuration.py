@@ -188,7 +188,7 @@ def log_session_config_summary(config: "SessionConfig") -> None:
         "5": "Intraday Futures (MIS, F&O)",
         "6": "Intraday Options - Buy & Sell Both (MIS, ATM)",
         "7": "Intraday Options - Buyer Only (long CE)",
-        "8": "Intraday Options - Seller Only (writes PE, needs margin)",
+        "8": "Intraday Options - Independent Seller (premium decay strategies)",
     }
     rows: list[tuple[str, str]] = [
         ("Engine",            engine_labels.get(config.engine_choice, config.engine_choice)),
@@ -621,7 +621,7 @@ def collect_session_configuration() -> SessionConfig:
     log_event("[SETUP]   INTRADAY OPTIONS: MIS index options with Greeks/IV filters and auto square-off")
     log_event("[SETUP]     - BUY & SELL BOTH (6): no direction restriction (current default)")
     log_event("[SETUP]     - BUYER ONLY (7): long CE only, defined risk, holds on SELL signals")
-    log_event("[SETUP]     - SELLER ONLY (8): writes/shorts PE only, requires margin, holds on BUY signals")
+    log_event("[SETUP]     - INDEPENDENT SELLER (8): dedicated premium-decay strategies (ORB failure, VWAP fade, theta, exhaustion)")
     log_help("Pick the engine first so the bot can ask only the prompts relevant to that trading style. Example: 6 for INTRADAY OPTIONS")
 
     engine_choice = cli_input.prompt_choice(

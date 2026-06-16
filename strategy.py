@@ -9,6 +9,8 @@ logger = get_logger()
 OPTION_SIGNAL_TO_EXECUTION = {
     "BUY_CE": "BUY",
     "BUY_PE": "BUY",
+    "SELL_CE": "SELL",
+    "SELL_PE": "SELL",
     "NO_TRADE": "HOLD",
 }
 OPTION_STRATEGIES = {
@@ -19,6 +21,11 @@ OPTION_STRATEGIES = {
     "ATM_BREAKOUT_EXPANSION",
     "ATM_IV_EXPANSION",
     "ATM_TRAP_REVERSAL",
+    "ATM_ORB_FAILURE_SELL",
+    "ATM_VWAP_FADE_SELL",
+    "SHORT_THETA_AFTER_11AM",
+    "LOW_VOLATILITY_RANGE_SELL",
+    "EXHAUSTION_SELL",
 }
 OPTION_STRATEGY_MIN_CANDLES = {
     "ATM_MOMENTUM": 20,
@@ -28,6 +35,11 @@ OPTION_STRATEGY_MIN_CANDLES = {
     "ATM_BREAKOUT_EXPANSION": 45,
     "ATM_IV_EXPANSION": 30,
     "ATM_TRAP_REVERSAL": 24,
+    "ATM_ORB_FAILURE_SELL": 20,
+    "ATM_VWAP_FADE_SELL": 20,
+    "SHORT_THETA_AFTER_11AM": 16,
+    "LOW_VOLATILITY_RANGE_SELL": 28,
+    "EXHAUSTION_SELL": 20,
 }
 
 
@@ -47,9 +59,9 @@ def _normalize_ratio_component(value, baseline=1.0, span=1.0):
 
 def _build_signal_payload(signal, strength, reason, strategy_name, **extra):
     option_type = None
-    if signal == "BUY_CE":
+    if signal in {"BUY_CE", "SELL_CE"}:
         option_type = "CE"
-    elif signal == "BUY_PE":
+    elif signal in {"BUY_PE", "SELL_PE"}:
         option_type = "PE"
     payload = {
         "signal": signal,
@@ -58,7 +70,7 @@ def _build_signal_payload(signal, strength, reason, strategy_name, **extra):
         "strategy": strategy_name,
         "execution_signal": OPTION_SIGNAL_TO_EXECUTION.get(signal, signal),
         "option_type": option_type,
-        "option_signal": signal if signal in {"BUY_CE", "BUY_PE"} else None,
+        "option_signal": signal if signal in {"BUY_CE", "BUY_PE", "SELL_CE", "SELL_PE"} else None,
     }
     payload.update(extra)
     return payload
@@ -808,6 +820,274 @@ def _evaluate_legacy_signal(df, strategy_name):
     return _legacy_payload(signal, strategy_name, f"Legacy strategy result: {signal}")
 
 
+def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+    """Wilder's Average Directional Index. Returns DataFrame with adx, plus_di, minus_di."""
+    high = df["High"].astype(float)
+    low = df["Low"].astype(float)
+    close = df["Close"].astype(float)
+
+    plus_dm = high.diff()
+    minus_dm = -low.diff()
+    plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
+    minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
+
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
+    ).max(axis=1)
+
+    # Wilder's smoothing: EMA with alpha = 1/period
+    alpha = 1.0 / period
+    tr_smooth = tr.ewm(alpha=alpha, adjust=False).mean()
+    plus_dm_smooth = plus_dm.ewm(alpha=alpha, adjust=False).mean()
+    minus_dm_smooth = minus_dm.ewm(alpha=alpha, adjust=False).mean()
+
+    plus_di = 100.0 * plus_dm_smooth / tr_smooth.replace(0, float("nan"))
+    minus_di = 100.0 * minus_dm_smooth / tr_smooth.replace(0, float("nan"))
+
+    di_sum = plus_di + minus_di
+    # When both DIs are 0 (no directional movement) DX is 0, not undefined
+    dx = (100.0 * (plus_di - minus_di).abs() / di_sum.where(di_sum > 0, float("nan"))).fillna(0.0)
+    adx = dx.ewm(alpha=alpha, adjust=False).mean()
+
+    return pd.DataFrame(
+        {"adx": adx, "plus_di": plus_di, "minus_di": minus_di},
+        index=df.index,
+    ).fillna(0.0)
+
+
+def strategy_orb_failure_sell(df: pd.DataFrame, failure_window: int = 3) -> dict:
+    """ORB breakout that re-entered the range → premium decay trade."""
+    orb_candles = df.iloc[:15]
+    orb_high = float(orb_candles["High"].max())
+    orb_low = float(orb_candles["Low"].min())
+    recent = df.iloc[-failure_window:]
+    latest = df.iloc[-1]
+    close = float(latest["Close"])
+    open_ = float(latest["Open"])
+
+    # Bullish failure: broke above ORB high but closed back inside
+    if recent["High"].max() > orb_high and close < orb_high and close < open_:
+        body_ratio = abs(close - open_) / max(float(latest["High"] - latest["Low"]), 1e-9)
+        stretch = abs(close - orb_high) / max(close, 1e-9)
+        strength = _clip_strength(stretch * body_ratio * 5)
+        return _build_signal_payload(
+            signal="SELL_CE",
+            strength=strength,
+            reason=f"ORB bullish breakout failed: retraced below {orb_high:.2f}",
+            strategy_name="ATM_ORB_FAILURE_SELL",
+        )
+
+    # Bearish failure: broke below ORB low but closed back inside
+    if recent["Low"].min() < orb_low and close > orb_low and close > open_:
+        body_ratio = abs(close - open_) / max(float(latest["High"] - latest["Low"]), 1e-9)
+        stretch = abs(close - orb_low) / max(close, 1e-9)
+        strength = _clip_strength(stretch * body_ratio * 5)
+        return _build_signal_payload(
+            signal="SELL_PE",
+            strength=strength,
+            reason=f"ORB bearish breakdown failed: recovered above {orb_low:.2f}",
+            strategy_name="ATM_ORB_FAILURE_SELL",
+        )
+
+    return _no_trade("No ORB failure pattern", "ATM_ORB_FAILURE_SELL")
+
+
+def strategy_vwap_fade_sell(
+    df: pd.DataFrame,
+    adx_threshold: float = 18.0,
+    stretch_pct: float = 0.003,
+    vwap_slope_window: int = 10,
+) -> dict:
+    """Price stretched away from VWAP in low-ADX session → reversion premium decay."""
+    adx_df = compute_adx(df)
+    adx_val = float(adx_df["adx"].iloc[-1])
+    vwap_series = compute_vwap(df)
+    vwap = float(vwap_series.iloc[-1])
+    close = float(df["Close"].iloc[-1])
+
+    if adx_val >= adx_threshold:
+        return _no_trade(f"ADX {adx_val:.1f} >= {adx_threshold}: trending — skip fade", "ATM_VWAP_FADE_SELL")
+
+    # Require flat/negligible VWAP slope
+    if len(vwap_series) >= vwap_slope_window:
+        slope = (float(vwap_series.iloc[-1]) - float(vwap_series.iloc[-vwap_slope_window])) / max(vwap, 1e-9)
+        if abs(slope) >= 0.002:
+            return _no_trade("VWAP slope too steep for fade", "ATM_VWAP_FADE_SELL")
+
+    if vwap <= 0:
+        return _no_trade("VWAP unavailable", "ATM_VWAP_FADE_SELL")
+
+    deviation = (close - vwap) / vwap
+    strength = _clip_strength(abs(deviation) / max(stretch_pct, 1e-9))
+
+    # Bullish stretch: price well above VWAP → PE premium elevated
+    if deviation >= stretch_pct:
+        return _build_signal_payload(
+            signal="SELL_PE",
+            strength=strength,
+            reason=f"VWAP fade: price {deviation*100:.2f}% above VWAP in low-ADX ({adx_val:.1f}) session",
+            strategy_name="ATM_VWAP_FADE_SELL",
+        )
+
+    # Bearish stretch: price well below VWAP → CE premium elevated
+    if deviation <= -stretch_pct:
+        return _build_signal_payload(
+            signal="SELL_CE",
+            strength=strength,
+            reason=f"VWAP fade: price {abs(deviation)*100:.2f}% below VWAP in low-ADX ({adx_val:.1f}) session",
+            strategy_name="ATM_VWAP_FADE_SELL",
+        )
+
+    return _no_trade("Price within VWAP stretch threshold", "ATM_VWAP_FADE_SELL")
+
+
+def strategy_theta_sell(
+    df: pd.DataFrame,
+    time_gate_hour: int = 11,
+    adx_threshold: float = 15.0,
+    max_day_range_pct: float = 0.8,
+) -> dict:
+    """Afternoon theta capture in low-ADX, contained session — sell the premium side facing price."""
+    last_ts = df.index[-1]
+    current_hour = last_ts.hour if hasattr(last_ts, "hour") else 0
+    if current_hour < time_gate_hour:
+        return _no_trade(f"Time gate: before {time_gate_hour}:00", "SHORT_THETA_AFTER_11AM")
+
+    adx_df = compute_adx(df)
+    adx_val = float(adx_df["adx"].iloc[-1])
+    if adx_val >= adx_threshold:
+        return _no_trade(f"ADX {adx_val:.1f} >= {adx_threshold}: too directional for theta", "SHORT_THETA_AFTER_11AM")
+
+    session_df = df.loc[df.index.date == df.index[-1].date()] if hasattr(df.index, "date") else df
+    session_open = float(session_df.iloc[0]["Open"])
+    session_high = float(session_df["High"].max())
+    session_low = float(session_df["Low"].min())
+    range_pct = ((session_high - session_low) / max(session_open, 1e-9)) * 100.0
+    if range_pct >= max_day_range_pct:
+        return _no_trade(f"Day range {range_pct:.2f}% >= {max_day_range_pct}%: too wide", "SHORT_THETA_AFTER_11AM")
+
+    vwap = float(compute_vwap(df).iloc[-1])
+    close = float(df["Close"].iloc[-1])
+    strength = _clip_strength((adx_threshold - adx_val) / max(adx_threshold, 1e-9))
+
+    if close >= vwap:
+        return _build_signal_payload(
+            signal="SELL_PE",
+            strength=strength,
+            reason=f"Theta sell: post-{time_gate_hour}h, ADX={adx_val:.1f}, price above VWAP — PE decays",
+            strategy_name="SHORT_THETA_AFTER_11AM",
+        )
+    return _build_signal_payload(
+        signal="SELL_CE",
+        strength=strength,
+        reason=f"Theta sell: post-{time_gate_hour}h, ADX={adx_val:.1f}, price below VWAP — CE decays",
+        strategy_name="SHORT_THETA_AFTER_11AM",
+    )
+
+
+def strategy_low_vol_range_sell(
+    df: pd.DataFrame,
+    adx_threshold: float = 20.0,
+    atr_ratio_threshold: float = 0.8,
+) -> dict:
+    """Contracting ATR + ADX in range → OTM premium decay on whichever wing faces price."""
+    atr_series = compute_atr(df)
+    if len(atr_series) < 14:
+        return _no_trade("Not enough ATR data", "LOW_VOLATILITY_RANGE_SELL")
+    atr_val = float(atr_series.iloc[-1])
+    atr_ma = float(atr_series.rolling(14).mean().iloc[-1])
+    if atr_ma <= 0 or atr_val != atr_val or atr_ma != atr_ma:
+        return _no_trade("ATR unavailable", "LOW_VOLATILITY_RANGE_SELL")
+
+    atr_ratio = atr_val / atr_ma
+    if atr_ratio >= atr_ratio_threshold:
+        return _no_trade(f"ATR ratio {atr_ratio:.2f} >= {atr_ratio_threshold}: volatility not contracting", "LOW_VOLATILITY_RANGE_SELL")
+
+    adx_df = compute_adx(df)
+    adx_val = float(adx_df["adx"].iloc[-1])
+    if adx_val >= adx_threshold:
+        return _no_trade(f"ADX {adx_val:.1f} >= {adx_threshold}: trending", "LOW_VOLATILITY_RANGE_SELL")
+
+    close = float(df["Close"].iloc[-1])
+    session_df = df.loc[df.index.date == df.index[-1].date()] if hasattr(df.index, "date") else df
+    day_high = float(session_df["High"].max())
+    day_low = float(session_df["Low"].min())
+    mid = (day_high + day_low) / 2.0
+    strength = _clip_strength((1.0 - atr_ratio) * (1.0 - adx_val / max(adx_threshold, 1e-9)))
+
+    if close >= mid:
+        # Upper half → CE is the farther OTM wing to sell; pass strike_offset=+1
+        return _build_signal_payload(
+            signal="SELL_CE",
+            strength=strength,
+            reason=f"Low-vol range sell: ATR ratio={atr_ratio:.2f}, ADX={adx_val:.1f}, price in upper half",
+            strategy_name="LOW_VOLATILITY_RANGE_SELL",
+            strike_offset=1,
+        )
+    # Lower half → PE is the farther OTM wing to sell; pass strike_offset=-1
+    return _build_signal_payload(
+        signal="SELL_PE",
+        strength=strength,
+        reason=f"Low-vol range sell: ATR ratio={atr_ratio:.2f}, ADX={adx_val:.1f}, price in lower half",
+        strategy_name="LOW_VOLATILITY_RANGE_SELL",
+        strike_offset=-1,
+    )
+
+
+def strategy_exhaustion_sell(
+    df: pd.DataFrame,
+    rsi_overbought: float = 75.0,
+    rsi_oversold: float = 25.0,
+    vwap_distance_atr: float = 1.5,
+    momentum_lookback: int = 3,
+) -> dict:
+    """Extreme RSI + far-from-VWAP with weakening momentum → sell the crowded premium."""
+    rsi_series = compute_rsi(df["Close"])
+    if rsi_series.empty or len(rsi_series) < momentum_lookback + 1:
+        return _no_trade("RSI unavailable", "EXHAUSTION_SELL")
+    rsi = float(rsi_series.iloc[-1])
+
+    atr_series = compute_atr(df)
+    atr_val = float(atr_series.iloc[-1]) if not atr_series.empty else 0.0
+    vwap = float(compute_vwap(df).iloc[-1])
+    close = float(df["Close"].iloc[-1])
+    distance = abs(close - vwap)
+
+    if distance < atr_val * vwap_distance_atr:
+        return _no_trade("Price not far enough from VWAP for exhaustion", "EXHAUSTION_SELL")
+
+    recent_rsi = rsi_series.iloc[-momentum_lookback - 1:]
+
+    # Bullish exhaustion: extreme overbought + weakening momentum
+    if rsi >= rsi_overbought and close > vwap:
+        rsi_declining = float(recent_rsi.iloc[-1]) < float(recent_rsi.iloc[0])
+        if not rsi_declining:
+            return _no_trade("RSI overbought but still rising — exhaustion not confirmed", "EXHAUSTION_SELL")
+        strength = _clip_strength(((rsi - rsi_overbought) / 25.0) * (distance / max(atr_val, 1e-9) / vwap_distance_atr))
+        return _build_signal_payload(
+            signal="SELL_CE",
+            strength=strength,
+            reason=f"Bullish exhaustion: RSI={rsi:.1f}, price {distance/max(atr_val,1e-9):.1f}x ATR above VWAP",
+            strategy_name="EXHAUSTION_SELL",
+        )
+
+    # Bearish exhaustion: extreme oversold + momentum bottoming
+    if rsi <= rsi_oversold and close < vwap:
+        rsi_rising = float(recent_rsi.iloc[-1]) > float(recent_rsi.iloc[0])
+        if not rsi_rising:
+            return _no_trade("RSI oversold but still falling — exhaustion not confirmed", "EXHAUSTION_SELL")
+        strength = _clip_strength(((rsi_oversold - rsi) / 25.0) * (distance / max(atr_val, 1e-9) / vwap_distance_atr))
+        return _build_signal_payload(
+            signal="SELL_PE",
+            strength=strength,
+            reason=f"Bearish exhaustion: RSI={rsi:.1f}, price {distance/max(atr_val,1e-9):.1f}x ATR below VWAP",
+            strategy_name="EXHAUSTION_SELL",
+        )
+
+    return _no_trade("No exhaustion pattern detected", "EXHAUSTION_SELL")
+
+
 def generate_signal_payload(df, strategy_name):
     logger.info("\n[STRATEGY] Using: %s", strategy_name)
 
@@ -830,6 +1110,16 @@ def generate_signal_payload(df, strategy_name):
         return strategy_iv_expansion(df)
     if strategy_name == "ATM_TRAP_REVERSAL":
         return strategy_trap_reversal(df)
+    if strategy_name == "ATM_ORB_FAILURE_SELL":
+        return strategy_orb_failure_sell(df)
+    if strategy_name == "ATM_VWAP_FADE_SELL":
+        return strategy_vwap_fade_sell(df)
+    if strategy_name == "SHORT_THETA_AFTER_11AM":
+        return strategy_theta_sell(df)
+    if strategy_name == "LOW_VOLATILITY_RANGE_SELL":
+        return strategy_low_vol_range_sell(df)
+    if strategy_name == "EXHAUSTION_SELL":
+        return strategy_exhaustion_sell(df)
 
     return _evaluate_legacy_signal(df, strategy_name)
 

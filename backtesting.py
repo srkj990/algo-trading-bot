@@ -1028,38 +1028,65 @@ class BacktestEngine:
             trailing_activation_distance = float(actual_targets["trailing_activation_distance"])
             if is_intraday_options_engine_name(self.config.engine_name):
                 try:
-                    self.positions[candidate["symbol"]] = self.engine_helper.build_trend_adaptive_position(
-                        symbol=candidate["symbol"],
-                        side=candidate["signal"],
-                        quantity=qty,
-                        entry_price=entry_price,
-                        atr=float(candidate["atr"] or 0.0),
-                        signal_score=float(candidate.get("score") or 0.0),
-                        analytics=dict(candidate.get("analytics") or {}),
-                        lot_size=get_contract_lot_size(candidate["symbol"]) if ":" in candidate["symbol"] else 1,
-                        now=pd.Timestamp(timestamp).to_pydatetime(),
-                        entry_analytics=dict(candidate.get("analytics") or {}),
-                        engine_name=self.config.engine_name,
-                        execution_mode="PAPER",
-                        order_product=self.engine_helper.order_product,
-                        premium_volatility_distance=float(
-                            candidate.get("premium_volatility_distance") or 0.0
-                        ),
-                        extra_fields={
-                            "trade_identity": trade_identity,
-                            "asset_class": actual_targets["asset_class"],
-                            "risk_profile": actual_targets["risk_profile"],
-                            "cost_to_profit_ratio": actual_targets["cost_to_profit_ratio"],
-                            "expected_costs": actual_targets["expected_costs"],
-                            "expected_net_profit": actual_targets["expected_net_profit"],
-                            "partial_exit_events": [],
-                            "realized_pnl_parts": 0.0,
-                            "realized_charges_parts": 0.0,
-                            "exit_mode": self.config.exit_mode,
-                        },
-                        risk_style_name=self.config.risk_style_name,
-                        partial_exit_override=self.config.partial_exit_enabled,
-                    )
+                    lot_size = get_contract_lot_size(candidate["symbol"]) if ":" in candidate["symbol"] else 1
+                    now_dt = pd.Timestamp(timestamp).to_pydatetime()
+                    if self.config.engine_name == "intraday_options_seller" and hasattr(
+                        self.engine_helper, "build_seller_position"
+                    ):
+                        self.positions[candidate["symbol"]] = self.engine_helper.build_seller_position(
+                            symbol=candidate["symbol"],
+                            side=candidate["signal"],
+                            quantity=qty,
+                            entry_price=entry_price,
+                            atr=float(candidate["atr"] or 0.0),
+                            lot_size=lot_size,
+                            now=now_dt,
+                            entry_analytics=dict(candidate.get("analytics") or {}),
+                            engine_name=self.config.engine_name,
+                            execution_mode="PAPER",
+                            order_product=self.engine_helper.order_product,
+                            extra_fields={
+                                "trade_identity": trade_identity,
+                                "asset_class": actual_targets["asset_class"],
+                                "risk_profile": actual_targets["risk_profile"],
+                                "partial_exit_events": [],
+                                "realized_pnl_parts": 0.0,
+                                "realized_charges_parts": 0.0,
+                            },
+                        )
+                    else:
+                        self.positions[candidate["symbol"]] = self.engine_helper.build_trend_adaptive_position(
+                            symbol=candidate["symbol"],
+                            side=candidate["signal"],
+                            quantity=qty,
+                            entry_price=entry_price,
+                            atr=float(candidate["atr"] or 0.0),
+                            signal_score=float(candidate.get("score") or 0.0),
+                            analytics=dict(candidate.get("analytics") or {}),
+                            lot_size=lot_size,
+                            now=now_dt,
+                            entry_analytics=dict(candidate.get("analytics") or {}),
+                            engine_name=self.config.engine_name,
+                            execution_mode="PAPER",
+                            order_product=self.engine_helper.order_product,
+                            premium_volatility_distance=float(
+                                candidate.get("premium_volatility_distance") or 0.0
+                            ),
+                            extra_fields={
+                                "trade_identity": trade_identity,
+                                "asset_class": actual_targets["asset_class"],
+                                "risk_profile": actual_targets["risk_profile"],
+                                "cost_to_profit_ratio": actual_targets["cost_to_profit_ratio"],
+                                "expected_costs": actual_targets["expected_costs"],
+                                "expected_net_profit": actual_targets["expected_net_profit"],
+                                "partial_exit_events": [],
+                                "realized_pnl_parts": 0.0,
+                                "realized_charges_parts": 0.0,
+                                "exit_mode": self.config.exit_mode,
+                            },
+                            risk_style_name=self.config.risk_style_name,
+                            partial_exit_override=self.config.partial_exit_enabled,
+                        )
                 except ValueError:
                     continue
                 self.positions[candidate["symbol"]]["min_breakeven_price"] = float(actual_targets["min_breakeven_price"])

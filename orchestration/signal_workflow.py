@@ -400,7 +400,7 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
                 min_confirmations=active_min_confirmations,
             )
 
-        if dynamic_atm_scan and evaluation.get("signal") in {"BUY", "SELL"} and evaluation.get("option_signal") not in {"BUY_CE", "BUY_PE"}:
+        if dynamic_atm_scan and evaluation.get("signal") in {"BUY", "SELL"} and evaluation.get("option_signal") not in {"BUY_CE", "BUY_PE", "SELL_CE", "SELL_PE"}:
             # Multi-strategy produced a directional signal but CE/PE votes were tied or absent —
             # cannot resolve which contract to enter. Block the entry.
             evaluation["signal"] = "HOLD"
@@ -422,7 +422,7 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
                 evaluation["option_signal"] = "BUY_CE"
                 evaluation["option_type"] = "CE"
 
-        if dynamic_atm_scan and evaluation.get("option_signal") in {"BUY_CE", "BUY_PE"}:
+        if dynamic_atm_scan and evaluation.get("option_signal") in {"BUY_CE", "BUY_PE", "SELL_CE", "SELL_PE"}:
             try:
                 contract_snapshot = resolve_atm_option_contract_snapshot(
                     engine,

@@ -74,20 +74,51 @@ gates `apply_signal_filters` before any other check:
 |---------------|--------|--------------------------|----------|
 | **6 — Buy + Sell Both** | `intraday_options` (alias `IntradayOptionsBothEngine`) | `BUY_SELL_BOTH` | No restriction — current default, unchanged from prior releases. |
 | **7 — Buyer Only** | `intraday_options_buyer` | `BUY_ONLY` | Trades both directions as an **options buyer** — BUY CE on bullish signals, BUY PE on bearish signals. Never writes/shorts options. All downstream filters (underlying bias, VWAP, entry quality) still apply. |
-| **8 — Seller Only** | `intraday_options_seller` | `SELL_ONLY` | Trades both directions as an **options writer** — SELL PE on bearish signals, SELL CE on bullish signals. **Requires margin for all positions.** Never buys options long. All downstream filters still apply. |
+| **8 — Independent Seller** | `intraday_options_seller` | `SELL_ONLY` | Five dedicated **premium-decay strategies** that generate `SELL_CE` / `SELL_PE` signals directly. No contract pre-flip. Fixed decay-% exits (HARD_TARGET). ADX gate + regime gate. See §1.2. |
 
 **Choosing an engine:**
 - **Buyer Only (7)** — for accounts without F&O sell margin, or traders who
   want defined-risk (premium-capped) exposure only. Trades CE on bullish bars
   and PE on bearish bars — never writes options.
-- **Seller Only (8)** — for accounts with sufficient margin who want to
-  collect premium via option-writing only. Writes PE on bearish bars and CE
-  on bullish bars — never buys options long.
+- **Independent Seller (8)** — for accounts with sufficient margin. Uses five
+  dedicated seller strategies (ORB failure, VWAP fade, theta, low-vol range,
+  exhaustion) that generate `SELL_CE`/`SELL_PE` signals directly based on
+  premium-decay conditions rather than directional momentum.
 - **Buy + Sell Both (6)** — unrestricted, takes whichever side the aggregator
   resolves to. This is the original engine identity and config key; all 69+
   existing `engine_name == "intraday_options"`-keyed config blocks
   (`fno.intraday_options_*`, `engine_defaults.intraday_options`, etc.) apply
   identically to all three engines.
+
+---
+
+### 1.2 Independent Seller Engine (8) — Strategy Reference
+
+Engine 8 (`intraday_options_seller`) uses five independent strategies. Each
+generates `SELL_CE` or `SELL_PE` directly — no directional flip needed.
+Exit levels are premium-percentage based (HARD_TARGET mode; no trailing).
+
+| # | Strategy key | Signal logic | Entry type |
+|---|--------------|-------------|------------|
+| 1 | `ATM_ORB_FAILURE_SELL` | ORB breakout that re-enters the range + reversal body | `SELL_CE` on bullish failure, `SELL_PE` on bearish failure |
+| 2 | `ATM_VWAP_FADE_SELL` | Price stretched ≥0.3% from VWAP in low-ADX (<18) session | `SELL_PE` if above VWAP, `SELL_CE` if below VWAP |
+| 3 | `SHORT_THETA_AFTER_11AM` | Post-11AM, ADX<15, contained day range (<0.8%) | VWAP tiebreaker: PE if price ≥ VWAP, CE otherwise |
+| 4 | `LOW_VOLATILITY_RANGE_SELL` | ATR contracting (ratio<0.8) + ADX<20; OTM strike offset ±1 | CE if in upper half of day range, PE in lower half |
+| 5 | `EXHAUSTION_SELL` | RSI>75 or RSI<25 + price >1.5 ATR from VWAP + momentum reversing | `SELL_CE` on bullish exhaustion, `SELL_PE` on bearish |
+
+**Seller filter chain** (applies after strategy fires):
+1. Block any non-SELL signal immediately (seller never buys)
+2. ADX gate: block if ADX > `intraday_options_seller_max_adx` (default 22)
+3. Regime gate: block in EXPANSION regime unless strategy is EXHAUSTION_SELL
+4. IV floor: block if IV percentile < `intraday_options_seller_min_iv_percentile` (default 10)
+5. Delta ceiling: block if |delta| > `intraday_options_seller_max_delta` (default 0.45)
+6. Score floor: shared `intraday_options_min_signal_score`
+
+**Exit mechanics:**
+- `stop_loss = entry × (1 + seller_stop_pct/100)` — default 60% above entry
+- `target = entry × (1 − seller_target_decay_pct/100)` — default 30% below entry
+- `exit_mode = "HARD_TARGET"` — no trailing stop movement
+- Margin sizing uses `intraday_options_sell_margin_pct` (same as the parent engine)
 
 ---
 
@@ -937,6 +968,12 @@ All parameters are in `config/config.runtime.yaml`.
 | `intraday_options_roll_trigger_pct` | 2.0 | Underlying move % to trigger ATM roll |
 | `intraday_options_theta_exit_ratio` | 0.08 | Theta decay exit threshold |
 | `intraday_options_theta_exit_min_minutes` | 10 | Min hold before theta exit can trigger |
+| `intraday_options_seller_max_adx` | 22.0 | Engine 8 ADX gate — block entry if ADX exceeds this (strong trend = premium spike risk) |
+| `intraday_options_seller_adx_period` | 14 | Wilder ADX period for engine 8 filter |
+| `intraday_options_seller_target_decay_pct` | 30.0 | Engine 8 profit target: exit when premium decays by this % |
+| `intraday_options_seller_stop_pct` | 60.0 | Engine 8 stop loss: exit when premium rises by this % |
+| `intraday_options_seller_min_iv_percentile` | 10.0 | Engine 8 IV floor: minimum IV percentile for entry (need worthwhile premium) |
+| `intraday_options_seller_max_delta` | 0.45 | Engine 8 delta ceiling: max abs(delta) — prefer slightly OTM |
 
 ### Engine defaults section (intraday_options)
 

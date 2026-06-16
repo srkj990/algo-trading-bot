@@ -1258,12 +1258,13 @@ class IntradayOptionsDirectionModeTests(unittest.TestCase):
         filtered = engine.apply_signal_filters(self._evaluation("BUY"), self._intraday_df())
         self.assertEqual(filtered["signal"], "BUY")
 
-    def test_seller_engine_converts_buy_to_sell_pe(self) -> None:
+    def test_seller_engine_blocks_buy_signal(self) -> None:
+        # Independent seller engine no longer flips BUY→SELL; it generates SELL_CE/SELL_PE
+        # directly via its own strategies. A BUY signal reaching apply_signal_filters is blocked.
         engine = IntradayOptionsSellerEngine(5.0, 10.0, 4.0)
         filtered = engine.apply_signal_filters(self._evaluation("BUY"), self._intraday_df())
-        self.assertEqual(filtered["signal"], "SELL")
-        self.assertEqual(filtered["agreement_count"], 2)
-        self.assertEqual(filtered["score"], 1.5)
+        self.assertEqual(filtered["signal"], "HOLD")
+        self.assertEqual(filtered["agreement_count"], 0)
 
     def test_seller_engine_passes_sell_signal_through(self) -> None:
         engine = IntradayOptionsSellerEngine(5.0, 10.0, 4.0)
