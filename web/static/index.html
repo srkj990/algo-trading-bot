@@ -1083,6 +1083,15 @@ const IOPTS_STRATEGIES_ORDERED = [
   'ATM_IV_EXPANSION',       // #6 Volatility ignition
   'ATM_VWAP_REVERSION',     // #7 Sideways only
 ];
+// Independent Seller (Engine 8) strategies — premium decay, not directional momentum
+const SELLER_STRATEGIES_ORDERED = [
+  'ATM_ORB_FAILURE_SELL',      // #1 Failed ORB breakout — premium decays back in range
+  'ATM_VWAP_FADE_SELL',        // #2 Price stretched from VWAP in low-ADX session
+  'SHORT_THETA_AFTER_11AM',    // #3 Post-11AM theta capture (contained day)
+  'LOW_VOLATILITY_RANGE_SELL', // #4 Contracting ATR+ADX — OTM premium decays
+  'EXHAUSTION_SELL',           // #5 Extreme RSI + far-from-VWAP + momentum reversing
+];
+const SELLER_DEFAULT_STRATS = ['ATM_ORB_FAILURE_SELL', 'ATM_VWAP_FADE_SELL', 'EXHAUSTION_SELL'];
 const FNO_STRATEGIES = {
   ATM_MOMENTUM:'ATM_MOMENTUM', ATM_ORB:'ATM_ORB',
   ATM_VWAP_REVERSION:'ATM_VWAP_REVERSION', ATM_MULTI:'ATM_MULTI',
@@ -1091,6 +1100,9 @@ const FNO_STRATEGIES = {
 };
 const IS_FNO   = e => ['3','4','5','6','7','8'].includes(e);
 const IS_IOPTS = e => e === '6' || e === '7' || e === '8';
+const IS_SELLER_IOPTS = e => e === '8';
+const iOptsStratList = e => IS_SELLER_IOPTS(e) ? SELLER_STRATEGIES_ORDERED : IOPTS_STRATEGIES_ORDERED;
+const iOptsDefaultStrats = e => IS_SELLER_IOPTS(e) ? SELLER_DEFAULT_STRATS : ['ATM_MULTI', 'ATM_ORB', 'ATM_BREAKOUT_EXPANSION', 'ATM_MOMENTUM'];
 
 // Filled by loadRuntimeDefaults() — maps engine choice string → [period, interval]
 let _enginePeriodInterval = {
@@ -1479,10 +1491,10 @@ function onEngineChange(scope) {
     tog('lot-mode-wrap',     IS_IOPTS(eng));
     tog('iopts-advanced-wrap', IS_IOPTS(eng));
     const strats = fno ? FNO_STRATEGIES : EQ_STRATEGIES;
-    populateSelect('c-strat-name',  IS_IOPTS(eng) ? IOPTS_STRATEGIES_ORDERED : Object.values(strats));
-    populateSelect('c-strat-multi', IS_IOPTS(eng) ? IOPTS_STRATEGIES_ORDERED : Object.values(strats));
+    populateSelect('c-strat-name',  IS_IOPTS(eng) ? iOptsStratList(eng) : Object.values(strats));
+    populateSelect('c-strat-multi', IS_IOPTS(eng) ? iOptsStratList(eng) : Object.values(strats));
     if (IS_IOPTS(eng)) {
-      populateStrategyCheckboxes('c-strat-checkboxes', 'c-strat-multi', IOPTS_STRATEGIES_ORDERED, ['ATM_MULTI', 'ATM_ORB', 'ATM_BREAKOUT_EXPANSION', 'ATM_MOMENTUM']);
+      populateStrategyCheckboxes('c-strat-checkboxes', 'c-strat-multi', iOptsStratList(eng), iOptsDefaultStrats(eng));
       if (!document.getElementById('c-strat-mode')._ioptsTouched) {
         document.getElementById('c-strat-mode').value = '2';
       }
@@ -1503,10 +1515,10 @@ function onEngineChange(scope) {
       if (bothOpt) bothOpt.disabled = IS_IOPTS(eng);
     }
     const strats = fno ? FNO_STRATEGIES : EQ_STRATEGIES;
-    populateSelect('b-strat-name',  IS_IOPTS(eng) ? IOPTS_STRATEGIES_ORDERED : Object.values(strats));
-    populateSelect('b-strat-multi', IS_IOPTS(eng) ? IOPTS_STRATEGIES_ORDERED : Object.values(strats));
+    populateSelect('b-strat-name',  IS_IOPTS(eng) ? iOptsStratList(eng) : Object.values(strats));
+    populateSelect('b-strat-multi', IS_IOPTS(eng) ? iOptsStratList(eng) : Object.values(strats));
     if (IS_IOPTS(eng)) {
-      populateStrategyCheckboxes('b-strat-checkboxes', 'b-strat-multi', IOPTS_STRATEGIES_ORDERED, ['ATM_MULTI', 'ATM_ORB', 'ATM_BREAKOUT_EXPANSION', 'ATM_MOMENTUM']);
+      populateStrategyCheckboxes('b-strat-checkboxes', 'b-strat-multi', iOptsStratList(eng), iOptsDefaultStrats(eng));
       if (!document.getElementById('b-strat-mode')._ioptsTouched) {
         document.getElementById('b-strat-mode').value = '2';
       }
@@ -2563,6 +2575,11 @@ const IOPTS_STRATEGY_HINTS = {
   ATM_MOMENTUM:           '#5 Trend continuation',
   ATM_IV_EXPANSION:       '#6 Volatility ignition',
   ATM_VWAP_REVERSION:     '#7 Sideways only',
+  ATM_ORB_FAILURE_SELL:      '#1 Failed ORB breakout',
+  ATM_VWAP_FADE_SELL:        '#2 VWAP fade, low ADX',
+  SHORT_THETA_AFTER_11AM:    '#3 Post-11AM theta',
+  LOW_VOLATILITY_RANGE_SELL: '#4 Contracting vol OTM',
+  EXHAUSTION_SELL:           '#5 RSI extreme exhaustion',
 };
 
 function populateStrategyCheckboxes(boxId, selectId, strategies, defaultChecked) {
