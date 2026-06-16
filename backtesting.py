@@ -36,7 +36,7 @@ from engines import (
     IntradayOptionsSellerEngine,
     OptionsEquityEngine,
 )
-from engines.common import build_position, evaluate_exit, resolve_trade_targets, update_trailing_stop
+from engines.common import build_position, evaluate_exit, option_effective_sizing_price, resolve_trade_targets, update_trailing_stop
 from fno_data_fetcher import (
     get_available_expiries,
     get_available_option_strikes,
@@ -134,6 +134,17 @@ VALID_BACKTEST_INTERVALS = (
     "1d",
 )
 
+
+def _option_effective_price_for_sizing(candidate: dict, sell_margin_pct: float) -> float:
+    underlying = float((candidate.get("analytics") or {}).get("underlying_price") or 0.0)
+    return option_effective_sizing_price(
+        signal=str(candidate.get("signal") or ""),
+        premium=float(candidate.get("latest_close") or 1.0),
+        underlying_price=underlying,
+        sell_margin_pct=sell_margin_pct,
+    )
+
+
 @dataclass
 class BacktestConfig:
     engine_name: str
@@ -156,6 +167,7 @@ class BacktestConfig:
     universe: tuple[str, ...]
     one_trade_per_symbol_per_day: bool = True
     intraday_options_lot_mode: str = "CAPITAL_BASED"
+    intraday_options_sell_margin_pct: float = 0.12
     intraday_options_entry_mode: str = "LIVE_STAGED"
     summary_lines: list[str] = field(default_factory=list)
     option_backtest_settings: dict[str, Any] | None = None
@@ -894,7 +906,12 @@ class BacktestEngine:
                         float(self.config.max_capital_per_trade),
                         float(remaining_deployable),
                     )
-                    qty = int(available_capital / candidate["latest_close"])
+                    # Sellers put up SPAN margin, not premium. Use underlying × margin_pct
+                    # as the effective cost-per-unit so lot sizing is capital-appropriate.
+                    effective_price = _option_effective_price_for_sizing(
+                        candidate, self.config.intraday_options_sell_margin_pct
+                    )
+                    qty = int(available_capital / effective_price)
             elif (
                 self.config.engine_name in {"intraday_equity", "delivery_equity"}
                 and hasattr(self.engine_helper, "get_trend_adaptive_level_spec")
@@ -921,8 +938,11 @@ class BacktestEngine:
                     risk_percent=self.config.risk_percent,
                 )
                 qty = sizing["quantity"]
-            qty = min(qty, int(self.config.max_capital_per_trade / candidate["latest_close"]))
-            qty = min(qty, int(remaining_deployable / candidate["latest_close"]))
+            _cap_price = _option_effective_price_for_sizing(
+                candidate, self.config.intraday_options_sell_margin_pct
+            ) if is_intraday_options_engine_name(self.config.engine_name) else float(candidate["latest_close"])
+            qty = min(qty, int(self.config.max_capital_per_trade / _cap_price))
+            qty = min(qty, int(remaining_deployable / _cap_price))
             if is_intraday_options_engine_name(self.config.engine_name):
                 qty = self.engine_helper.apply_entry_allocation_limit(
                     candidate["symbol"],
@@ -1129,6 +1149,9 @@ class BacktestEngine:
                     "strike": candidate.get("strike"),
                     "option_type": candidate.get("option_type"),
                     "entry_reason": candidate.get("reason"),
+                    "stop_loss": actual_targets.get("stop_loss"),
+                    "target": actual_targets.get("target"),
+                    "trailing_stop": actual_targets.get("trailing_stop"),
                 }
             )
 
@@ -1328,6 +1351,7 @@ class BacktestEngine:
                     "iv": _safe_iv(_analytics.get("iv")),
                     "stop_loss": _safe_price(trade.get("stop_loss")),
                     "target": _safe_price(trade.get("target")),
+                    "trailing_stop": _safe_price(trade.get("trailing_stop")),
                 })
                 break
 
@@ -1994,6 +2018,7 @@ def prompt_backtest_config():
         option_backtest_settings = None
 
     intraday_options_lot_mode = str(get_runtime_config().fno.intraday_options_lot_mode or "CAPITAL_BASED").upper()
+    intraday_options_sell_margin_pct = float(get_runtime_config().fno.intraday_options_sell_margin_pct or 0.12)
     bt_max_trades_per_underlying = None
     bt_time_exit_minutes = None
     bt_forming_tick_enabled = None
@@ -2200,6 +2225,7 @@ def prompt_backtest_config():
         universe=universe,
         one_trade_per_symbol_per_day=one_trade_per_symbol_per_day,
         intraday_options_lot_mode=intraday_options_lot_mode,
+        intraday_options_sell_margin_pct=intraday_options_sell_margin_pct,
         intraday_options_entry_mode=intraday_options_entry_mode,
         summary_lines=summary_lines,
         option_backtest_settings=option_backtest_settings,

@@ -150,6 +150,23 @@ def apply_capital_limits_to_quantity(
     return limited_qty
 
 
+def option_effective_sizing_price(
+    signal: str,
+    premium: float,
+    underlying_price: float,
+    sell_margin_pct: float,
+) -> float:
+    """Per-unit capital cost for option lot sizing.
+
+    Buyers pay the option premium.
+    Sellers put up SPAN + exposure margin (not premium), so effective
+    cost-per-unit is  underlying_price × sell_margin_pct.
+    """
+    if signal == "SELL" and underlying_price > 0:
+        return max(underlying_price * sell_margin_pct, 0.01)
+    return max(float(premium), 0.01)
+
+
 def resolve_trade_targets(
     *,
     engine_name: str,

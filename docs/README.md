@@ -1,7 +1,7 @@
 # Algo Trading Bot
 
 Algorithmic trading and backtesting system for Indian markets (NSE/BSE/NFO/BFO).
-Supports six trading engines across three execution modes with shared signal, risk, and position logic.
+Supports eight trading engines across three execution modes with shared signal, risk, and position logic.
 
 For day-to-day operator instructions, read [HOW_TO_USE.md](./HOW_TO_USE.md).
 
@@ -32,7 +32,9 @@ The system is operated entirely through a browser-based web UI — no console in
 | 3 | `futures_equity` | `NRML` | `5m` live / `15m` backtest | Positional index futures |
 | 4 | `options_equity` | `NRML` | `15m` | Positional index options |
 | 5 | `intraday_futures` | `MIS` | `3m` live / `5m` backtest | Intraday index futures |
-| 6 | `intraday_options` | `MIS` | `1m` | Intraday ATM option runner |
+| 6 | `intraday_options` | `MIS` | `1m` | Intraday ATM option runner — both directions (long + short) |
+| 7 | `intraday_options_buyer` | `MIS` | `1m` | Intraday ATM option buyer only — BUY CE (bullish) / BUY PE (bearish), no margin required |
+| 8 | `intraday_options_seller` | `MIS` | `1m` | Intraday ATM option writer only — SELL PE (bullish) / SELL CE (bearish), margin required |
 
 ---
 

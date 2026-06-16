@@ -622,18 +622,28 @@ class IntradayOptionsEngine(OptionsEquityEngine):
 
         if filtered.get("signal") in {"BUY", "SELL"}:
             mode = str(getattr(self, "trade_direction_mode", "BUY_SELL_BOTH")).upper()
-            if mode == "BUY_ONLY" and filtered["signal"] == "SELL":
-                # Bearish direction → buy PE (long put) instead of blocking
+            if mode == "SELL_ONLY":
+                # Contract was pre-flipped in signal_workflow (CE↔PE) before being fetched.
+                # Writers always take SELL direction; buyer-oriented bias filter is inverted
+                # for sellers so skip it.
+                if filtered["signal"] == "BUY":
+                    filtered["options_filter_note"] = (
+                        "Seller mode: bullish direction → writing PE (short put)"
+                    )
+                else:
+                    filtered.setdefault(
+                        "options_filter_note",
+                        "Seller mode: bearish direction → writing CE (short call)",
+                    )
+                filtered["signal"] = "SELL"
+                if analytics is not None:
+                    analytics["skip_underlying_bias"] = True
+                # fall through to remaining filters
+            elif mode in {"BUY_ONLY", "BUY_SELL_BOTH"} and filtered["signal"] == "SELL":
+                # Bearish direction → buy PE (long put)
                 filtered["signal"] = "BUY"
                 filtered["options_filter_note"] = (
                     "Buyer mode: bearish direction → buying PE (long put)"
-                )
-                # fall through to remaining filters
-            elif mode == "SELL_ONLY" and filtered["signal"] == "BUY":
-                # Bullish direction → write CE (short call) instead of blocking
-                filtered["signal"] = "SELL"
-                filtered["options_filter_note"] = (
-                    "Seller mode: bullish direction → writing CE (short call)"
                 )
                 # fall through to remaining filters
 
@@ -1804,8 +1814,9 @@ class IntradayOptionsBuyerEngine(IntradayOptionsEngine):
 
 
 class IntradayOptionsSellerEngine(IntradayOptionsEngine):
-    """Options writer: opens short positions in both directions — SELL PE on bearish signals,
-    SELL CE on bullish signals. Never buys options long."""
+    """Options writer: opens short positions in both directions — SELL PE on bullish signals
+    (PE loses value when market rises), SELL CE on bearish signals (CE loses value when market
+    falls). Never buys options long."""
 
     name = "intraday_options_seller"
     trade_direction_mode = "SELL_ONLY"

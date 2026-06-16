@@ -78,6 +78,10 @@ class Position:
         trailing_distance = self.trailing_distance
         if trailing_pct <= 0 and trailing_distance is None:
             return False
+        if exit_mode == "HARD_TARGET":
+            # In hard-target mode the trailing stop is a fixed ceiling/floor at entry price.
+            # We don't trail it; the position exits either at the hard target or at the stop.
+            return False
 
         old_trailing = self.trailing_stop
         if self.side == PositionSide.BUY:

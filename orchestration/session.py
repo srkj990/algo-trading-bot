@@ -22,6 +22,7 @@ from engines.common import (
     count_open_structures,
     get_deployed_capital,
     log_positions,
+    option_effective_sizing_price,
     resolve_trade_targets,
 )
 from fno_data_fetcher import (
@@ -1283,6 +1284,18 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
             "stop_distance": stop_distance,
             "stop_loss_price": stop_loss_price,
         }
+        _sell_margin_pct = float(
+            getattr(get_runtime_config().fno, "intraday_options_sell_margin_pct", 0.12) or 0.12
+        )
+        _underlying_price = float(
+            (candidate.get("analytics") or {}).get("underlying_price") or 0.0
+        )
+        _eff_price = option_effective_sizing_price(
+            signal=str(candidate.get("signal") or ""),
+            premium=entry_price,
+            underlying_price=_underlying_price,
+            sell_margin_pct=_sell_margin_pct,
+        )
         if cfg.intraday_options_lot_mode == "ONE_LOT":
             qty = get_contract_lot_size(symbol)
         else:
@@ -1292,7 +1305,7 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
                 float(cfg.max_capital_per_trade),
                 float(remaining_deployable),
             )
-            qty = int(available_capital / entry_price) if entry_price > 0 else 0
+            qty = int(available_capital / _eff_price) if _eff_price > 0 else 0
     elif engine.name in {"intraday_equity", "delivery_equity"} and hasattr(engine, "get_trend_adaptive_level_spec"):
         level_spec = engine.get_trend_adaptive_level_spec(
             entry_price=entry_price,
@@ -1326,9 +1339,14 @@ def _execute_single_entry(context, candidate, now, deployed_capital, cycle_state
         )
         qty = sizing["quantity"]
 
+    _sizing_price = (
+        _eff_price
+        if is_intraday_options_engine_name(engine.name) and cfg.atm_option_config
+        else entry_price
+    )
     qty = apply_capital_limits_to_quantity(
         qty,
-        entry_price,
+        _sizing_price,
         cfg.max_capital_per_trade,
         cfg.max_capital_deployed,
         deployed_capital,

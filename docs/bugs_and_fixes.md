@@ -1744,24 +1744,151 @@ early-return blocks that converted the signal to HOLD on the "opposite" directio
 Replace early-return HOLD blocks with direction-conversion blocks (no early return):
 ```python
 if mode == "BUY_ONLY" and filtered["signal"] == "SELL":
-    filtered["signal"] = "BUY"   # bearish → buy PE
+    filtered["signal"] = "BUY"   # bearish → buy PE (long put, defined risk)
     filtered["options_filter_note"] = "Buyer mode: bearish direction → buying PE (long put)"
     # fall through to remaining filters
 elif mode == "SELL_ONLY" and filtered["signal"] == "BUY":
-    filtered["signal"] = "SELL"  # bullish → write CE
-    filtered["options_filter_note"] = "Seller mode: bullish direction → writing CE (short call)"
+    filtered["signal"] = "SELL"  # bullish → write PE (put loses value as market rises)
+    filtered["options_filter_note"] = "Seller mode: bullish direction → writing PE (short put)"
+    analytics["skip_underlying_bias"] = True   # bias filter is buyer-oriented; skip for writers
     # fall through to remaining filters
 ```
-`option_type` in `analytics` is **unchanged** — set by strategies (CE/PE) and
-consumed by downstream filters (underlying bias check, contract resolution). All
-existing filters (bias, VWAP, entry quality) remain active on both directions.
 
-Two unit tests renamed and updated to assert the new converted signal (BUY/SELL)
-and preserved score instead of HOLD+0.
+For `SELL_ONLY`, `option_type` in `analytics` is **pre-flipped** before
+`resolve_atm_option_contract_snapshot()` in `orchestration/signal_workflow.py`.
+Contract fetch runs before `apply_signal_filters`, so the flip must happen earlier:
+BUY_CE (bullish) → BUY_PE/PE so the PE contract is fetched; BUY_PE (bearish) → BUY_CE/CE
+so the CE contract is fetched. Without this pre-flip, the seller would buy (or attempt
+to write) the wrong contract type.
+
+`BUY_SELL_BOTH` mode (Engine 6) also converts SELL signals to BUY (bearish → buy PE),
+making it identical to BUY_ONLY for direction purposes.
+
+Direction table after the fix:
+
+| Signal | Engine 6 (BUY_SELL_BOTH) | Engine 7 (BUY_ONLY) | Engine 8 (SELL_ONLY) |
+|--------|--------------------------|----------------------|----------------------|
+| BUY (bullish) | BUY CE | BUY CE | SELL PE |
+| SELL (bearish) | BUY PE | BUY PE | SELL CE |
+
+All downstream filters (underlying bias, VWAP, entry quality) remain active on both directions.
 
 ### Files Changed
-- `engines/intraday_options.py` — `apply_signal_filters` lines 625-640; updated
-  docstrings for `IntradayOptionsBuyerEngine` and `IntradayOptionsSellerEngine`
-- `tests/unit/test_engine_workflows.py` — `test_buyer_engine_holds_sell_signal` →
-  `test_buyer_engine_converts_sell_to_buy_pe`; `test_seller_engine_holds_buy_signal` →
-  `test_seller_engine_converts_buy_to_sell_ce`
+- `engines/intraday_options.py` — `apply_signal_filters` direction gate; `skip_underlying_bias`
+  flag for SELL_ONLY; updated docstrings for both subclasses
+- `orchestration/signal_workflow.py` — pre-flip block for SELL_ONLY before contract fetch
+  (BUY_CE↔BUY_PE flip when `trade_direction_mode=SELL_ONLY`)
+- `tests/unit/test_engine_workflows.py` — tests updated:
+  `test_seller_engine_converts_buy_to_sell_ce` → `test_seller_engine_converts_buy_to_sell_pe`;
+  added `test_seller_engine_preserves_sell_signal_bearish` (SELL_ONLY + SELL → SELL, score preserved),
+  `test_both_engine_converts_sell_to_buy_pe` (BUY_SELL_BOTH + SELL → BUY)
+
+---
+
+## [2026-06-17] SELL_ONLY lot sizing used option premium instead of required margin
+
+### Symptom
+Backtests with engine 8 (`intraday_options_seller`, `CAPITAL_BASED` lot mode) allocated
+quantity based on the option premium (e.g., ₹65/unit PE premium). In reality, writing an
+option requires SPAN + exposure margin ≈ 10–15% of the underlying value. For NIFTY at
+₹22,000 with a 75-unit lot, the margin per lot is ≈ ₹1.98L — far more than the ≈₹4,875
+premium cost the engine was using. This caused wildly incorrect lot sizes.
+
+### Root Cause
+`backtesting.py` and `orchestration/session.py` used `entry_price` (the option premium)
+as the effective cost-per-unit for CAPITAL_BASED quantity calculation. Correct for BUY
+(you pay the premium); wrong for SELL (you put up margin, not premium).
+
+### Fix
+Added `option_effective_sizing_price(signal, premium, underlying_price, sell_margin_pct)`
+in `engines/common.py` as the single source of truth:
+```python
+def option_effective_sizing_price(signal, premium, underlying_price, sell_margin_pct):
+    if signal == "SELL" and underlying_price > 0:
+        return max(underlying_price * sell_margin_pct, 0.01)   # margin-based
+    return max(float(premium), 0.01)                           # premium-based (BUY)
+```
+
+New config key `intraday_options_sell_margin_pct: 0.12` (12% ≈ SPAN + exposure margin for
+index options). Both `backtesting.py` and `orchestration/session.py` call this function
+for CAPITAL_BASED sizing and capital cap limits.
+
+**Example (NIFTY, SELL signal, ₹2L capital):**
+```
+underlying_price = ₹22,000 | sell_margin_pct = 0.12 | lot_size = 75
+effective_price  = ₹22,000 × 0.12 = ₹2,640/unit
+per-lot margin   = ₹2,640 × 75   = ₹1,98,000
+qty              = int(200000 / 2640) = 75 → 1 lot (correct)
+```
+Previously the engine would have computed `int(200000 / 65) = 3076 → 45 lots` (wildly over-leveraged).
+
+### Files Changed
+- `engines/common.py` — `option_effective_sizing_price()` added
+- `backtesting.py` — CAPITAL_BASED sizing + capital caps use effective price
+- `orchestration/session.py` — CAPITAL_BASED sizing + `apply_capital_limits_to_quantity` use effective price
+- `config.py` — `FNOConfig.intraday_options_sell_margin_pct` field
+- `config/config.runtime.yaml` — `intraday_options_sell_margin_pct: 0.12`
+- `web/routes/config.py` — reads config field; passes to `BacktestConfig`
+
+---
+
+## [2026-06-17] HARD_TARGET mode — trailing stop ratcheted, triggering premature TRAILING_STOP exits
+
+### Symptom
+Backtest with `exit_mode=HARD_TARGET` showed trades exiting as `TRAILING_STOP` before
+the hard target was reached. The position was supposed to hold until the fixed target
+price or the initial stop-loss.
+
+### Root Cause
+`models/position.py:update_trailing_stop()` gated the `target → sentinel` conversion on
+`exit_mode == "TRAIL_ONLY"` (correct), but the trailing stop **ratchet** code ran
+unconditionally — `best_price` was updated and `trailing_stop` moved regardless of
+`exit_mode`. In HARD_TARGET mode the trailing stop should be a fixed floor/ceiling at
+its initial value; since it kept ratcheting, it could be triggered well before the hard
+target was reached.
+
+### Fix
+Added an early return at the top of `update_trailing_stop()`:
+```python
+if exit_mode == "HARD_TARGET":
+    # In hard-target mode the trailing stop is a fixed floor/ceiling at entry level.
+    # We don't trail it; the position exits either at the hard target or at the initial stop.
+    return False
+```
+In HARD_TARGET mode the trailing stop is initialized at entry (via `build_trend_adaptive_position`)
+and never moves — it acts as a hard breakeven floor, not a trailing mechanism.
+
+### Files Changed
+- `models/position.py` — `update_trailing_stop()`: early return for `exit_mode == "HARD_TARGET"`
+
+---
+
+## [2026-06-17] SL / target / trailing_stop absent from backtest tradebook and UI
+
+### Symptom
+Backtest trade detail cards showed "Stop loss: —" and no target or trailing stop values.
+The final trade export (CSV/JSON) also lacked these fields, making it impossible to audit
+where SL/target/trailing levels were set at trade entry.
+
+### Root Cause
+`backtesting.py`'s `self.trades.append(...)` at trade entry never stored `stop_loss`,
+`target`, or `trailing_stop` from `actual_targets`. The `_on_trade()` WS broadcast also
+omitted these fields. The `web/routes/config.py` backtest trades serialiser (`_summarise()`)
+did not include these columns from `trades_df`.
+
+### Fix
+Three layers:
+
+1. **`backtesting.py`** — trade entry record now stores `stop_loss`, `target`, `trailing_stop`
+   from `actual_targets` at position open time; `_on_trade()` exit payload includes `trailing_stop`.
+
+2. **`web/routes/config.py`** — `_summarise()` trades list now includes `stop_loss`, `target`,
+   `trailing_stop` for each row (read from `trades_df` columns).
+
+3. **`web/static/index.html`** — Trade detail card (`buildTradeCardHtml()`) now renders
+   "Target" and "Trailing stop" rows alongside the existing "Stop loss" row.
+
+### Files Changed
+- `backtesting.py` — `self.trades.append()`: added `stop_loss/target/trailing_stop`; `_on_trade()`: added `trailing_stop`
+- `web/routes/config.py` — `_summarise()`: added `stop_loss/target/trailing_stop` to trades list
+- `web/static/index.html` — trade detail card: added Target and Trailing stop display rows

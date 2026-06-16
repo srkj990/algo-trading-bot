@@ -539,6 +539,7 @@ class FnoConfig:
     intraday_options_roll_trigger_pct: float
     intraday_options_theta_exit_ratio: float
     intraday_options_theta_exit_min_minutes: int
+    intraday_options_sell_margin_pct: float
 
     def validate(self) -> None:
         if not self.underlying_details:
@@ -966,6 +967,9 @@ def _default_runtime_config_map() -> dict[str, Any]:
             ),
             "intraday_options_theta_exit_min_minutes": int(
                 os.getenv("INTRADAY_OPTIONS_THETA_EXIT_MIN_MINUTES", "10")
+            ),
+            "intraday_options_sell_margin_pct": float(
+                os.getenv("INTRADAY_OPTIONS_SELL_MARGIN_PCT", "0.12")
             ),
         },
         "engine_defaults": {

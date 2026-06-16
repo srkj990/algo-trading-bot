@@ -1258,7 +1258,7 @@ class IntradayOptionsDirectionModeTests(unittest.TestCase):
         filtered = engine.apply_signal_filters(self._evaluation("BUY"), self._intraday_df())
         self.assertEqual(filtered["signal"], "BUY")
 
-    def test_seller_engine_converts_buy_to_sell_ce(self) -> None:
+    def test_seller_engine_converts_buy_to_sell_pe(self) -> None:
         engine = IntradayOptionsSellerEngine(5.0, 10.0, 4.0)
         filtered = engine.apply_signal_filters(self._evaluation("BUY"), self._intraday_df())
         self.assertEqual(filtered["signal"], "SELL")
@@ -1271,13 +1271,27 @@ class IntradayOptionsDirectionModeTests(unittest.TestCase):
         filtered = engine.apply_signal_filters(self._evaluation("SELL"), self._intraday_df())
         self.assertEqual(filtered["signal"], "SELL")
 
-    def test_both_engine_passes_buy_and_sell_through_unchanged(self) -> None:
+    def test_seller_engine_preserves_sell_signal_bearish(self) -> None:
+        engine = IntradayOptionsSellerEngine(5.0, 10.0, 4.0)
+        filtered = engine.apply_signal_filters(self._evaluation("SELL"), self._intraday_df())
+        self.assertEqual(filtered["signal"], "SELL")
+        self.assertEqual(filtered["agreement_count"], 2)
+        self.assertEqual(filtered["score"], 1.5)
+
+    def test_both_engine_converts_sell_to_buy_pe(self) -> None:
         engine = IntradayOptionsBothEngine(5.0, 10.0, 4.0)
-        engine.momentum_entry_mode = "LEGACY_RAW"
+        filtered = engine.apply_signal_filters(self._evaluation("SELL"), self._intraday_df())
+        self.assertEqual(filtered["signal"], "BUY")
+        self.assertEqual(filtered["agreement_count"], 2)
+        self.assertEqual(filtered["score"], 1.5)
+
+    def test_both_engine_buy_passes_through_sell_converts_to_buy(self) -> None:
+        # BUY_SELL_BOTH: bullish → BUY CE (unchanged), bearish → BUY PE (SELL→BUY conversion)
+        engine = IntradayOptionsBothEngine(5.0, 10.0, 4.0)
         buy_filtered = engine.apply_signal_filters(self._evaluation("BUY"), self._intraday_df())
         sell_filtered = engine.apply_signal_filters(self._evaluation("SELL"), self._intraday_df())
         self.assertEqual(buy_filtered["signal"], "BUY")
-        self.assertEqual(sell_filtered["signal"], "SELL")
+        self.assertEqual(sell_filtered["signal"], "BUY")
 
     def test_default_engine_trade_direction_mode_is_buy_sell_both(self) -> None:
         self.assertEqual(IntradayOptionsEngine.trade_direction_mode, "BUY_SELL_BOTH")

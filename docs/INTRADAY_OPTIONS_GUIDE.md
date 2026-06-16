@@ -162,6 +162,28 @@ Always enters exactly 1 lot regardless of capital:
 qty = lot_size   (65 for NIFTY, 20 for SENSEX)
 ```
 
+### SELL_ONLY margin sizing (engine 8)
+
+For option writers (`SELL_ONLY` mode), the effective cost per unit is **not the premium** —
+it is the SPAN + exposure margin required by the exchange (≈ 10–15% of the underlying price).
+The engine uses `intraday_options_sell_margin_pct` (default 0.12) as the per-unit cost:
+
+```
+effective_price = underlying_price × sell_margin_pct
+qty             = int(available_capital / effective_price)
+```
+
+**Example:** Capital ₹2,00,000 | NIFTY underlying ₹22,000 | sell_margin_pct 0.12 | lot size 75
+
+```
+effective_price = ₹22,000 × 0.12 = ₹2,640/unit
+raw_qty         = int(200000 / 2640) = 75
+qty             = (75 // 75) * 75 = 75   → 1 lot
+margin deployed = 75 × ₹2,640 = ₹1,98,000
+```
+
+BUY signals continue to use the option premium as the effective price (unchanged).
+
 ---
 
 ## 5. Volatility Regime Detection
@@ -639,7 +661,7 @@ The trailing stop will not ratchet until price is ≥ ₹228.40 (₹200 + ₹28.
 | Mode | Behaviour |
 |------|-----------|
 | `TRAIL_ONLY` | When price hits the hard target, `trailing_active=True` is set and the target sentinel is removed. Position runs indefinitely with a trailing stop. |
-| `HARD_TARGET` | Position exits immediately when price hits the hard target. |
+| `HARD_TARGET` | Position exits immediately when price hits the hard target. **Trailing stop is frozen at its initial value** (does not ratchet with price). It acts as a hard breakeven floor only — the position exits at the hard target or at the initial stop-loss, never via a trailing stop trigger. |
 
 ### Exit priority order
 
@@ -907,6 +929,7 @@ All parameters are in `config/config.runtime.yaml`.
 | `intraday_options_regime_sideways_vwap_dev_pct` | 0.0025 | VWAP dev threshold for SIDEWAYS regime |
 | `intraday_options_regime_expansion_iv_change_pct` | 2.0 | IV change % for EXPANSION regime |
 | `intraday_options_lot_mode` | "CAPITAL_BASED" | CAPITAL_BASED or ONE_LOT |
+| `intraday_options_sell_margin_pct` | 0.12 | Fraction of underlying price used as effective margin-per-unit for SELL_ONLY (engine 8) lot sizing. SPAN + exposure ≈ 10–15% for index options. |
 | `intraday_options_entry_mode` | "LIVE_TICK_CONFIRM" | LIVE_TICK_CONFIRM / LIVE_STAGED / LEGACY_IMMEDIATE |
 | `intraday_options_max_entry_cost_ratio` | 0.20 | Block if costs > 20% of expected profit |
 | `intraday_options_max_spread_pct` | 0.015 | Block if bid-ask spread > 1.5% |

@@ -407,6 +407,21 @@ def scan_symbols(context: Any, now: datetime) -> SignalScanResult:
             evaluation["agreement_count"] = 0
             evaluation["score"] = 0.0
             evaluation["reason"] = "Multi-strategy CE/PE votes tied or missing — no contract resolved"
+        if (
+            dynamic_atm_scan
+            and evaluation.get("option_signal") in {"BUY_CE", "BUY_PE"}
+            and str(getattr(engine, "trade_direction_mode", "")).upper() == "SELL_ONLY"
+        ):
+            # SELL_ONLY writers need the opposite contract: strategy votes BUY_CE (bullish)
+            # → writer sells PE (short put profits when market rises); BUY_PE (bearish)
+            # → writer sells CE (short call profits when market falls).
+            if evaluation["option_signal"] == "BUY_CE":
+                evaluation["option_signal"] = "BUY_PE"
+                evaluation["option_type"] = "PE"
+            else:
+                evaluation["option_signal"] = "BUY_CE"
+                evaluation["option_type"] = "CE"
+
         if dynamic_atm_scan and evaluation.get("option_signal") in {"BUY_CE", "BUY_PE"}:
             try:
                 contract_snapshot = resolve_atm_option_contract_snapshot(

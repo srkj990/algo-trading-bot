@@ -766,6 +766,9 @@ def _build_backtest_config(data: dict):
         if _lot_mode_from_form in {"ONE_LOT", "CAPITAL_BASED"}
         else str(runtime_config.fno.intraday_options_lot_mode or "CAPITAL_BASED").upper()
     )
+    intraday_options_sell_margin_pct = float(
+        runtime_config.fno.intraday_options_sell_margin_pct or 0.12
+    )
     _entry_mode_from_form = str(data.get("intraday_options_entry_mode", "")).strip().upper()
     intraday_options_entry_mode = (
         _entry_mode_from_form
@@ -842,6 +845,7 @@ def _build_backtest_config(data: dict):
         universe=universe,
         one_trade_per_symbol_per_day=one_trade_per_symbol_per_day,
         intraday_options_lot_mode=intraday_options_lot_mode,
+        intraday_options_sell_margin_pct=intraday_options_sell_margin_pct,
         intraday_options_entry_mode=intraday_options_entry_mode,
         summary_lines=summary_lines,
         option_backtest_settings=option_backtest_settings,
@@ -952,6 +956,9 @@ def _summarise(summary: dict, paths: tuple) -> dict:
                 "underlying": _safe_str(row.get("underlying_symbol")),
                 "option_type": _safe_str(row.get("option_type")),
                 "underlying_close_at_entry": _safe(row.get("underlying_close_at_entry")),
+                "stop_loss": _safe(row.get("stop_loss")),
+                "target": _safe(row.get("target")),
+                "trailing_stop": _safe(row.get("trailing_stop")),
             })
 
     # ── regime analytics (B.13) ────────────────────────────────────────────────
