@@ -29,6 +29,7 @@ _session_thread: threading.Thread | None = None
 _stop_event = threading.Event()        # signals the trading loop to stop
 _server_exit_event = threading.Event() # signals main.py to exit the process
 _log_ring: deque[dict[str, Any]] = deque(maxlen=500)
+_alert_ring: deque[dict[str, Any]] = deque(maxlen=500)  # warn/error only — never flushed
 _ws_clients: set[asyncio.Queue] = set()          # one Queue per connected tab
 _session_status: str = "idle"                    # idle | running | stopped
 _web_loop: asyncio.AbstractEventLoop | None = None  # set by server at startup
@@ -118,6 +119,8 @@ def push_log(line: str, level: str = "info") -> None:
     }
     with _lock:
         _log_ring.append(entry)
+        if level in {"warn", "warning", "error"}:
+            _alert_ring.append(entry)
         queues = list(_ws_clients)
 
     # broadcast outside the lock to avoid deadlock with async event loop
@@ -127,6 +130,11 @@ def push_log(line: str, level: str = "info") -> None:
 def get_log_history() -> list[dict[str, Any]]:
     with _lock:
         return list(_log_ring)
+
+
+def get_alert_history() -> list[dict[str, Any]]:
+    with _lock:
+        return list(_alert_ring)
 
 
 # ── warning center ────────────────────────────────────────────────────────────

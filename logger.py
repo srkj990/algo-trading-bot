@@ -23,10 +23,11 @@ LOG_DIR = Path("logs")
 _session_state = {
     "start_time": None,
     "running_path": None,
+    "tag": None,
 }
 
 
-def setup_session_logger():
+def setup_session_logger(tag: str | None = None):
     logger = logging.getLogger(LOGGER_NAME)
     level = getattr(logging, LOG_LEVEL)
     logger.setLevel(level)
@@ -39,7 +40,8 @@ def setup_session_logger():
     LOG_DIR.mkdir(exist_ok=True)
 
     start_time = datetime.now()
-    running_name = f"algo_{start_time.strftime('%Y%m%d_%H%M%S')}_running.log"
+    prefix = f"algo_{tag}_" if tag else "algo_"
+    running_name = f"{prefix}{start_time.strftime('%Y%m%d_%H%M%S')}_running.log"
     running_path = LOG_DIR / running_name
 
     file_handler = logging.FileHandler(running_path, encoding="utf-8")
@@ -51,6 +53,7 @@ def setup_session_logger():
 
     _session_state["start_time"] = start_time
     _session_state["running_path"] = running_path
+    _session_state["tag"] = tag
 
     return logger
 
@@ -66,13 +69,15 @@ def finalize_session_logger():
     logger = logging.getLogger(LOGGER_NAME)
     running_path = _session_state["running_path"]
     start_time = _session_state["start_time"]
+    tag = _session_state["tag"]
 
     if not running_path or not start_time:
         return None
 
     end_time = datetime.now()
+    prefix = f"algo_{tag}_" if tag else "algo_"
     final_name = (
-        f"algo_{start_time.strftime('%Y%m%d_%H%M%S')}"
+        f"{prefix}{start_time.strftime('%Y%m%d_%H%M%S')}"
         f"_to_{end_time.strftime('%Y%m%d_%H%M%S')}.log"
     )
     final_path = LOG_DIR / final_name
@@ -87,6 +92,7 @@ def finalize_session_logger():
 
     _session_state["start_time"] = None
     _session_state["running_path"] = None
+    _session_state["tag"] = None
     return final_path
 
 

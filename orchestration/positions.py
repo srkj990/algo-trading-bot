@@ -975,18 +975,26 @@ def manage_open_positions(
                 _order_type = "LIMIT"
                 _buf = float(exit_price) * exit_limit_price_buffer_pct
                 _limit_price = max(0.01, float(exit_price) - _buf) if _exit_side == "SELL" else float(exit_price) + _buf
-            order_result = place_order(
-                _exit_side,
-                position_quantity(position),
-                symbol,
-                note=f"Exit {position_side(position)} via {exit_reason}",
-                product=(position.get("order_product") or engine.order_product),
-                enforce_spread_check=False,
-                enforce_margin_check=False,
-                entry_price=exit_price,
-                order_type=_order_type,
-                price=_limit_price,
-            )
+            try:
+                order_result = place_order(
+                    _exit_side,
+                    position_quantity(position),
+                    symbol,
+                    note=f"Exit {position_side(position)} via {exit_reason}",
+                    product=(position.get("order_product") or engine.order_product),
+                    enforce_spread_check=False,
+                    enforce_margin_check=False,
+                    entry_price=exit_price,
+                    order_type=_order_type,
+                    price=_limit_price,
+                )
+            except RuntimeError as _exit_err:
+                log_event(
+                    f"[EXIT_ERROR] Exit order failed for {symbol} (reason={exit_reason}): {_exit_err}. "
+                    "Position may still be open at broker — manual intervention required.",
+                    "error",
+                )
+                order_result = None
             fill = _resolve_order_fill(order_result, position_quantity(position), float(exit_price))
             if not fill["filled"]:
                 log_event(f"[EXIT] {symbol} {exit_reason} order not filled; position remains open", "warning")

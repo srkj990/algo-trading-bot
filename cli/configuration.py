@@ -1080,13 +1080,13 @@ def build_session_config_from_dict(data: dict) -> SessionConfig:
     option_pair_config = None
     atm_option_config = None
 
-    if engine_choice in {"3", "4", "5", "6"}:
+    if engine_choice in {"3", "4", "5", "6", "7", "8"}:
         fno_underlying = str(data.get("fno_underlying", "NIFTY"))
         fno_expiry = str(data.get("fno_expiry", ""))
-        # Engine 6 ATM (non-PAIR) doesn't need the expiry to build selected_symbols —
+        # Engine 6/7/8 ATM (non-PAIR) doesn't need the expiry to build selected_symbols —
         # it only uses it at signal time. Defer to session start so we don't require
         # a live Kite API key just to build the config (e.g. programmatic paper runners).
-        _defer_expiry = engine_choice == "6" and str(data.get("fno_structure", "SINGLE")).upper() != "PAIR"
+        _defer_expiry = engine_choice in {"6", "7", "8"} and str(data.get("fno_structure", "SINGLE")).upper() != "PAIR"
         if not fno_expiry and not _defer_expiry:
             available = get_available_expiries(
                 fno_underlying,
@@ -1111,8 +1111,8 @@ def build_session_config_from_dict(data: dict) -> SessionConfig:
                 selected_symbols = [contract]
             symbol_mode = "FNO"
 
-        elif engine_choice == "6":
-            fno_structure = str(data.get("fno_structure", "SINGLE")).upper()
+        elif engine_choice in {"6", "7", "8"}:
+            fno_structure = str(data.get("fno_structure", "SINGLE")).upper() if engine_choice == "6" else "SINGLE"
             if fno_structure == "PAIR":
                 lower_pe = int(data.get("lower_pe_strike", 0))
                 upper_ce = int(data.get("upper_ce_strike", 0))

@@ -53,15 +53,18 @@ Market data (1m candles)
 The multi-strategy aggregator (`signal_scoring.evaluate_symbol_signal`) resolves
 every scan to a `final_signal` of `BUY`, `SELL`, or `HOLD`:
 
-| `final_signal` | Option side | Order | Position type | Margin |
-|-----------------|-------------|-------|----------------|--------|
+| `final_signal` | Default option side | Order | Position type | Margin |
+|-----------------|---------------------|-------|----------------|--------|
 | `BUY`  | `BUY_CE` (long call) | `transaction_type=BUY`  | Long, defined-risk (premium paid) | None beyond premium |
 | `SELL` | `BUY_PE` (short put / option-writing) | `transaction_type=SELL` | Short, sell-to-open | **Margin required** |
 
-> **Naming note:** in this codebase's signal model, "BUY" always means a long
-> call (`BUY_CE`) and "SELL" always means writing a put (`BUY_PE`,
-> sell-to-open). There is no separate "buy a put outright" (long PE) signal —
-> see [Section 17 — Known Limitations](#17-known-limitations).
+> **Naming note:** `final_signal="BUY"` originates from bullish strategy votes
+> (`BUY_CE`) and `"SELL"` from bearish votes (`BUY_PE`). In the *Both* engine
+> (6) these map directly to long-CE / short-PE. In the *Buyer* engine (7) the
+> `SELL` signal is **converted to BUY+PE** (long put), so bearish signals still
+> result in a defined-risk buy rather than writing. In the *Seller* engine (8)
+> the `BUY` signal is **converted to SELL+CE** (write call), so bullish signals
+> result in a short write rather than a long purchase.
 
 Three engines share 100% of the filters, strategies, lot sizing, and exit
 logic above. They differ only in a `trade_direction_mode` class attribute that
@@ -70,16 +73,16 @@ gates `apply_signal_filters` before any other check:
 | Engine choice | `name` | `trade_direction_mode` | Behavior |
 |---------------|--------|--------------------------|----------|
 | **6 — Buy + Sell Both** | `intraday_options` (alias `IntradayOptionsBothEngine`) | `BUY_SELL_BOTH` | No restriction — current default, unchanged from prior releases. |
-| **7 — Buyer Only** | `intraday_options_buyer` | `BUY_ONLY` | Opens long-CE positions only. A `SELL`-resolved scan is forced to `HOLD` with `options_filter_note="Trade direction mode BUY_ONLY blocks SELL (short PE / option-writing) entries"`. |
-| **8 — Seller Only** | `intraday_options_seller` | `SELL_ONLY` | Opens short-PE (option-writing) positions only — **requires margin**. A `BUY`-resolved scan is forced to `HOLD` with `options_filter_note="Trade direction mode SELL_ONLY blocks BUY (long CE) entries"`. |
+| **7 — Buyer Only** | `intraday_options_buyer` | `BUY_ONLY` | Trades both directions as an **options buyer** — BUY CE on bullish signals, BUY PE on bearish signals. Never writes/shorts options. All downstream filters (underlying bias, VWAP, entry quality) still apply. |
+| **8 — Seller Only** | `intraday_options_seller` | `SELL_ONLY` | Trades both directions as an **options writer** — SELL PE on bearish signals, SELL CE on bullish signals. **Requires margin for all positions.** Never buys options long. All downstream filters still apply. |
 
 **Choosing an engine:**
 - **Buyer Only (7)** — for accounts without F&O sell margin, or traders who
-  only want defined-risk (premium-capped) exposure. Holds (no entry) on bars
-  where the aggregator would have written a PE.
+  want defined-risk (premium-capped) exposure only. Trades CE on bullish bars
+  and PE on bearish bars — never writes options.
 - **Seller Only (8)** — for accounts with sufficient margin who want to
-  collect premium via short PE only. Holds on bars where the aggregator
-  would have bought a CE.
+  collect premium via option-writing only. Writes PE on bearish bars and CE
+  on bullish bars — never buys options long.
 - **Buy + Sell Both (6)** — unrestricted, takes whichever side the aggregator
   resolves to. This is the original engine identity and config key; all 69+
   existing `engine_name == "intraday_options"`-keyed config blocks
@@ -1055,20 +1058,15 @@ runners/06_intraday_options/Results/SessionReports/
 
 ## 17. Known Limitations
 
-### 17.1 No distinct "long PE" signal
+### 17.1 ~~No distinct "long PE" signal~~ — **Resolved 2026-06-17**
 
-`final_signal == "SELL"` always means **writing** a put (`BUY_PE` /
-`transaction_type=SELL`, sell-to-open) — see
-[Section 1.1](#11-engine-variants--buyer--seller--both). There is currently no
-signal path that produces a **long PE** (buy-to-open put, defined-risk bearish
-bet). A trader who wants "Buyer Only, but for bearish setups too" cannot get
-that from `intraday_options_buyer` today — that engine only ever opens long CE
-positions and holds on every bearish (`SELL`-resolved) bar.
-
-Adding a true long-PE signal would require a new signal path in
-`signal_scoring.evaluate_symbol_signal` (a fourth resolved direction alongside
-`BUY`/`SELL`/`HOLD`) and a corresponding `transaction_type=BUY` + `option_type=PE`
-order path in `executor.py`. Not implemented in this release.
+The Buyer engine (7) now trades **BUY PE** on bearish signals. When
+`apply_signal_filters` detects `trade_direction_mode="BUY_ONLY"` with a `SELL`
+signal, it converts the execution direction to `BUY` while preserving
+`option_type=PE` from the strategy vote. The order placed is
+`transaction_type=BUY, option_type=PE` — a defined-risk long put. No signal
+path changes were required; only the direction-gate in `apply_signal_filters`
+was updated (see [bugs_and_fixes.md 2026-06-17](bugs_and_fixes.md)).
 
 ### 17.2 Seller engine margin preflight
 
@@ -1080,3 +1078,21 @@ in mind. Confirm available margin is checked correctly for sell-to-open option
 writes before relying on engine 8 in live trading with real capital.
 
 **To trade live:** Set Execution Mode = **LIVE** in the Configure tab before clicking Start. Verify in the session log: `Execution mode: LIVE` and `[EXECUTION] Provider: KITE`.
+
+### 16.6 Alerts & Errors Persistent Panel
+
+Below the main log stream in the "Log Stream" card there is a separate
+**Alerts & Errors** panel (red border, 160px, scrollable). It accumulates every
+`warn`/`error`-level log event from the start of the session and is **never
+flushed** — entries remain visible even after the condition that triggered them
+has cleared.
+
+| Behaviour | Detail |
+|-----------|--------|
+| Sources | Any `push_log(..., "warn"/"warning"/"error")` call — covers all engines and modes |
+| History | Populated from `GET /api/alert-history` on WebSocket connect, so a browser refresh restores the panel |
+| Count badge | `(N)` badge beside the "Alerts & Errors" label updates on each new entry |
+| Clear button | "clear" link clears the panel display only (does not affect the server-side ring buffer) |
+| Capacity | Server-side ring buffer holds the last 500 warn/error entries |
+
+---

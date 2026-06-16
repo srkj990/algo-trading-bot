@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import math
 import time
 from typing import Any
@@ -915,7 +916,24 @@ def place_order(
         },
     )
     reconciled = _reconcile_order_status(client, order_result, runtime_config)
-    _ensure_fill_confirmation(reconciled, runtime_config)
+    try:
+        _ensure_fill_confirmation(reconciled, runtime_config)
+    except RuntimeError:
+        if normalized_order_type == "LIMIT" and reconciled.order_id:
+            try:
+                client.cancel_order(reconciled.order_id)
+                log_event(
+                    f"[ORDER] LIMIT fill timeout — cancelled stale order {reconciled.order_id}, retrying as MARKET",
+                    "warning",
+                )
+            except Exception as _ce:
+                log_event(f"[ORDER] Could not cancel stale LIMIT order: {_ce}", "warning")
+            market_request = dataclasses.replace(request, order_type="MARKET", price=None, trigger_price=None)
+            order_result = client.place_order(market_request)
+            reconciled = _reconcile_order_status(client, order_result, runtime_config)
+            _ensure_fill_confirmation(reconciled, runtime_config)
+        else:
+            raise
     reconciled = _retry_rejected_order(
         client,
         request,

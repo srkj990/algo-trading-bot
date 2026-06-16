@@ -476,7 +476,7 @@ class IntradayOptionsEngineTests(unittest.TestCase):
             datetime(2026, 4, 29, 10, 5, 0),
         )
         self.assertIsNotNone(action)
-        self.assertEqual(action["reason"], "RUNNER_LEVEL1_8PCT")
+        self.assertEqual(action["reason"], "RUNNER_LEVEL1")
         self.assertEqual(action["quantity"], 50)
 
     def test_one_lot_runner_never_scales_out_in_fractional_chunks(self) -> None:
@@ -512,11 +512,11 @@ class IntradayOptionsEngineTests(unittest.TestCase):
         )
         self.assertIsNone(action)
 
-    def test_build_trend_adaptive_position_uses_fixed_premium_targets_for_more_than_two_lots(self) -> None:
+    def test_build_trend_adaptive_position_uses_fixed_premium_targets_for_more_than_four_lots(self) -> None:
         position = self.engine.build_trend_adaptive_position(
             symbol="NFO:NIFTYTESTCE",
             side="BUY",
-            quantity=195,
+            quantity=325,
             entry_price=100.0,
             atr=4.0,
             signal_score=0.8,
@@ -530,15 +530,15 @@ class IntradayOptionsEngineTests(unittest.TestCase):
             extra_fields={},
         )
         self.assertTrue(position["runner_partial_exit_enabled"])
-        self.assertEqual(position["runner_level1_target"], 108.0)
-        self.assertEqual(position["runner_level2_target"], 115.0)
-        self.assertEqual(position["runner_exit_quantities"], [65, 65, 65])
+        self.assertEqual(position["runner_level1_target"], 112.0)
+        self.assertEqual(position["runner_level2_target"], 125.0)
+        self.assertEqual(position["runner_exit_quantities"], [65, 65, 195])
 
     def test_get_runner_partial_exit_triggers_first_fixed_premium_exit(self) -> None:
         position = self.engine.build_trend_adaptive_position(
             symbol="BFO:SENSEXTESTCE",
             side="BUY",
-            quantity=60,
+            quantity=120,
             entry_price=100.0,
             atr=4.0,
             signal_score=0.8,
@@ -554,13 +554,13 @@ class IntradayOptionsEngineTests(unittest.TestCase):
         action = self.engine.get_runner_partial_exit(
             position,
             {
-                "latest_close": 108.2,
-                "latest_candle": {"High": 108.2, "Low": 107.0},
+                "latest_close": 112.2,
+                "latest_candle": {"High": 112.2, "Low": 110.0},
                 "analytics": {"volatility_regime": "NORMAL"},
             },
             datetime(2026, 4, 29, 10, 5, 0),
         )
-        self.assertEqual(action["reason"], "RUNNER_LEVEL1_8PCT")
+        self.assertEqual(action["reason"], "RUNNER_LEVEL1_12PCT")
         self.assertEqual(action["quantity"], 20)
 
     def test_apply_runner_partial_exit_tightens_short_runner_stops(self) -> None:
@@ -1245,13 +1245,12 @@ class IntradayOptionsDirectionModeTests(unittest.TestCase):
             index=index,
         )
 
-    def test_buyer_engine_holds_sell_signal(self) -> None:
+    def test_buyer_engine_converts_sell_to_buy_pe(self) -> None:
         engine = IntradayOptionsBuyerEngine(5.0, 10.0, 4.0)
         filtered = engine.apply_signal_filters(self._evaluation("SELL"), self._intraday_df())
-        self.assertEqual(filtered["signal"], "HOLD")
-        self.assertEqual(filtered["agreement_count"], 0)
-        self.assertEqual(filtered["score"], 0.0)
-        self.assertIn("BUY_ONLY", filtered["options_filter_note"])
+        self.assertEqual(filtered["signal"], "BUY")
+        self.assertEqual(filtered["agreement_count"], 2)
+        self.assertEqual(filtered["score"], 1.5)
 
     def test_buyer_engine_passes_buy_signal_through(self) -> None:
         engine = IntradayOptionsBuyerEngine(5.0, 10.0, 4.0)
@@ -1259,13 +1258,12 @@ class IntradayOptionsDirectionModeTests(unittest.TestCase):
         filtered = engine.apply_signal_filters(self._evaluation("BUY"), self._intraday_df())
         self.assertEqual(filtered["signal"], "BUY")
 
-    def test_seller_engine_holds_buy_signal(self) -> None:
+    def test_seller_engine_converts_buy_to_sell_ce(self) -> None:
         engine = IntradayOptionsSellerEngine(5.0, 10.0, 4.0)
         filtered = engine.apply_signal_filters(self._evaluation("BUY"), self._intraday_df())
-        self.assertEqual(filtered["signal"], "HOLD")
-        self.assertEqual(filtered["agreement_count"], 0)
-        self.assertEqual(filtered["score"], 0.0)
-        self.assertIn("SELL_ONLY", filtered["options_filter_note"])
+        self.assertEqual(filtered["signal"], "SELL")
+        self.assertEqual(filtered["agreement_count"], 2)
+        self.assertEqual(filtered["score"], 1.5)
 
     def test_seller_engine_passes_sell_signal_through(self) -> None:
         engine = IntradayOptionsSellerEngine(5.0, 10.0, 4.0)

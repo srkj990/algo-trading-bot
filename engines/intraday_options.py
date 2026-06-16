@@ -400,6 +400,9 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             "runner_signal_score": level_spec["runner_signal_score"],
             "runner_level1_target": level1_target,
             "runner_level2_target": level2_target,
+            "runner_uses_fixed_premium_exits": use_fixed_premium_runner_exits,
+            "runner_level1_target_pct": float(self.runner_level1_premium_target_pct) if use_fixed_premium_runner_exits else None,
+            "runner_level2_target_pct": float(self.runner_level2_premium_target_pct) if use_fixed_premium_runner_exits else None,
             "runner_level3_target": level_spec["level3_target"],
             "runner_exit_quantities": exit_quantities,
             "runner_exits_completed": [False, False, False],
@@ -426,6 +429,12 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         latest_candle = _snap.get("latest_candle")
         completed = list(position.get("runner_exits_completed") or [False, False, False])
         exit_quantities = list(position.get("runner_exit_quantities") or [0, 0, 0])
+        if position.get("runner_uses_fixed_premium_exits"):
+            level1_reason = f"RUNNER_LEVEL1_{position.get('runner_level1_target_pct'):g}PCT"
+            level2_reason = f"RUNNER_LEVEL2_{position.get('runner_level2_target_pct'):g}PCT"
+        else:
+            level1_reason = "RUNNER_LEVEL1"
+            level2_reason = "RUNNER_LEVEL2"
         if position["side"] == "BUY":
             try:
                 trigger_price = float(latest_candle["High"]) if latest_candle is not None else 0.0
@@ -439,7 +448,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                 return {
                     "level_index": 0,
                     "quantity": int(exit_quantities[0]),
-                    "reason": "RUNNER_LEVEL1_8PCT",
+                    "reason": level1_reason,
                     "target_price": float(position["runner_level1_target"]),
                 }
             if (
@@ -450,7 +459,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                 return {
                     "level_index": 1,
                     "quantity": int(exit_quantities[1]),
-                    "reason": "RUNNER_LEVEL2_15PCT",
+                    "reason": level2_reason,
                     "target_price": float(position["runner_level2_target"]),
                 }
         else:
@@ -466,7 +475,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                 return {
                     "level_index": 0,
                     "quantity": int(exit_quantities[0]),
-                    "reason": "RUNNER_LEVEL1_8PCT",
+                    "reason": level1_reason,
                     "target_price": float(position["runner_level1_target"]),
                 }
             if (
@@ -477,7 +486,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
                 return {
                     "level_index": 1,
                     "quantity": int(exit_quantities[1]),
-                    "reason": "RUNNER_LEVEL2_15PCT",
+                    "reason": level2_reason,
                     "target_price": float(position["runner_level2_target"]),
                 }
         return None
@@ -614,21 +623,19 @@ class IntradayOptionsEngine(OptionsEquityEngine):
         if filtered.get("signal") in {"BUY", "SELL"}:
             mode = str(getattr(self, "trade_direction_mode", "BUY_SELL_BOTH")).upper()
             if mode == "BUY_ONLY" and filtered["signal"] == "SELL":
-                filtered["signal"] = "HOLD"
-                filtered["agreement_count"] = 0
-                filtered["score"] = 0.0
+                # Bearish direction → buy PE (long put) instead of blocking
+                filtered["signal"] = "BUY"
                 filtered["options_filter_note"] = (
-                    "Trade direction mode BUY_ONLY blocks SELL (short PE / option-writing) entries"
+                    "Buyer mode: bearish direction → buying PE (long put)"
                 )
-                return filtered
-            if mode == "SELL_ONLY" and filtered["signal"] == "BUY":
-                filtered["signal"] = "HOLD"
-                filtered["agreement_count"] = 0
-                filtered["score"] = 0.0
+                # fall through to remaining filters
+            elif mode == "SELL_ONLY" and filtered["signal"] == "BUY":
+                # Bullish direction → write CE (short call) instead of blocking
+                filtered["signal"] = "SELL"
                 filtered["options_filter_note"] = (
-                    "Trade direction mode SELL_ONLY blocks BUY (long CE) entries"
+                    "Seller mode: bullish direction → writing CE (short call)"
                 )
-                return filtered
+                # fall through to remaining filters
 
         if str(getattr(self, "momentum_entry_mode", "STAGED")).upper() == "LEGACY_RAW":
             entry_profile = self.resolve_entry_profile(filtered, analytics=analytics)
@@ -1789,18 +1796,16 @@ class IntradayOptionsEngine(OptionsEquityEngine):
 
 
 class IntradayOptionsBuyerEngine(IntradayOptionsEngine):
-    """Long-call only: opens positions only when final_signal == "BUY"
-    (BUY_CE). Holds when the multi-strategy aggregator resolves to a
-    SELL/short-PE (option-writing) trade."""
+    """Options buyer: opens long positions in both directions — BUY CE on bullish signals,
+    BUY PE on bearish signals. Never writes/shorts options."""
 
     name = "intraday_options_buyer"
     trade_direction_mode = "BUY_ONLY"
 
 
 class IntradayOptionsSellerEngine(IntradayOptionsEngine):
-    """Option-writer only: opens positions only when final_signal == "SELL"
-    (BUY_PE / short-PE, transaction_type=SELL — requires margin). Holds when
-    the multi-strategy aggregator resolves to a BUY/long-CE trade."""
+    """Options writer: opens short positions in both directions — SELL PE on bearish signals,
+    SELL CE on bullish signals. Never buys options long."""
 
     name = "intraday_options_seller"
     trade_direction_mode = "SELL_ONLY"

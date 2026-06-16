@@ -2,7 +2,7 @@ import os
 import sys
 
 # Add the zerodha-alago root to path so all package imports work
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
 from cli.configuration import build_session_config_from_dict
 from logger import finalize_session_logger, log_event, setup_session_logger
@@ -19,8 +19,12 @@ from orchestration.session import (
 EXECUTION_MODE = "PAPER"
 CAPITAL = 100_000.0
 
+# Buy & Sell Both, single combined pool. Override via the first CLI arg if
+# needed, e.g. `main.py 7`.
+ENGINE_CHOICE = sys.argv[1] if len(sys.argv) > 1 else "6"
+
 CONFIG = {
-    "engine_choice": "6",                   # IntradayOptionsEngine (1m MIS)
+    "engine_choice": ENGINE_CHOICE,         # IntradayOptionsEngine (1m MIS)
     "execution_mode": EXECUTION_MODE,
     "capital": CAPITAL,
     # data_provider and execution_provider are automatically set to KITE for F&O
@@ -39,7 +43,8 @@ CONFIG = {
 
 # ── RUNNER ────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    setup_session_logger()
+    setup_session_logger(tag=f"iopts{ENGINE_CHOICE}")
+    log_event(f"[CONFIG] engine_choice={ENGINE_CHOICE}")
     context = None
     try:
         session_config = build_session_config_from_dict(CONFIG)

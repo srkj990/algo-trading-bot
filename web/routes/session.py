@@ -51,6 +51,12 @@ async def get_logs(n: int = 200) -> JSONResponse:
     return JSONResponse({"logs": history[-n:]})
 
 
+@router.get("/api/alert-history")
+async def get_alert_history() -> JSONResponse:
+    """Return persistent warn/error log history — never cleared during session."""
+    return JSONResponse({"alerts": web_state.get_alert_history()})
+
+
 @router.get("/api/status")
 async def get_status() -> JSONResponse:
     return JSONResponse({

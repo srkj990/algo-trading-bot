@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, TypedDict
 
 
-STATE_DIR = Path(__file__).parent / "state"
+STATE_DIR = Path(os.environ.get("INTRADAY_STATE_DIR", str(Path(__file__).parent / "state")))
 
 
 class EngineState(TypedDict):

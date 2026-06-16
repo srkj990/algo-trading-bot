@@ -176,8 +176,8 @@
           <option value="3">3 · Futures Equity (NRML)</option>
           <option value="4">4 · Options Equity (NRML)</option>
           <option value="5">5 · Intraday Futures (MIS)</option>
-          <option value="6" selected>6 · Intraday Options - Buy &amp; Sell Both (MIS ATM)</option>
-          <option value="7">7 · Intraday Options - Buyer Only (long CE)</option>
+          <option value="6">6 · Intraday Options - Buy &amp; Sell Both (MIS ATM)</option>
+          <option value="7" selected>7 · Intraday Options - Buyer Only (long CE)</option>
           <option value="8">8 · Intraday Options - Seller Only (writes PE, needs margin)</option>
         </select>
       </div>
@@ -185,12 +185,12 @@
         <label class="section-label">Execution Mode</label>
         <select id="c-exec-mode">
           <option value="PAPER">PAPER — no real orders</option>
-          <option value="LIVE">LIVE — real broker orders</option>
+          <option value="LIVE" selected>LIVE — real broker orders</option>
         </select>
       </div>
       <div>
         <label class="section-label">Capital (₹)</label>
-        <input id="c-capital" type="number" value="100000" min="1" oninput="autoCapPerTrade('c')"/>
+        <input id="c-capital" type="number" value="10000" min="1" oninput="autoCapPerTrade('c')"/>
       </div>
       <div>
         <label class="section-label">Risk Style</label>
@@ -304,7 +304,7 @@
       </div>
       <div>
         <label class="section-label">Max Trades / Underlying / Day</label>
-        <input type="number" id="c-max-trades" min="1" max="10" value="5" class="w-full bg-slate-700 border border-slate-500 rounded px-3 py-2 text-sm text-white">
+        <input type="number" id="c-max-trades" min="1" max="10" value="10" class="w-full bg-slate-700 border border-slate-500 rounded px-3 py-2 text-sm text-white">
         <p class="text-xs text-slate-400 mt-1">Enforces daily cap per underlying (e.g. NIFTY). Live default: 2</p>
       </div>
       <div>
@@ -346,8 +346,8 @@
       <div id="strat-mode-wrap">
         <label class="section-label">Strategy Mode</label>
         <select id="c-strat-mode" onchange="onStratModeChange()" style="max-width:340px">
-          <option value="1" selected>Single — one strategy</option>
-          <option value="2">Multi — combine strategies (N must agree)</option>
+          <option value="1">Single — one strategy</option>
+          <option value="2" selected>Multi — combine strategies (N must agree)</option>
           <option value="3">Auto-adaptive</option>
         </select>
       </div>
@@ -379,7 +379,7 @@
       </div>
       <div>
         <label class="section-label">Max Capital Deployed (₹)</label>
-        <input id="c-max-deployed" type="number" value="100000" min="1"/>
+        <input id="c-max-deployed" type="number" value="10000" min="1"/>
       </div>
     </div>
 
@@ -451,14 +451,14 @@
           <option value="3">3 · Futures Equity (NRML)</option>
           <option value="4">4 · Options Equity (NRML)</option>
           <option value="5">5 · Intraday Futures (MIS)</option>
-          <option value="6" selected>6 · Intraday Options - Buy &amp; Sell Both (MIS ATM)</option>
-          <option value="7">7 · Intraday Options - Buyer Only (long CE)</option>
+          <option value="6">6 · Intraday Options - Buy &amp; Sell Both (MIS ATM)</option>
+          <option value="7" selected>7 · Intraday Options - Buyer Only (long CE)</option>
           <option value="8">8 · Intraday Options - Seller Only (writes PE, needs margin)</option>
         </select>
       </div>
       <div>
         <label class="section-label">Capital (₹)</label>
-        <input id="b-capital" type="number" value="100000" min="1" oninput="autoCapPerTrade('b')"/>
+        <input id="b-capital" type="number" value="10000" min="1" oninput="autoCapPerTrade('b')"/>
       </div>
       <div>
         <label class="section-label">Risk Style</label>
@@ -587,7 +587,7 @@
       </div>
       <div>
         <label class="section-label">Max Trades / Underlying / Day</label>
-        <input type="number" id="b-max-trades" min="1" max="10" value="5" class="w-full bg-slate-700 border border-slate-500 rounded px-3 py-2 text-sm text-white">
+        <input type="number" id="b-max-trades" min="1" max="10" value="10" class="w-full bg-slate-700 border border-slate-500 rounded px-3 py-2 text-sm text-white">
         <p class="text-xs text-slate-400 mt-1">Daily cap per underlying (enforced in backtest)</p>
       </div>
       <div>
@@ -626,8 +626,8 @@
       <div id="b-strat-mode-wrap">
         <label class="section-label">Strategy Mode</label>
         <select id="b-strat-mode" onchange="onBStratModeChange()" style="max-width:340px">
-          <option value="1" selected>Single — one strategy</option>
-          <option value="2">Multi — combine strategies (N must agree)</option>
+          <option value="1">Single — one strategy</option>
+          <option value="2" selected>Multi — combine strategies (N must agree)</option>
           <option value="3">Auto-adaptive</option>
         </select>
       </div>
@@ -854,6 +854,13 @@
         <button onclick="clearLog()" class="text-xs text-slate-500 hover:text-slate-300">clear</button>
       </div>
       <div id="log-panel"></div>
+      <div class="flex justify-between items-center mt-3 mb-1">
+        <div class="section-label mb-0" style="color:#f87171">
+          Alerts &amp; Errors &nbsp;<span id="alert-count" class="text-xs font-mono text-slate-400"></span>
+        </div>
+        <button onclick="clearAlertLog()" class="text-xs text-slate-500 hover:text-slate-300">clear</button>
+      </div>
+      <div id="alert-panel" style="height:160px;overflow-y:auto;font-size:.73rem;font-family:monospace;background:#0f172a;border:1px solid #7f1d1d;border-radius:6px;padding:8px"></div>
     </div>
   </div>
 </div>
@@ -1182,8 +1189,10 @@ async function loadRuntimeDefaults() {
       _enginePeriodInterval = d.engine_period_interval;
     }
 
-    // Default engine (backtest tab) — triggers onEngineChange to update dependent fields
+    // Default engine (live/paper + backtest tabs) — triggers onEngineChange to update dependent fields
     if (d.engine_choice != null) {
+      const ceng = document.getElementById('c-engine');
+      if (ceng) { ceng.value = String(d.engine_choice); onEngineChange('live'); }
       const beng = document.getElementById('b-engine');
       if (beng) { beng.value = String(d.engine_choice); onEngineChange('backtest'); }
     }
@@ -1473,9 +1482,9 @@ function onEngineChange(scope) {
     populateSelect('c-strat-name',  IS_IOPTS(eng) ? IOPTS_STRATEGIES_ORDERED : Object.values(strats));
     populateSelect('c-strat-multi', IS_IOPTS(eng) ? IOPTS_STRATEGIES_ORDERED : Object.values(strats));
     if (IS_IOPTS(eng)) {
-      populateStrategyCheckboxes('c-strat-checkboxes', 'c-strat-multi', IOPTS_STRATEGIES_ORDERED, ['ATM_MULTI', 'ATM_BREAKOUT_EXPANSION']);
+      populateStrategyCheckboxes('c-strat-checkboxes', 'c-strat-multi', IOPTS_STRATEGIES_ORDERED, ['ATM_MULTI', 'ATM_ORB', 'ATM_BREAKOUT_EXPANSION', 'ATM_MOMENTUM']);
       if (!document.getElementById('c-strat-mode')._ioptsTouched) {
-        document.getElementById('c-strat-mode').value = '1';
+        document.getElementById('c-strat-mode').value = '2';
       }
       onStratModeChange();
     }
@@ -1497,9 +1506,9 @@ function onEngineChange(scope) {
     populateSelect('b-strat-name',  IS_IOPTS(eng) ? IOPTS_STRATEGIES_ORDERED : Object.values(strats));
     populateSelect('b-strat-multi', IS_IOPTS(eng) ? IOPTS_STRATEGIES_ORDERED : Object.values(strats));
     if (IS_IOPTS(eng)) {
-      populateStrategyCheckboxes('b-strat-checkboxes', 'b-strat-multi', IOPTS_STRATEGIES_ORDERED, ['ATM_MULTI', 'ATM_BREAKOUT_EXPANSION']);
+      populateStrategyCheckboxes('b-strat-checkboxes', 'b-strat-multi', IOPTS_STRATEGIES_ORDERED, ['ATM_MULTI', 'ATM_ORB', 'ATM_BREAKOUT_EXPANSION', 'ATM_MOMENTUM']);
       if (!document.getElementById('b-strat-mode')._ioptsTouched) {
-        document.getElementById('b-strat-mode').value = '1';
+        document.getElementById('b-strat-mode').value = '2';
       }
       onBStratModeChange();
     }
@@ -1551,6 +1560,8 @@ function autoCapPerTrade(pfx) {
   const cap = parseFloat(document.getElementById(pfx + '-capital').value) || 0;
   const pos = parseInt(document.getElementById(pfx + '-max-pos').value) || 1;
   document.getElementById(pfx + '-max-per-trade').value = Math.round(cap / pos);
+  const deployedEl = document.getElementById(pfx + '-max-deployed');
+  if (deployedEl) deployedEl.value = cap;
 }
 
 function onStratModeChange() {
@@ -2347,12 +2358,24 @@ function _appendToPanel(panelId, line, level) {
   while (panel.children.length > 500) panel.removeChild(panel.firstChild);
   panel.scrollTop = panel.scrollHeight;
 }
-function appendLog(line, level)   { _appendToPanel('log-panel',      line, level); }
+function appendLog(line, level) {
+  _appendToPanel('log-panel', line, level);
+  if (level === 'warn' || level === 'warning' || level === 'error') {
+    _appendToPanel('alert-panel', line, level);
+    const panel = document.getElementById('alert-panel');
+    const cnt = document.getElementById('alert-count');
+    if (cnt && panel) cnt.textContent = '(' + panel.children.length + ')';
+  }
+}
 function appendBtLog(line, level) {
   _appendToPanel('bt-running-log', line, level);
   _appendToPanel('bt-log-panel',   line, level);
 }
-function clearLog()   { const p = document.getElementById('log-panel');      if(p) p.innerHTML=''; }
+function clearLog()      { const p = document.getElementById('log-panel');   if(p) p.innerHTML=''; }
+function clearAlertLog() {
+  const p = document.getElementById('alert-panel'); if(p) p.innerHTML='';
+  const c = document.getElementById('alert-count'); if(c) c.textContent='';
+}
 function clearBtLog() {
   const r = document.getElementById('bt-running-log'); if(r) r.innerHTML='';
   const b = document.getElementById('bt-log-panel');   if(b) b.innerHTML='';
@@ -2413,7 +2436,7 @@ function buildTradeCardHtml(t, uid) {
   // Charges breakdown (per Zerodha F&O options charge model)
   let chargesBreakdownHtml = '';
   const cb = t.charges_breakdown;
-  if (cb && (cb.brokerage || cb.stt || cb.exchange_txn || cb.sebi || cb.stamp || cb.gst)) {
+  if (cb && (cb.brokerage || cb.stt || cb.exchange_txn || cb.sebi || cb.stamp || cb.gst || cb.slippage)) {
     const rows = [
       ['Brokerage', cb.brokerage],
       ['STT', cb.stt],
@@ -2421,6 +2444,7 @@ function buildTradeCardHtml(t, uid) {
       ['SEBI charges', cb.sebi],
       ['Stamp duty', cb.stamp],
       ['GST', cb.gst],
+      ['Slippage', cb.slippage],
     ].filter(([, v]) => v != null).map(([k, v]) =>
       `<span class="text-slate-500">${k}:</span> <span class="text-slate-300">₹${loc(v)}</span>`
     ).join('<span class="text-slate-700"> · </span>');
@@ -2430,6 +2454,8 @@ function buildTradeCardHtml(t, uid) {
   // Detail panel (hidden by default)
   const ivStr  = t.iv ? `${t.iv.toFixed(1)}% IV` : '';
   const detailRows = [
+    t.entry_time    ? ['Entry', `${(t.entry_time||'').toString().slice(0,16).replace('T',' ')} @ ₹${loc(t.entry_price||0)}`] : null,
+    t.exit_time     ? ['Exit',  `${(t.exit_time||'').toString().slice(0,16).replace('T',' ')} @ ₹${loc(t.exit_price||0)}`] : null,
     t.strategy      ? ['Strategy',   t.strategy] : null,
     t.entry_reason  ? ['Signal',     t.entry_reason] : null,
     t.underlying    ? ['Underlying', t.underlying + (t.option_type ? ' ' + t.option_type : '')] : null,

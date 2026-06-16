@@ -12,6 +12,7 @@ GET  /api/backtest/results — latest backtest result
 """
 from __future__ import annotations
 
+import os
 import threading
 from datetime import date, timedelta
 from typing import Any
@@ -103,7 +104,7 @@ async def get_runtime_defaults() -> JSONResponse:
         "partial_exit_enabled": pd.get("partial_exit_enabled", 1) == 1,
         "capital": pd.get("capital", 100000),
         "max_positions": pd.get("max_positions", 1),
-        "engine_choice": pd.get("engine_choice", 6),
+        "engine_choice": int(os.environ.get("IOPTS_ENGINE_CHOICE") or pd.get("engine_choice", 6)),
         # Period/interval defaults per engine — driven by backtest_defaults.default_data in yaml
         "engine_period_interval": engine_period_interval,
     })
@@ -414,7 +415,7 @@ async def get_session_trades() -> JSONResponse:
     from datetime import date as _date
     from pathlib import Path
 
-    ctx = web_state.get_context()
+    ctx = web_state._context
     today = _date.today().isoformat()
     engine_name = "intraday_options"
     if ctx and ctx.engine:
@@ -723,7 +724,7 @@ def _build_backtest_config(data: dict):
             valid_iopts = set(engine_cls.supported_strategies.values())
             strategies = tuple(s.upper() for s in raw_strats if s.upper() in valid_iopts)
             if not strategies:
-                strategies = ("ATM_MULTI", "ATM_BREAKOUT_EXPANSION")
+                strategies = ("ATM_MULTI", "ATM_ORB", "ATM_BREAKOUT_EXPANSION", "ATM_MOMENTUM")
             min_confirmations = max(1, int(data.get("min_confirmations", 1)))
         else:
             strategy_mode = "SINGLE"

@@ -1245,8 +1245,7 @@ only in a new `trade_direction_mode` class attribute checked as the **first** ga
 | 8 — Seller Only | `intraday_options_seller` | `SELL_ONLY` | Short PE (option-writing) only, requires margin; `BUY`-resolved scans forced to `HOLD`. |
 
 See [`Docs/INTRADAY_OPTIONS_GUIDE.md` Section 1.1](INTRADAY_OPTIONS_GUIDE.md#11-engine-variants--buyer--seller--both)
-for the full signal-model explanation and known limitations (no distinct "long PE"
-signal exists yet — Section 17).
+for the full signal-model explanation.
 
 ### Files Changed
 - `engines/intraday_options.py` — `trade_direction_mode` class attribute + gate at the
@@ -1578,3 +1577,191 @@ Zerodha's published charges table.
   (₹71.15 total on the BUY 65@151.30/SELL 65@156.35 example, matching the
   ~₹71 expectation) and `intraday_equity` (₹26.70 on a 10-share ₹2500→₹2520
   round trip).
+
+---
+
+## [2026-06-15] Engine 7/8 scans NIFTY50 stocks instead of NIFTY index in LIVE session
+
+### Symptom
+Live session with engine 7 (`intraday_options_buyer`) crashed immediately with:
+```
+ValueError: Expected exchange-prefixed symbol, got: MARUTI.NS
+```
+The engine was scanning NIFTY50 constituent stocks instead of the NIFTY index.
+
+### Root Cause
+`cli/configuration.py:build_session_config_from_dict()` had:
+```python
+if engine_choice in {"3", "4", "5", "6"}:   # ← missing "7" and "8"
+    # sets ATM config with underlying="NIFTY", scan_symbol="NSE:NIFTY 50"
+```
+Engines 7/8 fell through to the equities branch and inherited a NIFTY50
+stock universe (`selected_symbols = ["RELIANCE", "TCS", ...]`). The interactive
+CLI path (a separate function) already correctly included 7/8.
+
+### Fix
+Three lines in `cli/configuration.py:build_session_config_from_dict()` extended to include `"7"` and `"8"`:
+1. `if engine_choice in {"3","4","5","6","7","8"}:` — ATM config branch entry
+2. `_defer_expiry = engine_choice in {"6","7","8"} and ...` — expiry defer flag
+3. `elif engine_choice in {"6","7","8"}:` — fno_structure logic
+
+### Files Changed
+- `cli/configuration.py` — `build_session_config_from_dict()`: 3 set literals extended
+
+---
+
+## [2026-06-15] AttributeError: module 'web.state' has no attribute 'get_context'
+
+### Symptom
+`/api/session-trades` endpoint returned a 500 error with:
+```
+AttributeError: module 'web.state' has no attribute 'get_context'
+```
+
+### Root Cause
+`web/routes/config.py` line 418 called `web_state.get_context()` — a function
+that does not exist. The correct accessor is the module-level `_context`
+attribute (used by all other callers in the codebase: `session.py`,
+`warning_engine.py`, `_store_vix_in_session()`).
+
+### Fix
+```python
+# was:
+ctx = web_state.get_context()
+# fixed:
+ctx = web_state._context
+```
+
+### Files Changed
+- `web/routes/config.py` — line 418: `get_context()` → `_context`
+
+---
+
+## [2026-06-15] TRAILING_STOP exit LIMIT order at stale price crashes live session
+
+### Symptom
+Live session crashed mid-trade with:
+```
+RuntimeError: Broker did not confirm the order fill state within the configured polling window.
+```
+The TRAILING_STOP fired on `NFO:NIFTY2661624000PE` (65 lots). After the crash
+a ghost LIMIT SELL order at ₹35.145 remained open at Kite.
+
+### Root Cause
+1. `manage_open_positions` used `exit_price = snapshot["latest_close"] = 35.50`
+   (the option's peak/best candle close, stale at trail-fire time).
+2. With `exit_limit_price_buffer_pct: 0.01`, a SELL LIMIT was synthesised at
+   `35.50 × 0.99 = ₹35.145`. Market was at ~₹32.84 → no buyer existed at 35.145
+   → order stayed `PENDING` indefinitely.
+3. `_ensure_fill_confirmation` polls 3×1.5s (4.5s total) then raises `RuntimeError`.
+4. No try/except in `manage_open_positions` → exception propagated → session crash.
+
+### Three-layer fix
+
+**Layer 1 — `config/config.runtime.yaml`**
+```yaml
+exit_limit_price_buffer_pct: 0.0  # was 0.01 — MARKET exits prevent stale-LIMIT timeout
+```
+With buffer=0, positions.py synthesises a MARKET order (no price) → fills
+immediately regardless of stale candle close.
+
+**Layer 2 — `executor.py` (cancel stale LIMIT + retry as MARKET)**
+Wrapped the first `_ensure_fill_confirmation` in try/except RuntimeError. On
+LIMIT timeout: cancel the stale broker order, log a warning, re-submit as MARKET
+via `dataclasses.replace(request, order_type="MARKET", price=None,
+trigger_price=None)`, re-reconcile, re-confirm.
+
+**Layer 3 — `orchestration/positions.py` (session survives exit failures)**
+Wrapped the exit `place_order` call in try/except RuntimeError. If all retries
+fail (broker outage), logs `[EXIT_ERROR]` with manual-intervention notice and
+sets `order_result = None`. Session continues; position stays tracked.
+
+### Files Changed
+- `config/config.runtime.yaml` — `exit_limit_price_buffer_pct: 0.01 → 0.0`
+- `executor.py` — LIMIT timeout: cancel + retry as MARKET; `import dataclasses` added
+- `orchestration/positions.py` — exit `place_order` wrapped in try/except RuntimeError
+
+---
+
+## [2026-06-15] Alerts & Errors persistent panel (new feature)
+
+### Motivation
+The "Active Warnings" panel (`#warn-active-list`) is replaced on every state-push
+cycle — when a condition clears the warning disappears. The general log panel
+accumulates everything but is noisy with INFO lines. There was no panel that
+persistently showed only `warn`/`error` log events for the entire session.
+
+### Implementation
+
+**Backend (`web/state.py`):**
+Added a second ring buffer `_alert_ring: deque(maxlen=500)` alongside `_log_ring`.
+`push_log()` mirrors every `warn`/`warning`/`error` level entry to `_alert_ring`
+in addition to `_log_ring`. New `get_alert_history()` getter returns a snapshot.
+
+**New endpoint (`web/routes/session.py`):**
+```
+GET /api/alert-history → {"alerts": [...]}
+```
+Returns the full `_alert_ring` contents — never cleared during the server process.
+
+**Frontend (`web/static/index.html`):**
+- `#alert-panel` (red-bordered, 160px, scrollable monospace div) added below the
+  main log stream in the "Log Stream" card.
+- `appendLog()` mirrors every `warn`/`warning`/`error` entry to `#alert-panel`
+  with a count badge.
+- On WebSocket connect, `fetch('/api/alert-history')` populates `#alert-panel`
+  with history so a browser refresh restores all prior alerts.
+- "clear" button clears the display only (server-side ring buffer unaffected).
+
+### Files Changed
+- `web/state.py` — `_alert_ring` deque; `push_log` mirror; `get_alert_history()`
+- `web/routes/session.py` — `GET /api/alert-history` endpoint
+- `web/static/index.html` — `#alert-panel` HTML; `appendLog()` mirroring; history fetch on WS connect
+
+---
+
+## [2026-06-17] Buyer/Seller engine trades only one option direction
+
+### Symptom
+- Engine 7 (`IntradayOptionsBuyerEngine`): only opened BUY_CE trades. All
+  bearish signals (BUY_PE direction) were silently blocked → HOLD.
+- Engine 8 (`IntradayOptionsSellerEngine`): only opened SELL_PE trades. All
+  bullish signals (SELL_CE direction) were silently blocked → HOLD.
+
+### Desired behaviour
+- Buyer engine (7): full options-buyer — BUY CE on bullish, BUY PE on bearish.
+- Seller engine (8): full options-writer — SELL PE on bearish, SELL CE on bullish.
+
+### Root Cause
+`apply_signal_filters` (`engines/intraday_options.py` lines 625-640) had two
+early-return blocks that converted the signal to HOLD on the "opposite" direction:
+```python
+# BUY_ONLY mode + SELL signal → HOLD + return  (blocked BUY PE)
+# SELL_ONLY mode + BUY signal → HOLD + return  (blocked SELL CE)
+```
+
+### Fix
+Replace early-return HOLD blocks with direction-conversion blocks (no early return):
+```python
+if mode == "BUY_ONLY" and filtered["signal"] == "SELL":
+    filtered["signal"] = "BUY"   # bearish → buy PE
+    filtered["options_filter_note"] = "Buyer mode: bearish direction → buying PE (long put)"
+    # fall through to remaining filters
+elif mode == "SELL_ONLY" and filtered["signal"] == "BUY":
+    filtered["signal"] = "SELL"  # bullish → write CE
+    filtered["options_filter_note"] = "Seller mode: bullish direction → writing CE (short call)"
+    # fall through to remaining filters
+```
+`option_type` in `analytics` is **unchanged** — set by strategies (CE/PE) and
+consumed by downstream filters (underlying bias check, contract resolution). All
+existing filters (bias, VWAP, entry quality) remain active on both directions.
+
+Two unit tests renamed and updated to assert the new converted signal (BUY/SELL)
+and preserved score instead of HOLD+0.
+
+### Files Changed
+- `engines/intraday_options.py` — `apply_signal_filters` lines 625-640; updated
+  docstrings for `IntradayOptionsBuyerEngine` and `IntradayOptionsSellerEngine`
+- `tests/unit/test_engine_workflows.py` — `test_buyer_engine_holds_sell_signal` →
+  `test_buyer_engine_converts_sell_to_buy_pe`; `test_seller_engine_holds_buy_signal` →
+  `test_seller_engine_converts_buy_to_sell_ce`

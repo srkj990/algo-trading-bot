@@ -1227,6 +1227,7 @@ class BacktestEngine:
             quantity=int(exit_qty),
         )
         estimated_charges = float(cost_breakdown.total)
+        self.cash -= estimated_charges
         position["realized_pnl_parts"] = float(position.get("realized_pnl_parts") or 0.0) + float(pnl)
         position["realized_charges_parts"] = float(position.get("realized_charges_parts") or 0.0) + float(estimated_charges)
         position["realized_charges_breakdown"] = _add_charge_breakdowns(
@@ -1265,6 +1266,7 @@ class BacktestEngine:
             quantity=quantity,
         )
         estimated_charges = float(cost_breakdown.total)
+        self.cash -= estimated_charges
         net_pnl = pnl - estimated_charges
         realized_pnl_parts = float(position.get("realized_pnl_parts") or 0.0)
         realized_charges_parts = float(position.get("realized_charges_parts") or 0.0)
@@ -2242,10 +2244,14 @@ def export_backtest_results(summary):
             gross_loss = abs(float(losses["pnl"].sum()))
             profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else float("inf")
             total_charges = float(closed["estimated_charges"].sum()) if "estimated_charges" in closed.columns else 0.0
-            charges_pct_of_gross = round(total_charges / gross_profit * 100, 1) if gross_profit > 0 else 0.0
+            total_gross_pnl = float(closed["pnl"].sum())
             tick_count = int(closed["tick_entry"].sum()) if "tick_entry" in closed.columns else 0
             lines.append(f"Avg win: {avg_win:+.2f} | Avg loss: {avg_loss:+.2f} | Profit factor: {profit_factor}")
-            lines.append(f"Charges as % of gross profit: {charges_pct_of_gross:.1f}%")
+            if total_gross_pnl > 0:
+                charges_pct_of_gross = round(total_charges / total_gross_pnl * 100, 1)
+                lines.append(f"Charges as % of gross P&L: {charges_pct_of_gross:.1f}%")
+            else:
+                lines.append("Charges as % of gross P&L: N/A (gross P&L <= 0)")
             lines.append(f"Tick entries: {tick_count} / {len(closed)}")
             # Trades per day
             if "entry_time" in closed.columns:

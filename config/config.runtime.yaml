@@ -46,7 +46,7 @@ orders:
   fill_confirmation_required: true # used: rejects unresolved live orders that never confirm fill state
   default_entry_order_type: "LIMIT" # used: default entry order type when the session builds orders
   entry_limit_price_buffer_pct: 0.0015 # used: buffer applied when synthesizing entry limit prices
-  exit_limit_price_buffer_pct: 0.01 # used: buffer applied when synthesizing exit limit prices (SELL below LTP, BUY above LTP)
+  exit_limit_price_buffer_pct: 0.0 # used: buffer applied when synthesizing exit limit prices (SELL below LTP, BUY above LTP); 0.0 = MARKET exits (safest for stop-loss/trail execution)
   max_spread_pct: 0.015 # used: global spread guard before live order placement
   margin_check_enabled: true # used: enables pre-order available-margin checks
   margin_buffer_pct: 0.05 # used: extra margin cushion applied to estimated required margin
@@ -63,7 +63,7 @@ trade_store:
   include_paper_trades: true # used: persists paper-mode trades/orders in the trade store too
 
 fno:
-  intraday_options_max_trades_per_underlying: 5 # used: max filled intraday-option entries per underlying per day
+  intraday_options_max_trades_per_underlying: 10 # used: max filled intraday-option entries per underlying per day
   intraday_options_expiry_warning_days: 2 # used: blocks/warns near-expiry option setups based on days to expiry
   intraday_options_vega_crush_block_percent: 20 # used: filters setups when implied-volatility crush risk is too high
   intraday_options_min_range_pct: 0.35 # used: minimum underlying range percent for intraday-options regime checks
@@ -200,10 +200,10 @@ engine_defaults:
     volatility_range_multiplier: 1.2 # used: range-expansion threshold for volatility entries and trailing distance
     volatility_quality_lookback: 20 # used: lookback window for volatility quality stats
     runner_level_exit_fractions: [0.3, 0.4, 0.3] # used: lot split for smaller runner-style exits
-    runner_partial_exit_lot_threshold: 2 # used: when total lots exceed this threshold, intraday-options runner exits switch to the larger multi-lot branch
-    runner_level1_premium_target_pct: 8.0 # used: first premium target for larger multi-lot runner exits
-    runner_level2_premium_target_pct: 15.0 # used: second premium target for larger multi-lot runner exits
-    runner_partial_exit_fraction: 0.2 # used: first and second scale-out fraction for the larger multi-lot runner branch
+    runner_partial_exit_lot_threshold: 4 # used: when total lots exceed this threshold, intraday-options runner exits switch to the larger multi-lot branch
+    runner_level1_premium_target_pct: 12.0 # used: first premium target for larger multi-lot runner exits
+    runner_level2_premium_target_pct: 25.0 # used: second premium target for larger multi-lot runner exits
+    runner_partial_exit_fraction: 0.15 # used: first and second scale-out fraction for the larger multi-lot runner branch
 
 backtest_defaults:
   risk_styles:
@@ -265,8 +265,8 @@ backtest_defaults:
       period: "1d" # used: default backtest lookback period for intraday options
       interval: "1m" # used: default backtest candle interval for intraday options
   prompt_defaults:
-    engine_choice: 6 # used: default engine selection for backtest CLI prompt
-    capital: 100000 # used: default starting capital for backtest CLI prompt
+    engine_choice: 7 # used: default engine selection for backtest CLI prompt
+    capital: 10000 # used: default starting capital for backtest CLI prompt
     symbol_mode: 3 # used: default symbol-universe mode for backtest CLI prompt
     single_symbol_key: "1" # used: default single-symbol table selection for backtest CLI prompt
     fno_futures_base_symbol: 3 # used: default futures underlying choice for backtest CLI prompt
@@ -285,8 +285,8 @@ backtest_defaults:
     entry_selection_mode: 1 # used: default entry-selection mode for backtest CLI prompt
     top_n: 2 # used: default top-N entry count for backtest CLI prompt
     intraday_options_entry_mode: 1 # used: default intraday-options entry-mode prompt choice in backtests (1=LIVE_TICK_CONFIRM, 2=LIVE_STAGED, 3=LEGACY_IMMEDIATE)
-    intraday_options_strategy_mode: 1 # used: default intraday-options strategy-mode for CLI and web (1=SINGLE, 2=MULTI)
-    max_trades_per_underlying: 5 # used: default max-trades-per-underlying CLI prompt for intraday-options backtest
+    intraday_options_strategy_mode: 2 # used: default intraday-options strategy-mode for CLI and web (1=SINGLE, 2=MULTI)
+    max_trades_per_underlying: 10 # used: default max-trades-per-underlying CLI prompt for intraday-options backtest
     time_exit_minutes: 30 # used: default time-exit-window CLI prompt for intraday-options backtest (0=disabled)
     forming_tick_enabled: 2 # used: default forming-candle entry CLI prompt (1=YES, 2=NO)
     forming_tick_confirm_ticks: 2 # used: default confirm-ticks for forming-candle entry CLI prompt
