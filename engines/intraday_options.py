@@ -1907,12 +1907,12 @@ class IntradayOptionsSellerEngine(IntradayOptionsEngine):
             seller_max_adx = float(getattr(cfg, "intraday_options_seller_max_adx", 22.0))
             adx_period = int(getattr(cfg, "intraday_options_seller_adx_period", 14))
             seller_min_iv_pct = float(getattr(cfg, "intraday_options_seller_min_iv_percentile", 10.0))
-            seller_max_delta = float(getattr(cfg, "intraday_options_seller_max_delta", 0.45))
+            seller_max_delta = float(getattr(cfg, "intraday_options_seller_max_delta", 0.55))
         except Exception:
             seller_max_adx = 22.0
             adx_period = 14
             seller_min_iv_pct = 10.0
-            seller_max_delta = 0.45
+            seller_max_delta = 0.55
 
         if prefetched_underlying_df is not None and len(prefetched_underlying_df) >= adx_period * 2:
             try:
