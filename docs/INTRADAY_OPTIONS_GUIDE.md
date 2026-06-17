@@ -111,7 +111,7 @@ Exit levels are premium-percentage based (HARD_TARGET mode; no trailing).
 2. ADX gate: block if ADX > `intraday_options_seller_max_adx` (default 22)
 3. Regime gate: block in EXPANSION regime unless strategy is EXHAUSTION_SELL
 4. IV floor: block if IV percentile < `intraday_options_seller_min_iv_percentile` (default 10)
-5. Delta ceiling: block if |delta| > `intraday_options_seller_max_delta` (default 0.45)
+5. Delta ceiling: block if |delta| > `intraday_options_seller_max_delta` (default 0.55)
 6. Score floor: shared `intraday_options_min_signal_score`
 
 **Exit mechanics:**
@@ -973,7 +973,7 @@ All parameters are in `config/config.runtime.yaml`.
 | `intraday_options_seller_target_decay_pct` | 30.0 | Engine 8 profit target: exit when premium decays by this % |
 | `intraday_options_seller_stop_pct` | 60.0 | Engine 8 stop loss: exit when premium rises by this % |
 | `intraday_options_seller_min_iv_percentile` | 10.0 | Engine 8 IV floor: minimum IV percentile for entry (need worthwhile premium) |
-| `intraday_options_seller_max_delta` | 0.45 | Engine 8 delta ceiling: max abs(delta) — prefer slightly OTM |
+| `intraday_options_seller_max_delta` | 0.55 | Engine 8 delta ceiling: max abs(delta) — 0.55 allows ATM writes; expiry-day ATM CE/PE delta drifts to 0.51–0.53 |
 
 ### Engine defaults section (intraday_options)
 

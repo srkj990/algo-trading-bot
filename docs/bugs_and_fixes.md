@@ -1927,4 +1927,52 @@ premium-% levels (`stop = entry×1.6`, `target = entry×0.7`).
 - `backtesting.py` + `orchestration/session.py` — route engine 8 to `build_seller_position`
 - `config.py` + `config/config.runtime.yaml` — 6 new seller config params
 - `web/static/index.html` + `cli/configuration.py` — engine 8 label updated to "Independent Seller"
+
+---
+
+## [2026-06-17] Seller engine 0 trades on expiry days — 5 bugs found via backtest log analysis
+
+Discovered by validating backtest logs for NIFTY expiry day (`algo_iopts8_20260617_031520`) and
+SENSEX expiry day (`algo_iopts8_20260617_191510`). Commits: `f107b12` (4 bugs) + `09bd06d` (1 bug in buyer/base engine).
+
+### Bug 1 — Seller regime gate falsely EXPANSION (options data used instead of underlying)
+
+**Symptom:** All seller entries blocked by `"Regime: EXPANSION — seller blocked"` throughout the session.  
+**Root cause:** `build_volatility_regime_context(df, analytics)` was receiving the OPTIONS intraday 1-min dataframe. On expiry day, option premiums decay 60–80% intraday, making `session_range_pct = (H-L)/Open × 100` ≈ 60–80% — always above the `EXPANSION_THRESHOLD`. So the regime gate was permanently tripped even when the underlying (NIFTY/SENSEX) was ranging normally.  
+**Fix:** `engines/intraday_options.py` — `IntradayOptionsSellerEngine.apply_signal_filters`: pass `prefetched_underlying_df` (NIFTY/SENSEX 1-min data) to `build_volatility_regime_context` instead of `intraday_df` (options data). Falls back to `intraday_df` if underlying not available.
+
+### Bug 2 — Score=0 for non-ATM seller strategies
+
+**Symptom:** `SHORT_THETA_AFTER_11AM`, `LOW_VOLATILITY_RANGE_SELL`, `EXHAUSTION_SELL` all computed score≈0, so they were never ranked high enough for entry.  
+**Root cause:** `get_strategy_score()` in `signal_scoring.py` had a fast-path for `strategy_name.startswith("ATM_")` that returned `strength + normalized_atr × 0.1`. The three non-ATM seller strategies fell through to the equity-strategy handlers, which computed scores like `|MA20-MA50|/close ≈ 0`. Options strategy strength ≈ `(RSI-75)/25 × distance_ratio` — a sensible value — was being discarded.  
+**Fix:** Added `SHORT_THETA_AFTER_11AM`, `LOW_VOLATILITY_RANGE_SELL`, `EXHAUSTION_SELL` to the `ATM_*` fast-path so they also return `strength + normalized_atr × 0.1`.
+
+### Bug 3 — Delta ceiling 0.45 blocked all ATM writes on expiry day
+
+**Symptom:** Every EXHAUSTION_SELL and ATM_ORB_FAILURE_SELL signal blocked by `"Seller delta ceiling: |delta|=0.49 > 0.45 — too deep ITM/ATM"`.  
+**Root cause:** `intraday_options_seller_max_delta` defaulted to 0.45. ATM CE/PE on expiry day have delta ≈ 0.48–0.53 (slightly ITM as underlying moves through strike). Both `ATM_ORB_FAILURE_SELL` and `ATM_VWAP_FADE_SELL` are designed to write ATM contracts — delta 0.45 ceiling is incompatible.  
+**Fix:** `config.py` + `config/config.runtime.yaml`: raised default to 0.55. Verified that expiry-day ATM CE/PE delta peaks around 0.52 when underlying is near the strike. At 0.55, all observed ATM writes pass the filter; at 0.60+ directional risk would outweigh theta benefit.
+
+### Bug 4 — Score floor 0.03 blocked all options signals
+
+**Symptom:** All seller signals blocked by `"Seller score floor: score=0.000 < min=0.030"`.  
+**Root cause:** Seller's `apply_signal_filters` applied the same `min_signal_score=0.03` threshold that equity strategies use. Equity scores = `|MA20-MA50|/close` ≈ 0.01–0.10. Options strategy strength = `(RSI-75)/25 × distance_ratio` ≈ 0.01–0.30 — reasonable, but the specific value calibration differs from equity. On a day where the score gate and regime gate both fired, no signal could pass. The seller engine already has ADX + regime + IV + delta quality gates; the generic score floor added no value and blocked legitimate signals.  
+**Fix:** Removed the score floor block entirely from `IntradayOptionsSellerEngine.apply_signal_filters`. (Bug 2 fixing the strategy scores also addresses the symptom, but removing the floor is more correct architecturally.)
+
+### Bug 5 — Buyer/base engine range + regime computed from options data (STAGED mode affected)
+
+**Symptom:** Not visible in backtest logs because buyer engine uses `LEGACY_RAW` mode which returns before the filter executes. Would silently block all STAGED-mode entries (`ATM_VWAP_REVERSION`, `ATM_TRAP_REVERSAL`) on expiry days in live sessions.  
+**Root cause:** `IntradayOptionsEngine.apply_signal_filters` (base class used by buyer engine) computed:
+  - `session_open/high/low` from `session_df` (options intraday slice) → `range_pct ≈ 70%` → `min_underlying_range_pct` check always triggered
+  - `recent_window` from `session_df.tail(...)` (options data)
+  - `build_volatility_regime_context(session_df, analytics)` → EXPANSION (same as Bug 1)
+All three were using option premium data rather than the underlying 1-min bars.  
+**Fix:** `engines/intraday_options.py` — `IntradayOptionsEngine.apply_signal_filters`: added `underlying_ref_df` and `underlying_session_df` derived from `prefetched_underlying_df` (falls back to `intraday_df`). Range, recent_window, and regime now all use underlying bars.
+
+### Verification
+
+```
+pytest tests/unit -q  →  235 passed, 2 pre-existing failures (unrelated to options engine)
+```
+Both NIFTY and SENSEX backtest logs re-analyzed — all 5 strategy blocks explained and fixed.
 - `tests/unit/test_seller_strategies.py` — 16 new unit tests covering all 5 strategies + filter chain + multi-strategy aggregation

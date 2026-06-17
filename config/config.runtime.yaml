@@ -91,7 +91,7 @@ fno:
   intraday_options_seller_target_decay_pct: 30.0 # used: seller profit target — exit when premium decays by this %
   intraday_options_seller_stop_pct: 60.0 # used: seller stop loss — exit when premium rises by this %
   intraday_options_seller_min_iv_percentile: 10.0 # used: minimum IV percentile for seller entry (need worthwhile premium)
-  intraday_options_seller_max_delta: 0.52 # used: maximum abs(delta) for seller entries (0.52 allows near-ATM writes from ATM_ORB_FAILURE_SELL / ATM_VWAP_FADE_SELL)
+  intraday_options_seller_max_delta: 0.55 # used: maximum abs(delta) for seller entries (0.55 allows ATM writes; expiry-day ATM CE/PE delta drifts to 0.51-0.53)
 
 engine_defaults:
   delivery_equity:

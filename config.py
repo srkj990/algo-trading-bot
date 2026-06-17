@@ -993,7 +993,7 @@ def _default_runtime_config_map() -> dict[str, Any]:
                 os.getenv("INTRADAY_OPTIONS_SELLER_MIN_IV_PERCENTILE", "10.0")
             ),
             "intraday_options_seller_max_delta": float(
-                os.getenv("INTRADAY_OPTIONS_SELLER_MAX_DELTA", "0.52")
+                os.getenv("INTRADAY_OPTIONS_SELLER_MAX_DELTA", "0.55")
             ),
         },
         "engine_defaults": {
