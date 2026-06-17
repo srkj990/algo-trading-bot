@@ -676,16 +676,26 @@ class IntradayOptionsEngine(OptionsEquityEngine):
             else "NEUTRAL"
         )
 
-        session_open = float(session_df.iloc[0]["Open"])
-        session_high = float(session_df["High"].max())
-        session_low = float(session_df["Low"].min())
+        # Use underlying data for range and regime — options intraday range is 60-80% on
+        # expiry day (premium decay), which would always trigger min_range block and EXPANSION.
+        underlying_ref_df = (
+            prefetched_underlying_df
+            if prefetched_underlying_df is not None
+            else intraday_df
+        )
+        underlying_session_df = underlying_ref_df.loc[
+            underlying_ref_df.index.date == underlying_ref_df.index[-1].date()
+        ]
+        session_open = float(underlying_session_df.iloc[0]["Open"]) if not underlying_session_df.empty else 0.0
+        session_high = float(underlying_session_df["High"].max()) if not underlying_session_df.empty else 0.0
+        session_low = float(underlying_session_df["Low"].min()) if not underlying_session_df.empty else 0.0
         range_pct = (
             ((session_high - session_low) / session_open) * 100.0
             if session_open > 0
             else 0.0
         )
         filtered["range_pct"] = range_pct
-        regime = self.build_volatility_regime_context(session_df, analytics)
+        regime = self.build_volatility_regime_context(underlying_ref_df, analytics)
         filtered["volatility_regime"] = regime["label"]
         filtered["selected_profile"] = evaluation.get("selected_profile")
         filtered["components"] = evaluation.get("components")
@@ -704,7 +714,7 @@ class IntradayOptionsEngine(OptionsEquityEngine):
 
         # Strong sideways blocker: if recent price stays close to VWAP with a muted ATR ratio,
         # we do not want to bleed premium in chop.
-        recent_window = session_df.tail(max(3, int(self.sideways_lookback_candles)))
+        recent_window = underlying_session_df.tail(max(3, int(self.sideways_lookback_candles)))
         recent_vwap = compute_vwap(recent_window)
         recent_deviation = (
             (recent_window["Close"] - recent_vwap).abs() / recent_vwap.replace(0, 1)
