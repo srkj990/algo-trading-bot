@@ -14,6 +14,12 @@ from config import (
     INTRADAY_OPTIONS_REGIME_EXPANSION_RANGE_PCT,
     INTRADAY_OPTIONS_REGIME_SIDEWAYS_RANGE_PCT,
     INTRADAY_OPTIONS_REGIME_SIDEWAYS_VWAP_DEV_PCT,
+    INTRADAY_OPTIONS_SELLER_ADX_PERIOD,
+    INTRADAY_OPTIONS_SELLER_MAX_ADX,
+    INTRADAY_OPTIONS_SELLER_MAX_DELTA,
+    INTRADAY_OPTIONS_SELLER_MIN_IV_PERCENTILE,
+    INTRADAY_OPTIONS_SELLER_STOP_PCT,
+    INTRADAY_OPTIONS_SELLER_TARGET_DECAY_PCT,
     INTRADAY_OPTIONS_SIDEWAYS_LOOKBACK_CANDLES,
     INTRADAY_OPTIONS_SIDEWAYS_VWAP_BAND_PCT,
     INTRADAY_OPTIONS_TIME_EXIT_CUTOFF,
@@ -1855,6 +1861,12 @@ class IntradayOptionsSellerEngine(IntradayOptionsEngine):
         "LOW_VOLATILITY_RANGE_SELL": "SELLER_THETA",
         "EXHAUSTION_SELL":         "SELLER_MEAN_REVERSION",
     }
+    seller_max_adx = INTRADAY_OPTIONS_SELLER_MAX_ADX
+    seller_adx_period = INTRADAY_OPTIONS_SELLER_ADX_PERIOD
+    seller_target_decay_pct = INTRADAY_OPTIONS_SELLER_TARGET_DECAY_PCT
+    seller_stop_pct = INTRADAY_OPTIONS_SELLER_STOP_PCT
+    seller_min_iv_percentile = INTRADAY_OPTIONS_SELLER_MIN_IV_PERCENTILE
+    seller_max_delta = INTRADAY_OPTIONS_SELLER_MAX_DELTA
 
     def apply_signal_filters(
         self,
@@ -1901,18 +1913,10 @@ class IntradayOptionsSellerEngine(IntradayOptionsEngine):
         )
 
         # ADX gate: sellers need low-to-moderate trend; high ADX means premium may not decay
-        try:
-            from config import get_config
-            cfg = get_config()
-            seller_max_adx = float(getattr(cfg, "intraday_options_seller_max_adx", 22.0))
-            adx_period = int(getattr(cfg, "intraday_options_seller_adx_period", 14))
-            seller_min_iv_pct = float(getattr(cfg, "intraday_options_seller_min_iv_percentile", 10.0))
-            seller_max_delta = float(getattr(cfg, "intraday_options_seller_max_delta", 0.55))
-        except Exception:
-            seller_max_adx = 22.0
-            adx_period = 14
-            seller_min_iv_pct = 10.0
-            seller_max_delta = 0.55
+        seller_max_adx = float(self.seller_max_adx)
+        adx_period = int(self.seller_adx_period)
+        seller_min_iv_pct = float(self.seller_min_iv_percentile)
+        seller_max_delta = float(self.seller_max_delta)
 
         if prefetched_underlying_df is not None and len(prefetched_underlying_df) >= adx_period * 2:
             try:
@@ -1981,14 +1985,8 @@ class IntradayOptionsSellerEngine(IntradayOptionsEngine):
 
     def get_seller_level_spec(self, entry_price: float) -> dict:
         """Premium-percentage exit levels for a short option position."""
-        try:
-            from config import get_config
-            cfg = get_config()
-            target_pct = float(getattr(cfg, "intraday_options_seller_target_decay_pct", 30.0))
-            stop_pct = float(getattr(cfg, "intraday_options_seller_stop_pct", 60.0))
-        except Exception:
-            target_pct = 30.0
-            stop_pct = 60.0
+        target_pct = float(self.seller_target_decay_pct)
+        stop_pct = float(self.seller_stop_pct)
         entry = float(entry_price)
         stop_price = entry * (1.0 + stop_pct / 100.0)
         target_price = max(0.01, entry * (1.0 - target_pct / 100.0))

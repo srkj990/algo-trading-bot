@@ -1588,3 +1588,13 @@ INTRADAY_OPTIONS_THETA_EXIT_RATIO = (
 INTRADAY_OPTIONS_THETA_EXIT_MIN_MINUTES = (
     RUNTIME_CONFIG.fno.intraday_options_theta_exit_min_minutes
 )
+INTRADAY_OPTIONS_SELLER_MAX_ADX = RUNTIME_CONFIG.fno.intraday_options_seller_max_adx
+INTRADAY_OPTIONS_SELLER_ADX_PERIOD = RUNTIME_CONFIG.fno.intraday_options_seller_adx_period
+INTRADAY_OPTIONS_SELLER_TARGET_DECAY_PCT = (
+    RUNTIME_CONFIG.fno.intraday_options_seller_target_decay_pct
+)
+INTRADAY_OPTIONS_SELLER_STOP_PCT = RUNTIME_CONFIG.fno.intraday_options_seller_stop_pct
+INTRADAY_OPTIONS_SELLER_MIN_IV_PERCENTILE = (
+    RUNTIME_CONFIG.fno.intraday_options_seller_min_iv_percentile
+)
+INTRADAY_OPTIONS_SELLER_MAX_DELTA = RUNTIME_CONFIG.fno.intraday_options_seller_max_delta
