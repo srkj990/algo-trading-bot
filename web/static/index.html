@@ -1072,7 +1072,6 @@ let btEquityChart = null;
 let lastState = {};
 let currentTab = 'live';
 
-const EQ_STRATEGIES  = {MA:'MA', MA_LONG:'MA_LONG', RSI:'RSI', VWAP:'VWAP', BREAKOUT:'BREAKOUT', ORB:'ORB'};
 // Ranked order for intraday_options strategy picker (best → situational)
 const IOPTS_STRATEGIES_ORDERED = [
   'ATM_MULTI',              // #1 Best all-round
@@ -1092,16 +1091,20 @@ const SELLER_STRATEGIES_ORDERED = [
   'EXHAUSTION_SELL',           // #5 Extreme RSI + far-from-VWAP + momentum reversing
 ];
 const SELLER_DEFAULT_STRATS = ['ATM_ORB_FAILURE_SELL', 'ATM_VWAP_FADE_SELL', 'EXHAUSTION_SELL'];
-const FNO_STRATEGIES = {
-  ATM_MOMENTUM:'ATM_MOMENTUM', ATM_ORB:'ATM_ORB',
-  ATM_VWAP_REVERSION:'ATM_VWAP_REVERSION', ATM_MULTI:'ATM_MULTI',
-  ATM_BREAKOUT_EXPANSION:'ATM_BREAKOUT_EXPANSION',
-  ATM_IV_EXPANSION:'ATM_IV_EXPANSION', ATM_TRAP_REVERSAL:'ATM_TRAP_REVERSAL',
+// Per-engine strategy list — matches backend supported_strategies exactly (single source of truth)
+const ENGINE_STRATEGIES = {
+  '1': ['MA', 'RSI', 'VWAP', 'BREAKOUT', 'ORB'],
+  '2': ['MA', 'MA_LONG', 'RSI', 'VWAP', 'BREAKOUT', 'ORB'],
+  '3': ['MA', 'RSI', 'BREAKOUT', 'VWAP', 'ORB'],
+  '4': ['MA', 'RSI', 'BREAKOUT', 'VWAP', 'ORB'],
+  '5': ['MA', 'RSI', 'BREAKOUT', 'VWAP', 'ORB'],
+  '6': IOPTS_STRATEGIES_ORDERED,
+  '7': IOPTS_STRATEGIES_ORDERED,
+  '8': SELLER_STRATEGIES_ORDERED,
 };
-const IS_FNO   = e => ['3','4','5','6','7','8'].includes(e);
+const IS_FNO_UNDERLYING = e => ['3','4','5','6','7','8'].includes(e);  // has F&O underlying/expiry picker
 const IS_IOPTS = e => e === '6' || e === '7' || e === '8';
 const IS_SELLER_IOPTS = e => e === '8';
-const iOptsStratList = e => IS_SELLER_IOPTS(e) ? SELLER_STRATEGIES_ORDERED : IOPTS_STRATEGIES_ORDERED;
 const iOptsDefaultStrats = e => IS_SELLER_IOPTS(e) ? SELLER_DEFAULT_STRATS : ['ATM_MULTI', 'ATM_ORB', 'ATM_BREAKOUT_EXPANSION', 'ATM_MOMENTUM'];
 
 // Filled by loadRuntimeDefaults() — maps engine choice string → [period, interval]
@@ -1407,7 +1410,7 @@ function switchTab(tab) {
   document.getElementById('tab-backtest').className = 'tab-btn ' + (tab === 'backtest' ? 'active' : 'inactive');
   if (tab === 'backtest') {
     const eng = document.getElementById('b-engine').value;
-    if (IS_FNO(eng)) loadFnoData('backtest');
+    if (IS_FNO_UNDERLYING(eng)) loadFnoData('backtest');
   }
 }
 
@@ -1479,7 +1482,8 @@ async function doReconfigure() {
 function onEngineChange(scope) {
   const pfx = scope === 'backtest' ? 'b-' : 'c-';
   const eng = document.getElementById(pfx + (scope === 'backtest' ? 'engine' : 'engine')).value;
-  const fno = IS_FNO(eng);
+  const fno = IS_FNO_UNDERLYING(eng);
+  const stratList = ENGINE_STRATEGIES[eng] || ['MA', 'RSI', 'VWAP', 'BREAKOUT', 'ORB'];
 
   if (scope === 'live') {
     tog('eq-section',       !fno);
@@ -1490,11 +1494,10 @@ function onEngineChange(scope) {
     tog('fno-structure-wrap', IS_IOPTS(eng));
     tog('lot-mode-wrap',     IS_IOPTS(eng));
     tog('iopts-advanced-wrap', IS_IOPTS(eng));
-    const strats = fno ? FNO_STRATEGIES : EQ_STRATEGIES;
-    populateSelect('c-strat-name',  IS_IOPTS(eng) ? iOptsStratList(eng) : Object.values(strats));
-    populateSelect('c-strat-multi', IS_IOPTS(eng) ? iOptsStratList(eng) : Object.values(strats));
+    populateSelect('c-strat-name',  stratList);
+    populateSelect('c-strat-multi', stratList);
     if (IS_IOPTS(eng)) {
-      populateStrategyCheckboxes('c-strat-checkboxes', 'c-strat-multi', iOptsStratList(eng), iOptsDefaultStrats(eng));
+      populateStrategyCheckboxes('c-strat-checkboxes', 'c-strat-multi', stratList, iOptsDefaultStrats(eng));
       if (!document.getElementById('c-strat-mode')._ioptsTouched) {
         document.getElementById('c-strat-mode').value = '2';
       }
@@ -1514,11 +1517,10 @@ function onEngineChange(scope) {
       const bothOpt = undEl.querySelector('option[value="BOTH"]');
       if (bothOpt) bothOpt.disabled = IS_IOPTS(eng);
     }
-    const strats = fno ? FNO_STRATEGIES : EQ_STRATEGIES;
-    populateSelect('b-strat-name',  IS_IOPTS(eng) ? iOptsStratList(eng) : Object.values(strats));
-    populateSelect('b-strat-multi', IS_IOPTS(eng) ? iOptsStratList(eng) : Object.values(strats));
+    populateSelect('b-strat-name',  stratList);
+    populateSelect('b-strat-multi', stratList);
     if (IS_IOPTS(eng)) {
-      populateStrategyCheckboxes('b-strat-checkboxes', 'b-strat-multi', iOptsStratList(eng), iOptsDefaultStrats(eng));
+      populateStrategyCheckboxes('b-strat-checkboxes', 'b-strat-multi', stratList, iOptsDefaultStrats(eng));
       if (!document.getElementById('b-strat-mode')._ioptsTouched) {
         document.getElementById('b-strat-mode').value = '2';
       }
@@ -1697,7 +1699,7 @@ async function submitLive() {
   const cDailyMaxLoss = document.getElementById('c-daily-max-loss').value;
   if (cDailyMaxLoss !== '') payload.daily_max_loss_pct = parseFloat(cDailyMaxLoss) / 100;
 
-  if (IS_FNO(eng)) {
+  if (IS_FNO_UNDERLYING(eng)) {
     const scope = document.getElementById('c-fno-underlying-scope')?.value;
     payload.fno_underlying = scope === 'BOTH' ? 'BOTH' : document.getElementById('c-underlying').value;
     payload.fno_expiry     = document.getElementById('c-expiry').value;
@@ -1849,7 +1851,7 @@ function updateOverrideBar(paused, safeMode) {
 async function submitBacktest() {
   hideBtError();
   const eng = document.getElementById('b-engine').value;
-  const fno = IS_FNO(eng);
+  const fno = IS_FNO_UNDERLYING(eng);
 
   const payload = {
     engine_choice:         eng,

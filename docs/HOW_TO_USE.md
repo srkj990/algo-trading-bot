@@ -207,7 +207,7 @@ Engine id: `1` | Name: `intraday_equity`
 Engine id: `2` | Name: `delivery_equity`
 
 - Long-only delivery positions on daily candles (CNC)
-- Strategies: `MA`, `RSI`, `BREAKOUT`
+- Strategies: `MA`, `MA_LONG`, `RSI`, `VWAP`, `BREAKOUT`, `ORB`
 - Nifty 50-DMA trend guard required for new long entries
 - Swing-style stop with 1.8% minimum floor
 
@@ -235,16 +235,34 @@ Engine id: `5` | Name: `intraday_futures`
 - Strategies: `MA`, `RSI`, `BREAKOUT`, `VWAP`, `ORB`
 - Lot-size-aware sizing; Kite only
 
-### 6. Intraday Options
+### 6. Intraday Options (Both Directions)
 
 Engine id: `6` | Name: `intraday_options`
 
-- Intraday ATM single-option flow or two-leg bounded range pair (MIS)
+- Intraday ATM options — BUY CE (bullish) or BUY PE (bearish), both directions (MIS)
 - Strategies: `ATM_MOMENTUM`, `ATM_ORB`, `ATM_VWAP_REVERSION`, `ATM_MULTI`, `ATM_BREAKOUT_EXPANSION`, `ATM_IV_EXPANSION`, `ATM_TRAP_REVERSAL`
 - Dynamic ATM strike resolution and rolling; staged momentum entry; three-level runner partial exits
 - Greeks, IV, spread, OI, expiry, cost, and vega-crush filters
 
 **Recommended workflow**: Backtest → Paper with staged mode → Live only after logs show correct contract, stop, target, and runner behavior.
+
+### 7. Intraday Options Buyer
+
+Engine id: `7` | Name: `intraday_options_buyer`
+
+- Identical to Engine 6 but filtered to BUY CE / BUY PE only — never sells
+- Strategies: `ATM_MOMENTUM`, `ATM_ORB`, `ATM_VWAP_REVERSION`, `ATM_MULTI`, `ATM_BREAKOUT_EXPANSION`, `ATM_IV_EXPANSION`, `ATM_TRAP_REVERSAL`
+- Use when you want buyer-only exposure without writing premium
+
+### 8. Intraday Options Seller (Independent)
+
+Engine id: `8` | Name: `intraday_options_seller`
+
+- Intraday premium writing — SELL CE / SELL PE signals (MIS); HARD_TARGET exits at premium decay
+- Strategies: `ATM_ORB_FAILURE_SELL`, `ATM_VWAP_FADE_SELL`, `SHORT_THETA_AFTER_11AM`, `LOW_VOLATILITY_RANGE_SELL`, `EXHAUSTION_SELL`
+- Exit: target = entry × (1 − 30%), stop = entry × (1 + 60%) — fixed levels, no trailing
+- Filters: ADX gate (< 22), regime gate (no EXPANSION except EXHAUSTION_SELL), IV floor, delta ceiling (≤ 0.55)
+- Margin sizing via SELL-side: underlying × 12% per lot
 
 ---
 
@@ -260,7 +278,7 @@ Engine id: `6` | Name: `intraday_options`
 | `VWAP` | 1 | 6 | Close above / below cumulative VWAP |
 | `ORB` | 20 | 21 | Close above / below first-15-candle range |
 
-### Intraday-options strategies
+### Intraday-options buyer strategies (Engines 6 and 7)
 
 | Strategy | Min candles | Entry condition |
 | --- | ---: | --- |
@@ -271,6 +289,16 @@ Engine id: `6` | Name: `intraday_options`
 | `ATM_BREAKOUT_EXPANSION` | 45 | Compression + breakout + volume spike + ATR expansion |
 | `ATM_IV_EXPANSION` | 30 | Key-level breakout + oversized candle body + RSI confirmation |
 | `ATM_TRAP_REVERSAL` | 24 | Failed support/resistance break + oversized reversal body |
+
+### Intraday-options seller strategies (Engine 8 only)
+
+| Strategy | Min candles | Entry condition | Signal |
+| --- | ---: | --- | --- |
+| `ATM_ORB_FAILURE_SELL` | 20 | Price breaks ORB level then re-enters range → premium decays | SELL_CE (failed bull break) / SELL_PE (failed bear break) |
+| `ATM_VWAP_FADE_SELL` | 20 | Price stretched from VWAP in a low-ADX session (ADX < 18) | SELL_PE (price above VWAP) / SELL_CE (price below VWAP) |
+| `SHORT_THETA_AFTER_11AM` | 16 | Post-11 AM, ADX < 15, session range < 0.8% — pure theta decay | VWAP tiebreaker picks CE or PE |
+| `LOW_VOLATILITY_RANGE_SELL` | 16 | ATR contracting (below its 14-period MA), ADX < 20, price inside prior range | SELL_CE (upper half) / SELL_PE (lower half) |
+| `EXHAUSTION_SELL` | 20 | RSI > 75 + price 1.5× ATR above VWAP + RSI declining (overbought) | SELL_CE; or RSI < 25 + price below VWAP → SELL_PE |
 
 ---
 

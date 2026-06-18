@@ -1254,20 +1254,20 @@ def build_session_config_from_dict(data: dict) -> SessionConfig:
         mode = str(data.get("strategy_mode", "1"))
         if mode not in {"1", "2"}:
             mode = "1"
+        valid_iopts = set(engine.supported_strategies.values())
+        default_iopts = next(iter(engine.supported_strategies.values()))
         if mode == "1":
-            strategy_name_raw = str(data.get("strategy_name", "ATM_MOMENTUM")).upper()
-            valid_iopts = set(engine.supported_strategies.values())
-            strategy_name: str | None = strategy_name_raw if strategy_name_raw in valid_iopts else "ATM_MOMENTUM"
+            strategy_name_raw = str(data.get("strategy_name", default_iopts)).upper()
+            strategy_name: str | None = strategy_name_raw if strategy_name_raw in valid_iopts else default_iopts
             strategies: list[str] | None = None
             min_confirmations: int | None = None
         else:
             raw_strats = data.get("strategies", [])
             if isinstance(raw_strats, str):
                 raw_strats = [s.strip() for s in raw_strats.split(",") if s.strip()]
-            valid_iopts = set(engine.supported_strategies.values())
             strategies = [s.upper() for s in raw_strats if s.upper() in valid_iopts]
             if not strategies:
-                strategies = ["ATM_MULTI", "ATM_BREAKOUT_EXPANSION"]
+                strategies = list(engine.supported_strategies.values())
             strategy_name = None
             _mc_raw = data.get("min_confirmations")
             min_confirmations = max(1, min(len(strategies), int(_mc_raw))) if _mc_raw is not None else 1

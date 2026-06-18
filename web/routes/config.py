@@ -714,6 +714,8 @@ def _build_backtest_config(data: dict):
 
     # ── strategy ──────────────────────────────────────────────────────────────
     strategy_mode_raw = str(data.get("strategy_mode", "2"))
+    valid_strats = set(engine_cls.supported_strategies.values())
+    default_strategy = next(iter(engine_cls.supported_strategies.values()))
     if is_intraday_options_engine_name(engine_name):
         if strategy_mode_raw == "2":
             strategy_mode = "MULTI"
@@ -721,17 +723,15 @@ def _build_backtest_config(data: dict):
             raw_strats = data.get("strategies", [])
             if isinstance(raw_strats, str):
                 raw_strats = [s.strip() for s in raw_strats.split(",") if s.strip()]
-            valid_iopts = set(engine_cls.supported_strategies.values())
-            strategies = tuple(s.upper() for s in raw_strats if s.upper() in valid_iopts)
+            strategies = tuple(s.upper() for s in raw_strats if s.upper() in valid_strats)
             if not strategies:
-                strategies = ("ATM_MULTI", "ATM_ORB", "ATM_BREAKOUT_EXPANSION", "ATM_MOMENTUM")
+                strategies = tuple(engine_cls.supported_strategies.values())
             min_confirmations = max(1, int(data.get("min_confirmations", 1)))
         else:
             strategy_mode = "SINGLE"
-            strategy_name = str(data.get("strategy_name", "ATM_MOMENTUM")).upper()
-            valid_iopts = set(engine_cls.supported_strategies.values())
-            if strategy_name not in valid_iopts:
-                strategy_name = "ATM_MOMENTUM"
+            strategy_name = str(data.get("strategy_name", default_strategy)).upper()
+            if strategy_name not in valid_strats:
+                strategy_name = default_strategy
             strategies = (strategy_name,)
             min_confirmations = 1
     elif strategy_mode_raw == "3":
@@ -741,7 +741,9 @@ def _build_backtest_config(data: dict):
         min_confirmations = max(2, int(INTRADAY_EQUITY_AUTO_NORMAL_MIN_CONFIRMATIONS))
     elif strategy_mode_raw == "1":
         strategy_mode = "SINGLE"
-        strategy_name = str(data.get("strategy_name", next(iter(engine_cls.supported_strategies.values()))))
+        strategy_name = str(data.get("strategy_name", default_strategy))
+        if strategy_name not in valid_strats:
+            strategy_name = default_strategy
         strategies = (strategy_name,)
         min_confirmations = 1
     else:
@@ -750,7 +752,9 @@ def _build_backtest_config(data: dict):
         raw_strats = data.get("strategies", [])
         if isinstance(raw_strats, str):
             raw_strats = [s.strip() for s in raw_strats.split(",") if s.strip()]
-        strategies = tuple(raw_strats) if raw_strats else tuple(engine_cls.supported_strategies.values())
+        strategies = tuple(s for s in raw_strats if s in valid_strats) if raw_strats else ()
+        if not strategies:
+            strategies = tuple(engine_cls.supported_strategies.values())
         min_confirmations = max(1, int(data.get("min_confirmations", 1)))
 
     # ── position limits ───────────────────────────────────────────────────────

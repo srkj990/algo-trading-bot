@@ -1976,3 +1976,53 @@ pytest tests/unit -q  →  235 passed, 2 pre-existing failures (unrelated to opt
 ```
 Both NIFTY and SENSEX backtest logs re-analyzed — all 5 strategy blocks explained and fixed.
 - `tests/unit/test_seller_strategies.py` — 16 new unit tests covering all 5 strategies + filter chain + multi-strategy aggregation
+
+---
+
+## [2026-06-18] Web UI engine-strategy mismatch — 4 bugs fixed
+
+### Description
+The web UI showed wrong strategies for multiple engines due to a conflated `IS_FNO` flag and shared `EQ_STRATEGIES` / `FNO_STRATEGIES` constants. User-reported symptom: intraday_equity (Engine 1) was showing options-selling strategies.
+
+### Root causes
+
+**Bug 1 — `IS_FNO` flag conflation (Engines 3, 4, 5 showed ATM options strategies)**  
+`IS_FNO = e => ['3','4','5','6','7','8'].includes(e)` was used both for "show FNO underlying/expiry picker" AND "select strategy list". Engines 3 (`futures_equity`), 4 (`options_equity`), 5 (`intraday_futures`) need the FNO picker — but their `supported_strategies` are MA/RSI/BREAKOUT/VWAP/ORB, not ATM options. Because `IS_FNO=true`, `strats = FNO_STRATEGIES` (the ATM options strategy object), so the dropdown showed `ATM_MOMENTUM`, `ATM_ORB` etc. for all three engines.
+
+**Bug 2 — `EQ_STRATEGIES` included MA_LONG for Engine 1**  
+`EQ_STRATEGIES = {MA, MA_LONG, RSI, VWAP, BREAKOUT, ORB}` was shared across all non-FNO engines. Only Engine 2 (`delivery_equity`) has `MA_LONG` in its `supported_strategies`; Engine 1 does not.
+
+**Bug 3 — Backend fallback used buyer strategies for Engine 8**  
+`web/routes/config.py`: when strategy list was empty/invalid, fallback was hardcoded `("ATM_MULTI", "ATM_ORB", "ATM_BREAKOUT_EXPANSION", "ATM_MOMENTUM")`. None of these are in Engine 8's `supported_strategies` → silent failure.
+
+**Bug 4 — No strategy validation for non-iopts engines (Engines 1–5)**  
+`web/routes/config.py` and `cli/configuration.py` accepted any strategy name without checking it against `engine_cls.supported_strategies` for single/multi mode on non-iopts engines.
+
+### Fix
+
+**`web/static/index.html`**:
+- Removed `IS_FNO`, `EQ_STRATEGIES`, `FNO_STRATEGIES` constants
+- Added `ENGINE_STRATEGIES` map — one array per engine ID, matching backend `supported_strategies` exactly:
+  ```
+  Engine 1: [MA, RSI, VWAP, BREAKOUT, ORB]
+  Engine 2: [MA, MA_LONG, RSI, VWAP, BREAKOUT, ORB]
+  Engines 3,4,5: [MA, RSI, BREAKOUT, VWAP, ORB]
+  Engines 6,7: IOPTS_STRATEGIES_ORDERED (7 buyer strategies)
+  Engine 8: SELLER_STRATEGIES_ORDERED (5 seller strategies)
+  ```
+- Added `IS_FNO_UNDERLYING` (used only for showing/hiding the FNO underlying/expiry UI section)
+- Both live and backtest tab `onEngineChange` handlers now use `ENGINE_STRATEGIES[eng]`
+
+**`web/routes/config.py`**:
+- IOPTS multi fallback uses `tuple(engine_cls.supported_strategies.values())` — automatically correct for both buyer (6/7) and seller (8) engines
+- Non-iopts SINGLE mode: validates strategy against `engine_cls.supported_strategies`, falls back to first supported strategy
+- Non-iopts MULTI mode: filters submitted list to valid strategies, falls back to all supported strategies
+
+**`cli/configuration.py`**:
+- Same fix for live session path: iopts single/multi fallback uses `engine.supported_strategies`, non-iopts strategies validated against it
+
+### Verification
+```
+pytest tests/unit -q  →  235 passed, 2 pre-existing failures (unchanged)
+```
+Manually verified: Engine 1–8 all show correct strategy list in the web UI after engine selector change.

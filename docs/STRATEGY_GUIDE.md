@@ -22,14 +22,16 @@ A practical decision framework for selecting engines, strategies, and risk param
 
 ## Engine Overview
 
-| Engine | Instrument | Time Horizon | Product | Suitable For |
-|---|---|---|---|---|
-| `intraday_equity` | NSE equity stocks | Same-day (squareoff 15:15) | MIS | Active intraday traders |
-| `delivery_equity` | NSE equity stocks | Multi-day (up to 5 days) | CNC | Swing / positional traders |
-| `intraday_futures` | NSE/NFO index/stock futures | Same-day (squareoff 15:15) | MIS | Leverage intraday traders |
-| `intraday_options` | NSE/NFO index/stock options | Same-day (squareoff 15:15) | MIS | Options intraday traders |
-| `futures_equity` | NSE/NFO futures | Multi-day positional | NRML | Positional futures traders |
-| `options_equity` | NSE/NFO options | Multi-day positional | NRML | Positional options traders |
+| # | Engine | Instrument | Time Horizon | Product | Suitable For |
+|---|---|---|---|---|---|
+| 1 | `intraday_equity` | NSE equity stocks | Same-day (squareoff 15:15) | MIS | Active intraday traders |
+| 2 | `delivery_equity` | NSE equity stocks | Multi-day (up to 5 days) | CNC | Swing / positional traders |
+| 3 | `futures_equity` | NSE/NFO futures | Multi-day positional | NRML | Positional futures traders |
+| 4 | `options_equity` | NSE/NFO options | Multi-day positional | NRML | Positional options traders |
+| 5 | `intraday_futures` | NSE/NFO index/stock futures | Same-day (squareoff 15:15) | MIS | Leverage intraday traders |
+| 6 | `intraday_options` | NSE/NFO ATM options | Same-day (squareoff 15:15) | MIS | Options intraday traders — both directions |
+| 7 | `intraday_options_buyer` | NSE/NFO ATM options | Same-day (squareoff 15:15) | MIS | Options intraday buyers (long only) |
+| 8 | `intraday_options_seller` | NSE/NFO ATM options | Same-day (squareoff 15:15) | MIS | Premium writers — 5 seller strategies |
 
 ---
 
@@ -49,6 +51,11 @@ A practical decision framework for selecting engines, strategies, and risk param
 | **ATM_BREAKOUT_EXPANSION** | 45-candle compression + breakout + volume + ATR expansion | Sustained directional moves after tight consolidation | Thin-volume breakouts, sudden reversals after entry |
 | **ATM_TRAP_REVERSAL** | Failed breakout + strong reversal candle sequence | Markets that test key levels and sharply reverse | Trending markets — counter-trend setups get stopped out |
 | **AUTO_ADAPTIVE** | Engine selects regime (SIDEWAYS/NORMAL/EXPANSION) and adapts levels | When you are unsure which strategy suits the day | No failure mode — worst case is SIDEWAYS conservative sizing |
+| **ATM_ORB_FAILURE_SELL** | Price breaks ORB level then re-enters range; SELL premium | Failed breakout days — price probes a level and reverses | Trending days — real ORB breaks will run against the sold option |
+| **ATM_VWAP_FADE_SELL** | Price stretched from VWAP in low-ADX session; SELL premium | Choppy, range-bound sessions with low ADX (< 18) | Strong directional sessions — price stays away from VWAP |
+| **SHORT_THETA_AFTER_11AM** | Post-11 AM pure theta sell; low ADX + contained range | Afternoon range-bound days after event-driven morning volatility settles | Morning sessions; high-ADX trending days |
+| **LOW_VOLATILITY_RANGE_SELL** | Contracting ATR below its own MA + low ADX; SELL slightly OTM | Volatility compression days before a squeeze resolves | Days with imminent catalysts — ATR expansion would blow stops |
+| **EXHAUSTION_SELL** | RSI > 75 + price > 1.5 ATR above VWAP + RSI declining → SELL_CE | Overbought exhaustion with momentum stalling; expiry-day pinning | Early-session moves where momentum is still accelerating |
 
 ### Multi-Strategy Confirmation (recommended combinations)
 
@@ -225,9 +232,9 @@ Options:        intraday_options (intraday)   |  options_equity   (positional)
 
 ---
 
-### intraday_options
+### intraday_options (Engine 6 — Both Directions)
 
-**What it does:** The most feature-rich intraday engine. Trades ATM or near-ATM options in a defined-loss / defined-reward structure. Supports four specialized option strategies (ATM_MOMENTUM, ATM_ORB, ATM_BREAKOUT_EXPANSION, ATM_TRAP_REVERSAL). Has regime detection (SIDEWAYS/NORMAL/EXPANSION), IV percentile filter, open interest guard, theta-decay exit, partial/runner exit, and tick-entry simulation in backtest.
+**What it does:** The most feature-rich intraday engine. Trades ATM or near-ATM options in a defined-loss / defined-reward structure. Supports seven specialized option strategies. Has regime detection (SIDEWAYS/NORMAL/EXPANSION), IV percentile filter, open interest guard, theta-decay exit, partial/runner exit, and tick-entry simulation in backtest. Fires BUY CE on bullish signals and BUY PE on bearish signals.
 
 **Session timing:**
 - Market open: 09:15
@@ -280,6 +287,43 @@ Options:        intraday_options (intraday)   |  options_equity   (positional)
 - `intraday_options_max_hold_minutes` — reduce to `20` on choppy days to cut time risk
 - `max_buy_iv_percentile` — reduce to `60` on high-VIX days to avoid buying at the top of IV
 - `runner_level1_premium_target_pct` / `runner_level2_premium_target_pct` — tune runner exit levels based on your observed premium ranges
+
+---
+
+### intraday_options_buyer (Engine 7 — Buyer Only)
+
+Identical to Engine 6 but `trade_direction_mode = BUY_ONLY`. All signal filter checks run normally; any SELL signal is suppressed to HOLD. Use when you want directional long-premium trades only (no writing).
+
+**Strategies:** Same 7 buyer strategies as Engine 6.
+
+---
+
+### intraday_options_seller (Engine 8 — Independent Seller)
+
+**What it does:** Five independent premium-writing strategies that look for conditions favoring option decay, not directional momentum. Generates `SELL_CE` / `SELL_PE` signals directly — no buyer logic is inherited. Positions are sized for margin (SELL side: underlying × 12%), exits are fixed-percentage (target = 30% premium decay, stop = 60% premium rise, HARD_TARGET mode — no trailing).
+
+**Seller filter chain:**
+1. ADX gate: blocks if ADX > 22 (trending market — premium can expand against writer)
+2. Regime gate: blocks EXPANSION regime except for `EXHAUSTION_SELL`
+3. Time gate: `SHORT_THETA_AFTER_11AM` and `LOW_VOLATILITY_RANGE_SELL` need current time ≥ 11:00
+4. Delta ceiling: `|delta| ≤ 0.55` (allows ATM writes; expiry-day ATM CE/PE delta drifts 0.48–0.53)
+5. IV floor: blocks if IV percentile < 10 (no worthwhile premium)
+
+**Strategy selection:**
+| Condition | Strategy |
+|---|---|
+| Failed ORB breakout day | ATM_ORB_FAILURE_SELL |
+| Choppy, low-ADX session, price straying from VWAP | ATM_VWAP_FADE_SELL |
+| Quiet afternoon session post-11 AM, range-bound | SHORT_THETA_AFTER_11AM |
+| Volatility compression, ATR contracting | LOW_VOLATILITY_RANGE_SELL |
+| RSI overbought/oversold exhaustion + VWAP stretch | EXHAUSTION_SELL |
+
+**Key config params (config.runtime.yaml → fno):**
+- `intraday_options_seller_max_adx: 22.0` — raise to allow entries in moderate trends
+- `intraday_options_seller_max_delta: 0.55` — ceiling for written option delta
+- `intraday_options_seller_target_decay_pct: 30.0` — exit when premium decays by 30%
+- `intraday_options_seller_stop_pct: 60.0` — exit if premium rises by 60%
+- `intraday_options_seller_min_iv_percentile: 10.0` — minimum IV for worthwhile premium
 
 ---
 
